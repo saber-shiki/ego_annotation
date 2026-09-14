@@ -1,5 +1,5 @@
 """Sole numerical dispatch; results remain candidates, never physical acceptance."""
-from optimization.problems import StandaloneScene, PreparedVisualFit, FormalManoInterval, ObservedObjectPose, StandaloneShape
+from optimization.problems import StandaloneScene, PreparedVisualFit, FormalManoInterval, ObservedObjectPose, StandaloneShape, FormalObjectTrajectory
 from optimization.object.pose import solve_scene_pose
 
 def solve(problem):
@@ -19,4 +19,7 @@ def solve(problem):
         from optimization.object.shape import bind
         return bind(problem.posterior,problem.annotations,problem.appearance,problem.decision,
                     problem.native_qc,problem.output,problem.object_id,problem.run_root)
+    if isinstance(problem, FormalObjectTrajectory):
+        from optimization.object.pose import fit_formal_object
+        return fit_formal_object(problem.arguments())
     raise TypeError(f"unreviewed numerical problem: {type(problem).__name__}")

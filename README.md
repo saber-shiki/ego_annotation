@@ -150,3 +150,21 @@ The first suite checks geometry/projection/occlusion and Torch–NumPy transform
 parity. The second checks launcher arguments, fresh-output protection, dry-run
 behavior and subprocess failure reporting. Tests are necessary but do not
 replace inspection of full videos and contact close-ups.
+
+## Prepared formal/shared physical tail and evaluation
+
+`python main.py formal-tail --spec INPUTS_JSON` consumes prepared prediction
+observations, source pose, completion, depth, licensed MANO assets and independent
+interaction judgments under one run root. Profiles are `formal`, `rgb_sam3d`, and
+`hot3d_shared`. It executes the formal object graph, P17 evidence assembly,
+per-hand interval solve, full-MANO acceptance, and source-named formal JSON/RRD/MP4
+export. The HOT3D profile builds a shared observed-derived signed proxy; readiness
+and local face authority still control every signed factor. This prepared entry
+has not yet been model-run end to end; its CPU math and package contracts are
+covered by migrated tests.
+
+`python evaluate.py {boxes,mano,object,aggregate-boxes,aggregate-mano} --help`
+exposes the five retained HOT3D evaluation/summary tools. Evaluation reads frozen
+prediction plus explicitly supplied evaluation input; prediction `main.py` never
+imports evaluation. `python -m observations.hand.wilor --help` provides optional
+WiLoR prediction in its pre-provisioned environment; the default remains HaWoR.

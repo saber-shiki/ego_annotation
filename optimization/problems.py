@@ -113,3 +113,32 @@ class StandaloneShape:
     output: object
     object_id: str
     run_root: object
+
+
+@dataclass(frozen=True)
+class FormalObjectTrajectory:
+    annotations: object
+    source_pose: object
+    completion_report: object
+    output: object
+    object_id: str
+    profile: str = 'observed_only'
+    image_factors: object | None = None
+    nonpenetration_targets: object | None = None
+
+    def arguments(self):
+        from optimization.object.pose import formal_object_parse_args
+        if self.profile not in {'observed_only','image_assisted','nonpenetration_assisted'}:
+            raise ValueError('unreviewed formal object composition')
+        argv=['--annotations',str(self.annotations),'--pose-report',str(self.source_pose),
+              '--completion-report',str(self.completion_report),'--object-id',self.object_id,
+              '--output-dir',str(self.output)]
+        if self.profile=='image_assisted':
+            if self.image_factors is None:raise ValueError('image profile requires frozen image observations')
+            argv.extend(['--image-factor-npz',str(self.image_factors)])
+        elif self.image_factors is not None:raise ValueError('image observations require image_assisted problem')
+        if self.profile=='nonpenetration_assisted':
+            if self.nonpenetration_targets is None:raise ValueError('pressure profile requires accepted correction targets')
+            argv.extend(['--constraint-report',str(self.nonpenetration_targets)])
+        elif self.nonpenetration_targets is not None:raise ValueError('pressure targets require nonpenetration_assisted problem')
+        return formal_object_parse_args(argv)

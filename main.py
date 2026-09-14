@@ -173,7 +173,10 @@ def main(argv=None):
     internal=commands.add_parser('_worker',help=argparse.SUPPRESS)
     internal.add_argument('kind',choices=['rgb'])
     internal.add_argument('arguments',nargs=argparse.REMAINDER)
+    tail=commands.add_parser('formal-tail',help='prepared formal/HOT3D/RGB shared physical tail')
+    tail.add_argument('--spec',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='formal-tail':return formal_tail(load(args.spec))
     if args.command=='annotate':
         result=annotate(args);print(json.dumps(result,indent=2));return result
     if args.command=='_worker':
@@ -266,7 +269,8 @@ def annotate(args):
     code_files=[code_root/'main.py',code_root/'render.py']
     for directory in ('utils','observations','gates','factors','optimization'):
         code_files.extend((code_root/directory).rglob('*.py'))
-    code_manifest.write_text(json.dumps({'files':{str(p.relative_to(code_root)):sha(p) for p in code_files}},sort_keys=True))
+    code_hashes={str(p.relative_to(code_root)):sha(p) for p in code_files}
+    code_manifest.write_text(json.dumps({'files':code_hashes},sort_keys=True))
     sensor=None
     if args.sensor_calibration is not None:
         sensor=root/'input/sensor_calibration.json';shutil.copyfile(args.sensor_calibration,sensor)
@@ -280,11 +284,16 @@ def annotate(args):
     environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(args.gpu),'HF_HUB_OFFLINE':'1',
         'TRANSFORMERS_OFFLINE':'1','EGO_SAM2_SOURCE':assets['sam2_source'],
         'PYTHONPATH':str(code_root)+os.pathsep+os.environ.get('PYTHONPATH','')}
+    def verify_code():
+        if any(sha(code_root/name)!=digest for name,digest in code_hashes.items()):
+            raise RuntimeError('source code changed during the run; deploy an immutable snapshot')
     def record(stage,outputs,command=None):
+        verify_code()
         return ledger.record(stage,outputs,object_id=object_id,frame_ids=ids,command=command)
     gpu_uuid=args.gpu_uuid
     def worker(stage,python,module,argv,outputs,overlay=None):
         nonlocal gpu_uuid
+        verify_code()
         command=[str(python),'-m',module,*map(str,argv)]
         with (root/'logs'/f'{stage}.log').open('x') as log:
             resources=run_model(command,cwd=code_root,environment={**environment,**(overlay or {})},
@@ -523,6 +532,81 @@ def annotate(args):
     return {'run_root':str(root),'annotation':str(output/'annotation.json'),'rrd':str(output/'world.rrd'),
         'video':str(root/'renders/annotation.mp4'),'annotation_ready':False,
         'visual_review':review}
+
+
+
+
+def formal_tail(spec):
+    """Prepared formal/shared tail: one physical solve precedes backend display split."""
+    from types import SimpleNamespace
+    from optimization.problems import FormalObjectTrajectory, FormalManoInterval
+    from observations.interaction.evidence import interaction_build, interaction_parse_args, build_geometric_constraints
+    from observations.object.signed_geometry import signed_proxy_build, signed_proxy_parse_args
+    from gates.hand.acceptance import accept_mano_surface
+    from render import build_formal_render_state, formal_state_parse_args, assemble_formal_layers, render_formal_rrd, render_formal_video
+    root=Path(spec['run_root']).resolve();out=Path(spec['output']).resolve()
+    in_run(out,root,must_exist=False);out.mkdir(parents=True,exist_ok=False)
+    obj=spec['object_id'];case=spec['case'];ann=in_run(spec['annotations'],root)
+    source=in_run(spec['source_pose'],root);completion=in_run(spec['completion_report'],root)
+    hawor=in_run(spec['hawor_npz'],root);judgments=in_run(spec['interaction_judgments'],root)
+    depth=[in_run(path,root) for path in spec['depth_npz']]
+    images=load(ann)['frames'];frame_ids=[row['frame_idx'] for row in images]
+    profile=spec.get('profile','formal')
+    if profile not in {'formal','hot3d_shared','rgb_sam3d'}:raise ValueError('unknown retained formal path')
+    if profile=='rgb_sam3d':
+        from observations.object.rgb_tracking import initialize
+        nodes,_=build_nodes(load(ann),load(source),obj)
+        edge_path=in_run(spec['rgb_edges'],root);edge_report=in_run(spec['rgb_report'],root)
+        load_edges(edge_path,edge_report,source,ann,nodes,root)
+        with np.load(edge_path,allow_pickle=False) as archive:arrays=dict(archive)
+        initialized=initialize(load(source),load(ann),obj,arrays,load(edge_report)['rows'],int(spec['anchor_frame']))
+        source=out/'rgb_initialized_pose.json';source.write_text(json.dumps(initialized,indent=2,allow_nan=False))
+    object_problem=FormalObjectTrajectory(ann,source,completion,out/'pose',obj)
+    pose_report=solve(object_problem)
+    pose_path=out/'pose/v19_rigid_object_pose_graph_report.json'
+    physical_completion=completion
+    if profile=='hot3d_shared':
+        signed_proxy_build(signed_proxy_parse_args(list(map(str,['--case',case,'--object-id',obj,
+            '--annotations',ann,'--direct-pose-report',source,'--pose-report',pose_path,
+            '--observed-completion-report',completion,'--depth-npz',depth[0],'--output-dir',out/'signed_geometry']))))
+        physical_completion=out/'signed_geometry/shared_signed_geometry_completion_report.json'
+    factor_args=interaction_parse_args(list(map(str,['--annotations',ann,'--case',case,
+        '--target-entity-id','object:'+obj.removeprefix('object:'),'--frame-span',min(frame_ids),max(frame_ids),
+        '--output-root',out/'interaction','--agent-interaction-judgment',judgments,
+        '--require-camera-mano-contract-aligned'])))
+    factor=interaction_build(factor_args)
+    factor_path=out/'interaction'/case/'v19_visible_contact_ownership_factor_report.json'
+    factor_path.parent.mkdir(parents=True,exist_ok=True);factor_path.write_text(json.dumps(factor,indent=2))
+    mesh=load(completion)['outputs'].get('pose_hypothesis_mesh_labeled') or load(completion)['outputs']['completed_mesh_labeled']
+    mano=FormalManoInterval(case,obj,ann,pose_path,Path(mesh),physical_completion,depth,out/'mano',
+        Path(spec['wilor_root']),Path(spec['mano_left']),min(frame_ids),max(frame_ids),
+        profile='hot3d_shared' if profile=='hot3d_shared' else 'formal',device=spec.get('device','cpu'),factor_reports=[factor_path])
+    solve(mano)
+    contact_state=out/'mano'/case/'v18_joint_mano_interval_trajectory_state.json'
+    accepted=out/'accepted_mano.json'
+    accept_mano_surface(list(map(str,['--contact-state',contact_state,'--hawor-npz',hawor,
+        '--annotations',ann,'--case',case,'--object-id',obj,'--accept-signed-full-mano','--output',accepted])))
+    build_geometric_constraints(list(map(str,['--annotations',ann,'--hawor-npz',hawor,
+        '--pose-report',pose_path,'--completion-report',physical_completion,
+        '--output-dir',out/'constraints','--object-id',obj])))
+    constraints=out/'constraints/v18_mano_object_constraint_state.json'
+    state=out/'render_state.json'
+    build_formal_render_state(formal_state_parse_args(list(map(str,['--case',case,'--object-id',obj,
+        '--annotations',ann,'--pose-report',pose_path,'--completion-report',completion,
+        '--constraint-report',constraints,'--temporal-mano-state',accepted,'--output',state]))))
+    package=assemble_formal_layers(SimpleNamespace(render_state=state,annotations=ann,hawor_npz=hawor,
+        interaction_judgments=judgments,output_dir=out/'package',run_root=root,demo_state=None,demo_report=None,allow_external_replay=False))
+    package_path=out/'package/annotation.json'
+    # The assembler returns the source-named package path; don't guess a stale file.
+    if isinstance(package,(str,Path)):package_path=Path(package)
+    render_formal_rrd(package_path,out/'world.rrd',layer='prediction')
+    render_formal_video(package_path,in_run(spec['source_video'],root),out/'video')
+    acceptance=load(accepted)['full_mano_acceptance']
+    result={'profile':profile,'source_pose_sha256':sha(source),'pose_report':str(pose_path),
+        'mano_candidate':str(contact_state),'mano_acceptance':acceptance,'package':str(package_path),
+        'physical_pose_accepted':pose_report.get('annotation_ready') is True,
+        'physical_mano_accepted':acceptance.get('accepted') is True}
+    (out/'result.json').write_text(json.dumps(result,indent=2));return result
 
 
 if __name__=='__main__':

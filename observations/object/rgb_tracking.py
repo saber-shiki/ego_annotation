@@ -1,22 +1,19 @@
 from __future__ import annotations
-"""Current local RGB rotation evidence and independent cycle decisions."""
+'Current local RGB rotation evidence and independent cycle decisions.'
 from dataclasses import replace
 import math
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-def local_rotation_evidence(nodes, times, edges, anchor, reprojections=(), max_gap_s=2.):
-    positions = {n.frame_idx: i for i, n in enumerate(nodes)}
+def local_rotation_evidence(nodes, times, edges, anchor, reprojections=(), max_gap_s=2.0):
+    positions = {n.frame_idx: i for (i, n) in enumerate(nodes)}
     ids = list(positions)
-    sources = [i for i, n in enumerate(nodes) if n.metric_observation]
-    local_pairs = {frozenset((a, b)) for a, b in zip(ids[:-1], ids[1:])
-                   if times[positions[b]] - times[positions[a]] <= max_gap_s}
-    # Bracket depth-missing targets without promoting their depth. Consecutive
-    # valid sources may also bridge a missing interval, within the same time cap.
-    for a, b in zip(sources[:-1], sources[1:]):
+    sources = [i for (i, n) in enumerate(nodes) if n.metric_observation]
+    local_pairs = {frozenset((a, b)) for (a, b) in zip(ids[:-1], ids[1:]) if times[positions[b]] - times[positions[a]] <= max_gap_s}
+    for (a, b) in zip(sources[:-1], sources[1:]):
         if times[b] - times[a] <= max_gap_s:
             local_pairs.add(frozenset((ids[a], ids[b])))
-    for i, n in enumerate(nodes):
+    for (i, n) in enumerate(nodes):
         if n.metric_observation:
             continue
         before = [j for j in sources if j < i]
@@ -27,102 +24,81 @@ def local_rotation_evidence(nodes, times, edges, anchor, reprojections=(), max_g
 
     def quality(e):
         d = e.diagnostics
-        return float(np.clip(float(d.get('inlier_fraction', 1.)) *
-                     math.exp(-float(d.get('reprojection_median_px', 0.)) / 2.), 0, 1))
-
-    # Temporal-span-first forest, with quality and matrix tie breaks: invariant
-    # to input edge order and frame-ID renaming, including reversed measurements.
+        return float(np.clip(float(d.get('inlier_fraction', 1.0)) * math.exp(-float(d.get('reprojection_median_px', 0.0)) / 2.0), 0, 1))
     candidates = []
-    for k, e in enumerate(edges):
-        a, b = positions[e.source_frame_idx], positions[e.target_frame_idx]
+    for (k, e) in enumerate(edges):
+        (a, b) = (positions[e.source_frame_idx], positions[e.target_frame_idx])
         if e.weight <= 0 or e.diagnostics.get('translation_only') or frozenset((ids[a], ids[b])) not in local_pairs:
             continue
         rotation = e.rotation_source_to_target_world if a < b else e.rotation_source_to_target_world.T
-        candidates.append((abs(times[b]-times[a]), -quality(e), -e.weight,
-                           min(a,b), max(a,b), tuple(rotation.ravel()), k))
+        candidates.append((abs(times[b] - times[a]), -quality(e), -e.weight, min(a, b), max(a, b), tuple(rotation.ravel()), k))
     parent = list(range(len(nodes)))
+
     def root(i):
         while parent[i] != i:
             i = parent[i]
         return i
     adjacency = {i: [] for i in ids}
     tree = set()
-    for *_, k in sorted(candidates):
-        e = edges[k]; a, b = e.source_frame_idx, e.target_frame_idx
-        ra, rb = root(positions[a]), root(positions[b])
+    for (*_, k) in sorted(candidates):
+        e = edges[k]
+        (a, b) = (e.source_frame_idx, e.target_frame_idx)
+        (ra, rb) = (root(positions[a]), root(positions[b]))
         if ra == rb:
             continue
         parent[rb] = ra
         tree.add(k)
         adjacency[a].append((b, e.rotation_source_to_target_world, k))
         adjacency[b].append((a, e.rotation_source_to_target_world.T, k))
-
-    relative, paths, components = {}, {}, {}
+    (relative, paths, components) = ({}, {}, {})
     for start in [anchor] + [i for i in ids if i != anchor]:
         if start in relative:
             continue
-        relative[start] = np.eye(3); paths[start] = []; components[start] = start
+        relative[start] = np.eye(3)
+        paths[start] = []
+        components[start] = start
         queue = [start]
         for a in queue:
-            for b, rotation, k in sorted(adjacency[a], key=lambda x: positions[x[0]]):
+            for (b, rotation, k) in sorted(adjacency[a], key=lambda x: positions[x[0]]):
                 if b in relative:
                     continue
                 relative[b] = rotation @ relative[a]
-                paths[b] = paths[a] + [k]; components[b] = start
+                paths[b] = paths[a] + [k]
+                components[b] = start
                 queue.append(b)
     anchor_rotation = nodes[positions[anchor]].initial_rotation
     seeded = []
     seed_rows = []
-    for n, stamp in zip(nodes, times):
+    for (n, stamp) in zip(nodes, times):
         supported = components[n.frame_idx] == anchor
         path = paths[n.frame_idx]
-        strength = min((quality(edges[k]) for k in path), default=1.) if supported else 0.
+        strength = min((quality(edges[k]) for k in path), default=1.0) if supported else 0.0
         r = relative[n.frame_idx] @ anchor_rotation if supported else n.initial_rotation.copy()
-        seeded.append(replace(n, initial_rotation=r.copy(), uncertainty=max(n.uncertainty, 1.-strength)))
-        seed_rows.append({'frame_idx': n.frame_idx, 'time_s': float(stamp),
-                          'rotation_world_from_completed_canonical_matrix': r.tolist(),
-                          'anchor_connected': supported, 'local_path_edge_indices': path,
-                          'support_quality': strength, 'uncertainty': max(n.uncertainty, 1.-strength),
-                          'kind': 'current_local_RGB_seed' if supported and path else
-                                  ('selected_anchor_gauge' if n.frame_idx == anchor else 'source_or_latent_disconnected')})
-    filtered, decisions = [], []
+        seeded.append(replace(n, initial_rotation=r.copy(), uncertainty=max(n.uncertainty, 1.0 - strength)))
+        seed_rows.append({'frame_idx': n.frame_idx, 'time_s': float(stamp), 'rotation_world_from_completed_canonical_matrix': r.tolist(), 'anchor_connected': supported, 'local_path_edge_indices': path, 'support_quality': strength, 'uncertainty': max(n.uncertainty, 1.0 - strength), 'kind': 'current_local_RGB_seed' if supported and path else 'selected_anchor_gauge' if n.frame_idx == anchor else 'source_or_latent_disconnected'})
+    (filtered, decisions) = ([], [])
     pair_scales = {}
-    for k, e in enumerate(edges):
-        a, b = e.source_frame_idx, e.target_frame_idx
+    for (k, e) in enumerate(edges):
+        (a, b) = (e.source_frame_idx, e.target_frame_idx)
         independent = sorted(set(paths[a]) ^ set(paths[b])) if components[a] == components[b] else []
         disagreement = None
-        fraction = float(np.clip(float(e.diagnostics.get('source_3d_conditioning', .02))/.02, 0, 1))
-        allowed = 6. + 14.*fraction
-        scale, reason = 1., 'local_tree_measurement_not_cycle_validated'
-        strength = min((quality(edges[j]) for j in independent), default=0.)
-        if k not in tree and not e.diagnostics.get('translation_only') and e.weight > 0:
-            if independent and strength >= .2:
+        fraction = float(np.clip(float(e.diagnostics.get('source_3d_conditioning', 0.02)) / 0.02, 0, 1))
+        allowed = 6.0 + 14.0 * fraction
+        (scale, reason) = (1.0, 'local_tree_measurement_not_cycle_validated')
+        strength = min((quality(edges[j]) for j in independent), default=0.0)
+        if k not in tree and (not e.diagnostics.get('translation_only')) and (e.weight > 0):
+            if independent and strength >= 0.2:
                 predicted = relative[b] @ relative[a].T
                 disagreement = float(np.degrees(Rotation.from_matrix(predicted @ e.rotation_source_to_target_world.T).magnitude()))
-                scale = 0. if disagreement > allowed else 1.
+                scale = 0.0 if disagreement > allowed else 1.0
                 reason = 'rejected_independent_local_cycle' if scale == 0 else 'consistent_independent_local_cycle'
             else:
-                scale, reason = .25, 'unverified_weak_or_disconnected_local_path'
-        filtered.append(replace(e, weight=e.weight*scale))
-        # Production has one measurement per directed pair. Conservative minimum
-        # also prevents an ambiguous duplicate's pixels from bypassing rejection.
-        pair_scales[a,b] = min(pair_scales.get((a,b), 1.), scale)
-        decisions.append({'edge_index': k, 'source': a, 'target': b,
-                          'reason': reason, 'weight_scale': scale,
-                          'independent_path_edge_indices': independent if k not in tree else [],
-                          'independent_support_quality': strength if k not in tree else None,
-                          'disagreement_deg': disagreement, 'allowed_deg': allowed,
-                          'input_weight': e.weight, 'output_weight': e.weight*scale})
-    projections = [replace(f, edge_weight=f.edge_weight*pair_scales.get((f.source_frame_idx,f.target_frame_idx), 1.))
-                   for f in reprojections]
-    return seeded, filtered, projections, {
-        'policy': 'temporal_local_forest_then_independent_conditioned_cycles',
-        'max_local_gap_s': max_gap_s, 'minimum_independent_path_quality': .2,
-        'seed_rows': seed_rows, 'edges': decisions,
-        'local_disconnected_ids': [i for i in ids if components[i] != anchor],
-        'source_prior_mutated': False,
-    }
-
+                (scale, reason) = (0.25, 'unverified_weak_or_disconnected_local_path')
+        filtered.append(replace(e, weight=e.weight * scale))
+        pair_scales[a, b] = min(pair_scales.get((a, b), 1.0), scale)
+        decisions.append({'edge_index': k, 'source': a, 'target': b, 'reason': reason, 'weight_scale': scale, 'independent_path_edge_indices': independent if k not in tree else [], 'independent_support_quality': strength if k not in tree else None, 'disagreement_deg': disagreement, 'allowed_deg': allowed, 'input_weight': e.weight, 'output_weight': e.weight * scale})
+    projections = [replace(f, edge_weight=f.edge_weight * pair_scales.get((f.source_frame_idx, f.target_frame_idx), 1.0)) for f in reprojections]
+    return (seeded, filtered, projections, {'policy': 'temporal_local_forest_then_independent_conditioned_cycles', 'max_local_gap_s': max_gap_s, 'minimum_independent_path_quality': 0.2, 'seed_rows': seed_rows, 'edges': decisions, 'local_disconnected_ids': [i for i in ids if components[i] != anchor], 'source_prior_mutated': False})
 
 def observed_rotation_authority(nodes, chain):
     """Partial near-planar NN surfaces constrain translation, not RGB rotation.
@@ -133,15 +109,14 @@ def observed_rotation_authority(nodes, chain):
     support = {r['frame_idx']: r for r in chain['seed_rows']}
     scales = {}
     for n in nodes:
-        scale = 1.
+        scale = 1.0
         row = support[n.frame_idx]
-        if row['anchor_connected'] and row['support_quality'] >= .2 and n.observed_world is not None:
+        if row['anchor_connected'] and row['support_quality'] >= 0.2 and (n.observed_world is not None):
             points = np.asarray(n.observed_world)
-            eig = np.maximum(np.linalg.eigvalsh(np.cov(points.T)), 0.)
-            scale = float(np.clip(eig[0] / max(eig[-1], 1e-12) / .02, 0, 1))
+            eig = np.maximum(np.linalg.eigvalsh(np.cov(points.T)), 0.0)
+            scale = float(np.clip(eig[0] / max(eig[-1], 1e-12) / 0.02, 0, 1))
         scales[n.frame_idx] = scale
     return scales
-
 import argparse
 import hashlib
 import json
@@ -527,7 +502,7 @@ def build_rgb_edges(argv=None) -> None:
     parser.add_argument('--output-json', type=Path, required=True)
     parser.add_argument('--output-pose-report', type=Path, default=None)
     parser.add_argument('--max-bracketing-source-gap', type=int, default=None, help='Default: keyframe interval times neighbor span; at most one source per side.')
-    parser.add_argument('--assets-manifest',type=Path,required=True)
+    parser.add_argument('--assets-manifest', type=Path, required=True)
     args = parser.parse_args(argv)
     from utils.runtime import bind_offline_weights as bind_offline_weights
     config = load_json(args.assets_manifest)
@@ -688,3 +663,184 @@ def build_rgb_edges(argv=None) -> None:
         args.output_pose_report.parent.mkdir(parents=True, exist_ok=True)
         args.output_pose_report.write_text(json.dumps(chain_report, indent=2, ensure_ascii=False) + '\n')
     print(json.dumps({'status': 'ok', 'edge_count': len(edges), 'accepted_count': report['accepted_count'], 'rejected_count': report['rejected_count'], 'keyframes': key_ids, 'chain_covered_frame_count': len(chain), 'output_json': str(args.output_json), 'output_pose_report': str(args.output_pose_report) if args.output_pose_report else None}, indent=2))
+import copy
+import heapq
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
+from typing import Mapping
+from utils.geometry import valid_rotation
+from observations.common import pose_from_values
+from gates.object.observation import p09_geometry_validation
+
+def initialize(base, annotations, object_id, edge_arrays, edge_rows, anchor):
+    original = _timeline_rows(base)
+    timeline = sorted((int(f['frame_idx']) for f in annotations['frames']))
+    if len(set(timeline)) != len(timeline) or anchor not in timeline:
+        raise ValueError('invalid timeline/anchor')
+    initial = {}
+    for (idx, row) in original.items():
+        pose = pose_from_values(row.get('rotation_world_from_completed_canonical_matrix'), row.get('translation_world_m'))
+        if pose is not None:
+            initial[idx] = pose
+    if anchor not in initial:
+        raise ValueError('anchor has no source P14 pose')
+    original_initial = dict(initial)
+    for idx in timeline:
+        if idx not in initial:
+            initial[idx] = initialize_missing_se3_pose(idx, original_initial)[:2]
+    quality = {(int(r['source_frame_idx']), int(r['target_frame_idx'])): r for r in edge_rows}
+    (src, dst) = (edge_arrays['source_frame_idx'], edge_arrays['target_frame_idx'])
+    Rs = edge_arrays['rotation_source_to_target_world']
+    ts = edge_arrays['translation_source_to_target_world_m']
+    accepted = edge_arrays['accepted']
+    if not len(src) == len(dst) == len(Rs) == len(ts) == len(accepted):
+        raise ValueError('edge length mismatch')
+    adjacency = {i: [] for i in timeline}
+    edges = []
+    seen = set()
+    for (a, b, R, t, ok) in zip(src, dst, Rs, ts, accepted):
+        (a, b) = (int(a), int(b))
+        if (a, b) in seen:
+            raise ValueError('duplicate RGB edge')
+        seen.add((a, b))
+        if a not in adjacency or b not in adjacency:
+            continue
+        row = quality.get((a, b))
+        if row is None or (row.get('status') == 'accepted') != bool(ok):
+            raise ValueError('edge NPZ/JSON acceptance mismatch')
+        if not ok:
+            continue
+        if not valid_rotation(R) or np.asarray(t).shape != (3,) or (not np.isfinite(t).all()):
+            raise ValueError('invalid world-relative edge')
+        condition = float(row.get('source_3d_conditioning', 0))
+        inliers = float(row.get('inlier_fraction', 0))
+        error = float(row.get('reprojection_median_px', np.inf))
+        if not np.isfinite([condition, inliers, error]).all() or condition < 0 or (not 0 <= inliers <= 1) or (error < 0):
+            raise ValueError('invalid RGB quality evidence')
+        weight = float(np.clip(inliers * np.exp(-error / 2) * np.clip(condition / 0.02, 0.05, 1.0), 0, 1))
+        if weight <= 0.01:
+            continue
+        cost = -np.log(weight) + 0.01 * abs(b - a)
+        edges.append((a, b, R, t, weight))
+        adjacency[a].append((b, R, t, cost))
+        adjacency[b].append((a, R.T, -R.T @ t, cost))
+    distance = {anchor: 0.0}
+    seed = {anchor: initial[anchor]}
+    queue = [(0.0, anchor)]
+    while queue:
+        (cost, a) = heapq.heappop(queue)
+        if cost != distance[a]:
+            continue
+        for (b, R, t, w) in adjacency[a]:
+            candidate = cost + w
+            if candidate < distance.get(b, float('inf')):
+                (Ra, ta) = seed[a]
+                seed[b] = (R @ Ra, R @ ta + t)
+                distance[b] = candidate
+                heapq.heappush(queue, (candidate, b))
+    connected = set(seed)
+    poses = {idx: seed.get(idx, initial[idx]) for idx in timeline}
+    seed_R = {idx: p[0] for (idx, p) in poses.items()}
+    free = [idx for idx in timeline if idx in connected and idx != anchor]
+    fp = {idx: n for (n, idx) in enumerate(free)}
+    used = [e for e in edges if e[0] in connected and e[1] in connected]
+
+    def rotations(x):
+        rr = dict(seed_R)
+        for (idx, n) in fp.items():
+            rr[idx] = Rotation.from_rotvec(x.reshape(-1, 3)[n]).as_matrix() @ seed_R[idx]
+        return rr
+
+    def residual(x):
+        rr = rotations(x)
+        blocks = [x / 1.0]
+        for (a, b, R, t, w) in used:
+            blocks.append(np.sqrt(w) * Rotation.from_matrix(rr[b] @ rr[a].T @ R.T).as_rotvec() / 0.08)
+        return np.concatenate(blocks)
+    if free and used:
+        result = least_squares(residual, np.zeros(len(free) * 3), loss='soft_l1', max_nfev=80)
+        final_R = rotations(result.x)
+        solve = {'success': bool(result.success), 'nfev': int(result.nfev), 'cost': float(result.cost)}
+    else:
+        final_R = seed_R
+        solve = {'success': False, 'reason': 'no_connected_RGB_edges'}
+    output = copy.deepcopy(base)
+    new_rows = []
+    frame_map = {int(f['frame_idx']): f for f in annotations['frames']}
+    for idx in timeline:
+        row = copy.deepcopy(original.get(idx, {}))
+        (Rbefore, tbefore) = poses[idx]
+        R = final_R[idx]
+        obj = _object_for_frame(frame_map[idx], object_id)
+        (points, _, _) = p09_geometry_validation(obj, frame_map[idx])
+        support = np.mean(points, axis=0) if points is not None else tbefore
+        canonical = (support - tbefore) @ Rbefore
+        t = support - R @ canonical
+        row.update(frame_idx=idx, rotation_world_from_completed_canonical_matrix=R.tolist(), translation_world_m=t.tolist())
+        if idx not in original:
+            row['status'] = 'rgb_initialized_uncertain'
+        stale = {key: row.pop(key) for key in ('observed_to_mesh_initial', 'observed_to_mesh_final', 'mesh_to_observed_final') if key in row}
+        row['source_P14_distance_diagnostics'] = stale
+        row['rgb_initializer'] = {'anchor_connected': idx in connected, 'direct_metric_observation_added': False, 'source_status': original.get(idx, {}).get('status'), 'translation_policy': 'RGB_SE3_chain_then_support_preserving_SO3_correction', 'uncertain': idx not in connected or points is None}
+        new_rows.append(row)
+    if 'final_observed_to_mesh_median_summary_m' in output:
+        output['source_P14_final_distance_summary'] = output.pop('final_observed_to_mesh_median_summary_m')
+    output['pose_rows'] = new_rows
+    if 'frame_fit_rows' in output:
+        output['source_P14_frame_fit_rows'] = output.pop('frame_fit_rows')
+        output['frame_fit_rows'] = copy.deepcopy(new_rows)
+    mesh_path = base.get('pose_hypothesis_mesh_labeled') or base.get('inputs', {}).get('completed_mesh')
+    if mesh_path:
+        output['inputs'] = {**base.get('inputs', {}), 'completed_mesh': mesh_path}
+    output['source_P14_method'] = base.get('method')
+    output['method'] = 'build_v19_rgb_pose_initializer'
+    output['pose_estimation_method'] = 'quality_weighted_RGB_SE3_spanning_graph_with_robust_SO3_loop_refinement'
+    for name in ('observed_pose_evidence_diagnostics', 'pairwise_observed_surface_registration', 'rotation_unary_regularization', 'translation_regularization'):
+        if name in output:
+            output['source_P14_' + name] = output.pop(name)
+    output['rgb_full_timeline_initialization'] = {'anchor': anchor, 'accepted_edge_count': len(edges), 'connected_frame_ids': sorted(connected), 'disconnected_frame_ids': sorted(set(timeline) - connected), 'loop_optimizer': solve, 'generated_geometry_consumed': False, 'gt_consumed': False}
+    return output
+
+def initialize_missing_se3_pose(frame_idx: int, direct_poses: Mapping[int, tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray, str]:
+    """Initialize a missing timeline row by neighboring SE(3) interpolation."""
+    if frame_idx in direct_poses:
+        (R, t) = direct_poses[frame_idx]
+        return (R.copy(), t.copy(), 'direct_metric_pose')
+    ids = sorted((int(i) for i in direct_poses))
+    if not ids:
+        raise ValueError('cannot interpolate without at least one valid pose')
+    lower = [i for i in ids if i < int(frame_idx)]
+    upper = [i for i in ids if i > int(frame_idx)]
+    if lower and upper:
+        (lo, hi) = (lower[-1], upper[0])
+        alpha = (float(frame_idx) - lo) / float(hi - lo)
+        (R, t) = interpolate_se3_pose(*direct_poses[lo], *direct_poses[hi], alpha)
+        return (R, t, f'continuous_se3_interpolation_{lo}_{hi}')
+    nearest = min(ids, key=lambda value: abs(value - int(frame_idx)))
+    (R, t) = direct_poses[nearest]
+    return (R.copy(), t.copy(), f'se3_nearest_hold_{nearest}')
+
+def _object_for_frame(frame: Mapping[str, Any], object_id: str) -> Mapping[str, Any] | None:
+    objects = frame.get('objects')
+    if not isinstance(objects, list):
+        return None
+    for obj in objects:
+        if isinstance(obj, Mapping) and str(obj.get('object_id')) == str(object_id):
+            return obj
+    return None
+
+def _timeline_rows(report: Mapping[str, Any]) -> dict[int, dict[str, Any]]:
+    rows = report.get('pose_rows', [])
+    result: dict[int, dict[str, Any]] = {}
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict) or row.get('frame_idx') is None:
+            continue
+        idx = int(row['frame_idx'])
+        if idx in result:
+            raise RuntimeError(f'duplicate timeline pose row {idx}')
+        result[idx] = row
+    return result
+from utils.geometry import interpolate_se3_pose

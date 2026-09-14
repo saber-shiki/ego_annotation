@@ -209,3 +209,60 @@ def finite_image_affine(value: Any, label: str) -> np.ndarray:
     if abs(float(np.linalg.det(affine))) < 1e-12:
         raise RuntimeError(f'{label} is singular')
     return affine
+
+import math
+def skew(vector: np.ndarray) -> np.ndarray:
+    (x, y, z) = _array(vector, (3,)).tolist()
+    return np.asarray([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64)
+
+def _so3_left_jacobian(rotvec: np.ndarray) -> np.ndarray:
+    w = _array(rotvec, (3,))
+    theta = float(np.linalg.norm(w))
+    K = skew(w)
+    if theta < 1e-07:
+        return np.eye(3) + 0.5 * K + 1.0 / 6.0 * (K @ K)
+    return np.eye(3) + (1.0 - math.cos(theta)) / theta ** 2 * K + (theta - math.sin(theta)) / theta ** 3 * (K @ K)
+
+def _so3_left_jacobian_inverse(rotvec: np.ndarray) -> np.ndarray:
+    w = _array(rotvec, (3,))
+    theta = float(np.linalg.norm(w))
+    K = skew(w)
+    if theta < 1e-05:
+        return np.eye(3) - 0.5 * K + 1.0 / 12.0 * (K @ K)
+    half = 0.5 * theta
+    coefficient = (1.0 - half / math.tan(half)) / theta ** 2
+    return np.eye(3) - 0.5 * K + coefficient * (K @ K)
+
+def se3_log(R: np.ndarray, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the Lie-algebra twist of a row-vector pose transform."""
+    w = Rotation.from_matrix(_array(R, (3, 3))).as_rotvec()
+    return (w, _so3_left_jacobian_inverse(w) @ _array(t, (3,)))
+
+def se3_exp(rotvec: np.ndarray, twist_translation: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    w = _array(rotvec, (3,))
+    v = _array(twist_translation, (3,))
+    R = Rotation.from_rotvec(w).as_matrix()
+    return (R, _so3_left_jacobian(w) @ v)
+
+def compose_pose(R0: np.ndarray, t0: np.ndarray, R1: np.ndarray, t1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    R0 = _array(R0, (3, 3))
+    t0 = _array(t0, (3,))
+    return (R0 @ _array(R1, (3, 3)), R0 @ _array(t1, (3,)) + t0)
+
+def inverse_transform(R: np.ndarray, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    R = _array(R, (3, 3))
+    t = _array(t, (3,))
+    return (R.T, -R.T @ t)
+
+def interpolate_se3_pose(R0: np.ndarray, t0: np.ndarray, R1: np.ndarray, t1: np.ndarray, alpha: float) -> tuple[np.ndarray, np.ndarray]:
+    """Interpolate two poses along the constant-twist SE(3) geodesic."""
+    a = float(np.clip(alpha, 0.0, 1.0))
+    R0 = _array(R0, (3, 3))
+    t0 = _array(t0, (3,))
+    R1 = _array(R1, (3, 3))
+    t1 = _array(t1, (3,))
+    (R0_inv, t0_inv) = inverse_transform(R0, t0)
+    (R_rel, t_rel) = compose_pose(R0_inv, t0_inv, R1, t1)
+    (w, v) = se3_log(R_rel, t_rel)
+    (R_step, t_step) = se3_exp(a * w, a * v)
+    return compose_pose(R0, t0, R_step, t_step)

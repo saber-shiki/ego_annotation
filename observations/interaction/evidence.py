@@ -533,3 +533,901 @@ def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) ->
     intr = active_frame_intrinsics(frame, side)
     (r_c2w, t_c2w) = frame_camera_pose(frame)
     return project_world_intrinsics(points_world, r_c2w, t_c2w, intr)
+import argparse
+import hashlib
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any
+import cv2
+import numpy as np
+from PIL import Image
+from scipy.ndimage import distance_transform_edt
+HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (0, 9), (9, 10), (10, 11), (11, 12), (0, 13), (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20)]
+CONTACT_STATES = {'likely_contact', 'possible_contact', 'no_contact', 'unresolved'}
+OCCLUSION_RELATIONS = {'hand_in_front_of_object', 'object_in_front_of_hand', 'object_partially_occluded_by_hand', 'no_visible_occlusion', 'unresolved'}
+DEPTH_RELIABILITY_STATES = {'hand_depth_unreliable', 'object_depth_reliable', 'mixed_or_unresolved', 'not_evaluated'}
+NO_QUARANTINE_OCCLUSIONS = {'object_in_front_of_hand', 'no_visible_occlusion'}
+HAND_FRONT_OCCLUSIONS = {'hand_in_front_of_object', 'object_partially_occluded_by_hand'}
+
+def load_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding='utf-8'))
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for block in iter(lambda : handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+def interaction_parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--annotations', type=Path, required=True)
+    p.add_argument('--case', required=True)
+    p.add_argument('--target-entity-id', required=True)
+    p.add_argument('--frame-span', type=int, nargs=2, required=True, metavar=('START', 'END'))
+    p.add_argument('--sides', nargs='+', choices=('left', 'right'), default=['left', 'right'])
+    p.add_argument('--output-root', type=Path, required=True)
+    p.add_argument('--hand-radius-px', type=int, default=10)
+    p.add_argument('--hand-line-radius-px', type=int, default=6)
+    p.add_argument('--ownership-dilation-px', type=int, default=8)
+    p.add_argument('--depth-order-query-radius-mask-px', type=float, default=6.0, help='Maximum mask-plane distance from a P09 accepted first-hit object sample at which a projected MANO vertex may query object depth. The hand pixel itself remains unknown; raw depth under the hand is never consumed.')
+    p.add_argument('--contact-image-band-px', type=int, default=18)
+    p.add_argument('--min-contact-image-px', type=int, default=12)
+    p.add_argument('--contact-weight', type=float, default=25000.0)
+    p.add_argument('--raw-proposal-weight-factor', type=float, default=0.65)
+    p.add_argument('--contact-patch-band-m', type=float, default=0.18)
+    p.add_argument('--contact-patch-target-margin-m', type=float, default=0.004)
+    p.add_argument('--contact-support-uncertainty-m', type=float, default=0.06)
+    p.add_argument('--agent-interaction-judgment', type=Path, default=None, help='Optional Pi-agent-authored interval contact/occlusion judgment JSON. When supplied, it calibrates contact priors, support uncertainty, and ownership quarantine policy instead of relying on projection adjacency alone.')
+    p.add_argument('--agent-judgment-can-create-contact', action=argparse.BooleanOptionalAction, default=True, help='Allow a likely/possible agent contact judgment to emit a contact_patch prior even when the image-proximity pixel threshold is not met. The row still uses projected MANO/object geometry for targets; this only creates the prior/switch.')
+    p.add_argument('--max-vertices', type=int, default=160)
+    p.add_argument('--review-frames', type=int, nargs='*', default=[691, 700, 720, 725])
+    p.add_argument('--require-camera-mano-contract-aligned', action=argparse.BooleanOptionalAction, default=False, help='Fail closed unless every consumed MANO row was inferred on the exact centered HaWoR image plane affinely bound to the active source [fx,fy,cx,cy] camera contract. A metadata-only K replacement is not accepted.')
+    return p.parse_args(argv)
+
+def target_object(frame: dict[str, Any], target_entity_id: str) -> dict[str, Any] | None:
+    target_id = str(target_entity_id)
+    bare = target_id.split(':', 1)[-1]
+    for obj in as_list(frame.get('objects')):
+        if not isinstance(obj, dict):
+            continue
+        ids = {str(obj.get('object_id')), str(obj.get('track_id')), f"object:{obj.get('track_id')}", f"object:{obj.get('object_id')}"}
+        if target_id in ids or bare in ids:
+            return obj
+    return None
+
+def target_matches(raw: Any, target_entity_id: str) -> bool:
+    if raw in (None, ''):
+        return True
+    target = str(target_entity_id)
+    bare = target.split(':', 1)[-1]
+    val = str(raw)
+    val_bare = val.split(':', 1)[-1]
+    return val in {target, bare, f'object:{bare}'} or val_bare == bare
+
+def finite_float(value: Any, *, field: str, path: Path) -> float:
+    try:
+        out = float(value)
+    except Exception as exc:
+        raise ValueError(f'agent interaction judgment field {field!r} is not numeric in {path}: {value!r}') from exc
+    if not np.isfinite(out):
+        raise ValueError(f'agent interaction judgment field {field!r} is not finite in {path}: {value!r}')
+    return out
+
+def load_agent_interaction_judgments(path: Path | None, *, case: str, target_entity_id: str, frame_span: tuple[int, int], sides: set[str]) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if path is None:
+        return ({}, {'enabled': False, 'path': None, 'segments': 0, 'frame_side_count': 0})
+    if not path.exists():
+        raise FileNotFoundError(f'missing agent interaction judgment JSON: {path}')
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f'agent interaction judgment must be a JSON object: {path}')
+    if payload.get('status') not in (None, 'ok'):
+        raise ValueError(f"agent interaction judgment status is not ok in {path}: {payload.get('status')!r}")
+    if payload.get('case') not in (None, case):
+        raise ValueError(f"agent interaction judgment case {payload.get('case')!r} does not match {case!r} in {path}")
+    rows = payload.get('interaction_judgments', payload.get('judgments', payload.get('segments')))
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f'agent interaction judgment has no non-empty interaction_judgments/judgments/segments list: {path}')
+    (start_default, end_default) = frame_span
+    index: dict[tuple[int, str], dict[str, Any]] = {}
+    kept_segments = 0
+    state_counts: Counter[str] = Counter()
+    occlusion_counts: Counter[str] = Counter()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            raise ValueError(f'agent interaction judgment segment is not an object in {path}: {raw!r}')
+        if not target_matches(raw.get('target_entity_id', raw.get('object_id', raw.get('track_id'))), target_entity_id):
+            continue
+        hand_side = str(raw.get('hand_side', raw.get('side', '')))
+        if hand_side not in sides:
+            continue
+        s = int(raw.get('frame_start', raw.get('start_frame', start_default)))
+        e = int(raw.get('frame_end', raw.get('end_frame', end_default)))
+        if e < s:
+            raise ValueError(f'agent interaction judgment has inverted interval {s}>{e} in {path}: {raw}')
+        s = max(s, start_default)
+        e = min(e, end_default)
+        if e < s:
+            continue
+        contact_state = str(raw.get('contact_state', '')).strip()
+        if contact_state not in CONTACT_STATES:
+            raise ValueError(f'agent interaction judgment contact_state must be one of {sorted(CONTACT_STATES)} in {path}: {raw}')
+        occlusion_relation = str(raw.get('occlusion_relation', raw.get('visibility_relation', ''))).strip()
+        if occlusion_relation not in OCCLUSION_RELATIONS:
+            raise ValueError(f'agent interaction judgment occlusion_relation must be one of {sorted(OCCLUSION_RELATIONS)} in {path}: {raw}')
+        depth_reliability = str(raw.get('depth_reliability', 'mixed_or_unresolved')).strip()
+        if depth_reliability not in DEPTH_RELIABILITY_STATES:
+            raise ValueError(f'agent interaction judgment depth_reliability must be one of {sorted(DEPTH_RELIABILITY_STATES)} in {path}: {raw}')
+        prior = finite_float(raw.get('contact_prior_probability'), field='contact_prior_probability', path=path)
+        if not 0.0 <= prior <= 1.0:
+            raise ValueError(f'agent interaction judgment contact_prior_probability must be in [0,1] in {path}: {raw}')
+        support_unc = finite_float(raw.get('contact_support_uncertainty_m'), field='contact_support_uncertainty_m', path=path)
+        if support_unc < 0.0:
+            raise ValueError(f'agent interaction judgment contact_support_uncertainty_m must be nonnegative in {path}: {raw}')
+        weight_mult = finite_float(raw.get('contact_weight_multiplier', 1.0), field='contact_weight_multiplier', path=path)
+        if weight_mult < 0.0:
+            raise ValueError(f'agent interaction judgment contact_weight_multiplier must be nonnegative in {path}: {raw}')
+        normalized = {**raw, 'judgment_id': str(raw.get('judgment_id', f'{hand_side}_{s}_{e}')), 'frame_start': int(s), 'frame_end': int(e), 'hand_side': hand_side, 'target_entity_id': str(target_entity_id), 'contact_state': contact_state, 'occlusion_relation': occlusion_relation, 'depth_reliability': depth_reliability, 'contact_prior_probability': float(prior), 'contact_support_uncertainty_m': float(support_unc), 'contact_weight_multiplier': float(weight_mult), 'source_path': str(path)}
+        kept_segments += 1
+        state_counts[contact_state] += 1
+        occlusion_counts[occlusion_relation] += 1
+        for frame_idx in range(s, e + 1):
+            key = (frame_idx, hand_side)
+            if key in index:
+                raise ValueError(f'overlapping agent interaction judgments for frame/side {key} in {path}: {index[key]} and {raw}')
+            index[key] = normalized
+    if kept_segments == 0:
+        raise ValueError(f'agent interaction judgment contained no segments for case={case} target={target_entity_id} sides={sorted(sides)} span={frame_span}: {path}')
+    return (index, {'enabled': True, 'path': str(path), 'segments': int(kept_segments), 'frame_side_count': int(len(index)), 'contact_state_counts': dict(state_counts), 'occlusion_relation_counts': dict(occlusion_counts)})
+
+def ownership_quarantine_mode(judgment: dict[str, Any] | None) -> str:
+    if not isinstance(judgment, dict):
+        return 'measurement_default'
+    explicit = judgment.get('ownership_quarantine') or judgment.get('object_surface_policy')
+    if isinstance(explicit, str):
+        norm = explicit.strip()
+        if norm in {'hand_projected', 'measurement_default', 'none', 'unresolved'}:
+            return norm
+        if norm in {'quarantine_projected_hand', 'quarantine_under_hand'}:
+            return 'hand_projected'
+        if norm in {'do_not_quarantine', 'object_visible'}:
+            return 'none'
+    occlusion = str(judgment.get('occlusion_relation') or '')
+    if occlusion in NO_QUARANTINE_OCCLUSIONS:
+        return 'none'
+    if occlusion in HAND_FRONT_OCCLUSIONS:
+        return 'hand_projected'
+    return 'unresolved'
+
+def contact_row_state_from_judgment(judgment: dict[str, Any] | None, *, image_candidate: bool, allow_agent_create: bool) -> tuple[bool, str]:
+    if not isinstance(judgment, dict):
+        return (bool(image_candidate), 'active_contact_patch' if image_candidate else 'missing_contact_patch_row')
+    state = str(judgment.get('contact_state') or 'unresolved')
+    if state == 'no_contact':
+        return (True, 'inactive_no_contact_by_agent_judgment')
+    if state in {'likely_contact', 'possible_contact'}:
+        if image_candidate or allow_agent_create:
+            return (True, 'active_contact_patch')
+        return (True, 'inactive_agent_contact_without_image_support')
+    if image_candidate:
+        return (True, 'active_contact_patch')
+    return (True, 'inactive_unresolved_contact_by_agent_judgment')
+
+def combine_contact_prior(image_prior: float, judgment: dict[str, Any] | None) -> float:
+    image_prior = float(np.clip(image_prior, 0.0, 1.0))
+    if not isinstance(judgment, dict):
+        return image_prior
+    agent_prior = float(np.clip(float(judgment['contact_prior_probability']), 0.0, 1.0))
+    state = str(judgment.get('contact_state') or 'unresolved')
+    if state == 'likely_contact':
+        return max(image_prior, agent_prior)
+    if state == 'possible_contact':
+        return max(min(image_prior, 0.65), agent_prior)
+    if state == 'no_contact':
+        return min(image_prior, agent_prior)
+    return agent_prior
+
+def agent_judgment_provenance(judgment: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(judgment, dict):
+        return {'agent_interaction_judgment': None}
+    keys = ['source_path', 'judgment_id', 'frame_start', 'frame_end', 'contact_state', 'occlusion_relation', 'depth_reliability', 'contact_prior_probability', 'contact_support_uncertainty_m', 'evidence', 'uncertainty']
+    return {'agent_interaction_judgment': {k: judgment.get(k) for k in keys if k in judgment}}
+
+def load_mask(path: Path) -> np.ndarray:
+    return np.asarray(Image.open(path).convert('L')) > 0
+
+def finite_intrinsics(value: Any, label: str) -> np.ndarray:
+    intrinsics = np.asarray(value, dtype=np.float64).reshape(-1)
+    if intrinsics.shape != (4,) or not np.isfinite(intrinsics).all() or np.any(intrinsics[:2] <= 0.0):
+        raise RuntimeError(f'{label} must be finite [fx,fy,cx,cy], got {intrinsics}')
+    return intrinsics
+
+def finite_affine(value: Any, label: str) -> np.ndarray:
+    affine = np.asarray(value, dtype=np.float64)
+    if affine.shape != (3, 3) or not np.isfinite(affine).all():
+        raise RuntimeError(f'{label} must be a finite 3x3 affine')
+    if not np.allclose(affine[2], [0.0, 0.0, 1.0], atol=1e-12, rtol=0.0):
+        raise RuntimeError(f'{label} must use homogeneous affine pixel coordinates')
+    if abs(float(np.linalg.det(affine))) < 1e-12:
+        raise RuntimeError(f'{label} is singular')
+    return affine
+
+def mask_plane_contract(frame: dict[str, Any], obj: dict[str, Any], mask_shape: tuple[int, int]) -> dict[str, Any]:
+    visible = obj.get('visible_geometry_candidate') if isinstance(obj.get('visible_geometry_candidate'), dict) else {}
+    transform = visible.get('mask_depth_transform_contract') if isinstance(visible.get('mask_depth_transform_contract'), dict) else {}
+    if transform.get('camera_contract_consistent') is not True:
+        raise RuntimeError(f"frame {frame.get('frame_idx')}: object mask lacks a camera-consistent mask/depth transform")
+    mask_size = [int(v) for v in transform.get('mask_size_wh') or []]
+    depth_size = [int(v) for v in transform.get('depth_size_wh') or []]
+    actual_mask_size = [int(mask_shape[1]), int(mask_shape[0])]
+    source_size = [int(frame.get('source_width') or 0), int(frame.get('source_height') or 0)]
+    if mask_size != actual_mask_size:
+        raise RuntimeError(f"frame {frame.get('frame_idx')}: mask raster {actual_mask_size} disagrees with contract {mask_size}")
+    if depth_size != source_size or min(source_size) <= 0:
+        raise RuntimeError(f"frame {frame.get('frame_idx')}: depth plane {depth_size} is not the source RGB plane {source_size}")
+    A_depth_from_mask = finite_affine(transform.get('A_depth_from_mask_coordinate_model'), 'A_depth_from_mask_coordinate_model')
+    A_mask_from_source = np.linalg.inv(A_depth_from_mask)
+    pixel_center = str(transform.get('pixel_center_convention') or '')
+    if pixel_center != 'integer_pixel_centers_opencv':
+        raise RuntimeError(f"frame {frame.get('frame_idx')}: unsupported mask pixel-center convention {pixel_center!r}")
+    return {'source_image_plane': 'source_rgb', 'mask_image_plane': str(transform.get('mask_image_plane') or 'sam2_mask'), 'depth_image_plane': str(transform.get('depth_image_plane') or 'source_rgb'), 'source_size_wh': source_size, 'mask_size_wh': mask_size, 'depth_size_wh': depth_size, 'A_mask_from_source_coordinate_model': A_mask_from_source.tolist(), 'A_depth_from_mask_coordinate_model': A_depth_from_mask.tolist(), 'pixel_center_convention': pixel_center, 'raster_resampling': transform.get('raster_resampling'), 'camera_contract_consistent': True}
+
+def active_camera_mano_intrinsics(frame: dict[str, Any], hand: dict[str, Any], *, require_aligned: bool) -> np.ndarray:
+    metric = hand.get('metric_mano_state') if isinstance(hand.get('metric_mano_state'), dict) else {}
+    mano = finite_intrinsics(metric.get('current_v18_camera_intrinsics_fx_fy_cx_cy'), 'MANO inference intrinsics')
+    if not require_aligned:
+        return mano
+    camera = frame.get('camera') if isinstance(frame.get('camera'), dict) else {}
+    active = finite_intrinsics(camera.get('intrinsics_fx_fy_cx_cy'), 'active frame camera intrinsics')
+    alignment = metric.get('camera_contract_alignment') if isinstance(metric.get('camera_contract_alignment'), dict) else hand.get('camera_contract_alignment') if isinstance(hand.get('camera_contract_alignment'), dict) else {}
+    if require_aligned:
+        if alignment.get('active_contract_reinference_required') is not False:
+            raise RuntimeError(f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: MANO was not inferred on the centered image plane bound to the active source K")
+        if alignment.get('source_hawor_state_intrinsics_match_active_contract') is not True:
+            raise RuntimeError(f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: camera/MANO alignment is not explicitly proven")
+        if alignment.get('source_hawor_full_K_bound_to_inference') is not True:
+            raise RuntimeError(f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: HaWoR did not prove source-K to centered-inference-plane binding")
+        plane = alignment.get('hawor_camera_image_plane_contract')
+        if not isinstance(plane, dict) or plane.get('validated') is not True or plane.get('status') != 'validated_source_K_affine_centered_hawor_inference_plane':
+            raise RuntimeError(f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: centered HaWoR image-plane binding is not validated")
+        if not np.allclose(active, mano, atol=0.01, rtol=0.0):
+            raise RuntimeError(f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: active K {active.tolist()} != MANO K {mano.tolist()}")
+    return active
+
+def transform_source_pixels(uv_source: np.ndarray, A_mask_from_source: np.ndarray) -> np.ndarray:
+    uv = np.asarray(uv_source, dtype=np.float64)
+    homogeneous = np.column_stack([uv, np.ones((len(uv),), dtype=np.float64)])
+    transformed = homogeneous @ np.asarray(A_mask_from_source, dtype=np.float64).T
+    return transformed[:, :2] / transformed[:, 2:3]
+
+def project_camera_to_mask(points_camera: np.ndarray, intr: np.ndarray, A_mask_from_source: np.ndarray, width: int, height: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    pts = np.asarray(points_camera, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        return (np.zeros((0,), dtype=int), np.zeros((0,), dtype=int), np.zeros((0,), dtype=bool))
+    (fx, fy, cx, cy) = finite_intrinsics(intr, 'projection intrinsics')
+    z = pts[:, 2]
+    valid = np.isfinite(pts).all(axis=1) & (z > 1e-05)
+    uv_source = np.column_stack([fx * pts[:, 0] / np.maximum(z, 1e-06) + cx, fy * pts[:, 1] / np.maximum(z, 1e-06) + cy])
+    uv_mask = transform_source_pixels(uv_source, A_mask_from_source)
+    u = np.rint(uv_mask[:, 0]).astype(int)
+    v = np.rint(uv_mask[:, 1]).astype(int)
+    valid &= np.isfinite(uv_mask).all(axis=1) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    return (u, v, valid)
+
+def accepted_first_surface_query_raster(candidate: dict[str, Any], plane: dict[str, Any], mask_shape: tuple[int, int], radius_px: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Rasterize only P09-accepted object first-hit samples for MANO queries.
+
+    The resulting support band can overlap a projected hand even though the
+    object-owned mask removed that hand region. Depth values are copied from the
+    nearest accepted object sample, never from raw depth under the hand.
+    """
+    first_surface = candidate.get('first_surface_depth_ownership') if isinstance(candidate.get('first_surface_depth_ownership'), dict) else {}
+    object_ownership = candidate.get('object_surface_ownership_filter') if isinstance(candidate.get('object_surface_ownership_filter'), dict) else {}
+    if first_surface.get('enabled') is not True or first_surface.get('fail_closed') is True or object_ownership.get('fail_closed') is True:
+        raise RuntimeError('P17 depth-order support requires P09 camera samples that passed first-surface depth ownership and object/hand ownership filtering')
+    points = np.asarray(candidate.get('camera_vertices_sample_m') or [], dtype=np.float64)
+    intr = finite_intrinsics(candidate.get('intrinsics_fx_fy_cx_cy'), 'P09 accepted first-surface intrinsics')
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 32 or (not np.isfinite(points).all()):
+        raise RuntimeError(f'P09 accepted first-surface camera points are invalid: {points.shape}')
+    A_mask_from_source = finite_affine(plane.get('A_mask_from_source_coordinate_model'), 'A_mask_from_source_coordinate_model')
+    (fx, fy, cx, cy) = intr.tolist()
+    z = points[:, 2]
+    positive = z > 1e-05
+    uv_source = np.column_stack([fx * points[:, 0] / np.maximum(z, 1e-06) + cx, fy * points[:, 1] / np.maximum(z, 1e-06) + cy])
+    uv_mask = transform_source_pixels(uv_source, A_mask_from_source)
+    x = np.rint(uv_mask[:, 0]).astype(np.int64)
+    y = np.rint(uv_mask[:, 1]).astype(np.int64)
+    valid = positive & np.isfinite(uv_mask).all(axis=1) & (x >= 0) & (x < int(mask_shape[1])) & (y >= 0) & (y < int(mask_shape[0]))
+    if int(np.count_nonzero(valid)) < 32:
+        raise RuntimeError('too few P09 accepted first-surface points enter the mask plane')
+    sparse = np.full(mask_shape, np.inf, dtype=np.float32)
+    flat_index = y[valid] * int(mask_shape[1]) + x[valid]
+    np.minimum.at(sparse.reshape(-1), flat_index, z[valid].astype(np.float32))
+    seeds = np.isfinite(sparse)
+    (distance, indices) = distance_transform_edt(~seeds, return_distances=True, return_indices=True)
+    support = distance <= float(radius_px)
+    nearest_depth = sparse[tuple(indices)]
+    query_depth = np.full(mask_shape, np.nan, dtype=np.float32)
+    query_depth[support] = nearest_depth[support]
+    return (support, query_depth, {'source': 'P09 visible_geometry_candidate.camera_vertices_sample_m after first_surface_depth_ownership', 'accepted_first_surface_point_count': int(len(points)), 'projected_point_count': int(np.count_nonzero(valid)), 'unique_seed_pixel_count': int(np.count_nonzero(seeds)), 'query_support_pixel_count': int(np.count_nonzero(support)), 'query_radius_mask_px': float(radius_px), 'P09_first_surface_depth_ownership_state': first_surface.get('state'), 'P09_object_surface_ownership_state': object_ownership.get('state'), 'raw_depth_under_projected_hand_consumed': False, 'depth_sha256': hashlib.sha256(query_depth.astype('<f4').tobytes()).hexdigest()})
+
+def draw_hand_mask(frame: dict[str, Any], hand: dict[str, Any], plane: dict[str, Any], width: int, height: int, *, point_radius: int, line_radius: int, require_camera_mano_aligned: bool) -> tuple[np.ndarray, dict[str, Any]]:
+    metric = hand.get('metric_mano_state') if isinstance(hand.get('metric_mano_state'), dict) else {}
+    intr = active_camera_mano_intrinsics(frame, hand, require_aligned=require_camera_mano_aligned)
+    A_mask_from_source = finite_affine(plane.get('A_mask_from_source_coordinate_model'), 'A_mask_from_source_coordinate_model')
+    joints = np.asarray(metric.get('joints_current_v18_camera_m') or [], dtype=float)
+    verts = np.asarray(metric.get('vertices_camera_sample_m') or [], dtype=float)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    joint_u = joint_v = np.zeros((0,), dtype=int)
+    joint_valid = np.zeros((0,), dtype=bool)
+    if joints.shape == (21, 3):
+        (joint_u, joint_v, joint_valid) = project_camera_to_mask(joints, intr, A_mask_from_source, width, height)
+        for (a, b) in HAND_EDGES:
+            if a < len(joint_valid) and b < len(joint_valid) and joint_valid[a] and joint_valid[b]:
+                cv2.line(mask, (int(joint_u[a]), int(joint_v[a])), (int(joint_u[b]), int(joint_v[b])), 255, max(1, int(line_radius)))
+        for (u, v, ok) in zip(joint_u, joint_v, joint_valid):
+            if ok:
+                cv2.circle(mask, (int(u), int(v)), max(1, int(point_radius)), 255, -1)
+    vert_valid_count = 0
+    if verts.ndim == 2 and verts.shape[1] == 3:
+        (vu, vv, vvld) = project_camera_to_mask(verts, intr, A_mask_from_source, width, height)
+        vert_valid_count = int(np.count_nonzero(vvld))
+        for (u, v, ok) in zip(vu, vv, vvld):
+            if ok:
+                cv2.circle(mask, (int(u), int(v)), max(1, int(point_radius // 2)), 255, -1)
+    return (mask > 0, {'joint_valid_count': int(np.count_nonzero(joint_valid)), 'vertex_valid_count': int(vert_valid_count), 'hand_support_px': int(np.count_nonzero(mask)), 'active_camera_intrinsics_fx_fy_cx_cy': intr.astype(float).tolist(), 'image_plane_transform': plane})
+
+def dilate(mask: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 0:
+        return mask.astype(bool)
+    k = 2 * int(radius) + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    return cv2.dilate(mask.astype(np.uint8), kernel) > 0
+
+def proximity_stats(hand_mask: np.ndarray, object_mask: np.ndarray, band_px: int) -> dict[str, Any]:
+    hand_px = int(np.count_nonzero(hand_mask))
+    object_px = int(np.count_nonzero(object_mask))
+    overlap_px = int(np.count_nonzero(hand_mask & object_mask))
+    if hand_px == 0 or object_px == 0:
+        return {'hand_px': hand_px, 'object_px': object_px, 'overlap_px': overlap_px, 'near_px': 0, 'min_distance_px': None, 'median_near_distance_px': None}
+    obj_u8 = object_mask.astype(np.uint8)
+    dist = cv2.distanceTransform((1 - obj_u8).astype(np.uint8), cv2.DIST_L2, 3)
+    dvals = dist[hand_mask]
+    finite = dvals[np.isfinite(dvals)]
+    near = finite <= float(band_px)
+    return {'hand_px': hand_px, 'object_px': object_px, 'overlap_px': overlap_px, 'near_px': int(np.count_nonzero(near)), 'min_distance_px': float(np.min(finite)) if finite.size else None, 'median_near_distance_px': float(np.median(finite[near])) if np.any(near) else None}
+
+def save_bool_mask(path: Path, mask: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(mask.astype(np.uint8) * 255).save(path)
+
+def make_review(raw_path: Path, object_mask: np.ndarray, hand_mask: np.ndarray, non_object_mask: np.ndarray, out: Path, title: str) -> None:
+    img = cv2.imread(str(raw_path))
+    if img is None:
+        img = np.zeros((object_mask.shape[0], object_mask.shape[1], 3), dtype=np.uint8)
+    if img.shape[:2] != object_mask.shape:
+        img = cv2.resize(img, (object_mask.shape[1], object_mask.shape[0]), interpolation=cv2.INTER_AREA)
+    overlay = img.copy()
+    overlay[object_mask] = (0.65 * overlay[object_mask] + 0.35 * np.array([40, 255, 80])).astype(np.uint8)
+    overlay[hand_mask] = (0.65 * overlay[hand_mask] + 0.35 * np.array([255, 255, 0])).astype(np.uint8)
+    overlay[non_object_mask] = (0.35 * overlay[non_object_mask] + 0.65 * np.array([0, 0, 255])).astype(np.uint8)
+    cv2.putText(overlay, title[:110], (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), overlay, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
+    payload = load_json(args.annotations)
+    frames = as_list(payload.get('frames')) if isinstance(payload, dict) else []
+    (start, end) = [int(x) for x in args.frame_span]
+    out_case = args.output_root / args.case
+    mask_dir = out_case / 'ownership_masks'
+    review_dir = out_case / 'review_frames'
+    ownership_rows: list[dict[str, Any]] = []
+    contact_rows: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    side_set = set((str(s) for s in args.sides))
+    (judgment_index, judgment_summary) = load_agent_interaction_judgments(args.agent_interaction_judgment, case=str(args.case), target_entity_id=str(args.target_entity_id), frame_span=(start, end), sides=side_set)
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        frame_idx = int(frame.get('frame_idx', -1))
+        if frame_idx < start or frame_idx > end:
+            continue
+        obj = target_object(frame, str(args.target_entity_id))
+        if not isinstance(obj, dict) or not bool(obj.get('visible', True)):
+            diagnostics.append({'frame_idx': frame_idx, 'state': 'missing_visible_target_object'})
+            continue
+        if obj.get('rigid_pose_observation_eligible') is False:
+            diagnostics.append({'frame_idx': frame_idx, 'state': 'skipped_object_mask_ineligible_for_contact_ownership', 'reason': obj.get('rigid_pose_observation_reason'), 'object_area_px': obj.get('area_px')})
+            continue
+        mask_path_raw = obj.get('mask_path')
+        if not isinstance(mask_path_raw, str) or not Path(mask_path_raw).exists():
+            diagnostics.append({'frame_idx': frame_idx, 'state': 'missing_object_mask', 'mask_path': mask_path_raw})
+            continue
+        object_mask = load_mask(Path(mask_path_raw))
+        (height, width) = object_mask.shape
+        plane_contract = mask_plane_contract(frame, obj, object_mask.shape)
+        candidate = obj.get('visible_geometry_candidate') if isinstance(obj.get('visible_geometry_candidate'), dict) else None
+        if candidate is None:
+            diagnostics.append({'frame_idx': frame_idx, 'state': 'missing_P09_accepted_first_surface_for_depth_order_query'})
+            continue
+        candidate_K = finite_intrinsics(candidate.get('intrinsics_fx_fy_cx_cy'), 'P09 accepted first-surface intrinsics')
+        frame_camera = frame.get('camera') if isinstance(frame.get('camera'), dict) else {}
+        active_K = finite_intrinsics(frame_camera.get('intrinsics_fx_fy_cx_cy'), 'active frame camera intrinsics')
+        if not np.allclose(candidate_K, active_K, atol=0.01, rtol=0.0):
+            raise RuntimeError(f'frame {frame_idx}: P09 accepted first-surface K {candidate_K.tolist()} != active source K {active_K.tolist()}')
+        (depth_order_query_support, depth_order_query_depth, depth_order_diag) = accepted_first_surface_query_raster(candidate, plane_contract, object_mask.shape, float(args.depth_order_query_radius_mask_px))
+        object_contact_band = dilate(object_mask, int(args.contact_image_band_px))
+        for hand in as_list(frame.get('hands')):
+            if not isinstance(hand, dict):
+                continue
+            side = str(hand.get('hand_side') or hand.get('side') or '')
+            if side not in side_set:
+                continue
+            (hand_mask, hand_diag) = draw_hand_mask(frame, hand, plane_contract, width, height, point_radius=int(args.hand_radius_px), line_radius=int(args.hand_line_radius_px), require_camera_mano_aligned=bool(getattr(args, 'require_camera_mano_contract_aligned', False)))
+            judgment = judgment_index.get((frame_idx, side))
+            quarantine_mode = ownership_quarantine_mode(judgment)
+            hand_for_ownership = dilate(hand_mask, int(args.ownership_dilation_px))
+            if quarantine_mode == 'none':
+                non_object_owned = np.zeros_like(object_mask, dtype=bool)
+            else:
+                non_object_owned = object_mask & hand_for_ownership
+            visible_object_owned = object_mask & ~non_object_owned
+            constraint_eligible = visible_object_owned.copy()
+            prox = proximity_stats(hand_mask, object_mask, int(args.contact_image_band_px))
+            contact_image_px = int(prox.get('overlap_px') or 0) + int(prox.get('near_px') or 0)
+            image_candidate = contact_image_px >= int(args.min_contact_image_px)
+            (emit_contact_row, contact_state) = contact_row_state_from_judgment(judgment, image_candidate=bool(image_candidate), allow_agent_create=bool(args.agent_judgment_can_create_contact))
+            side_mask_dir = mask_dir / side
+            non_object_path = side_mask_dir / f'{frame_idx:06d}_non_object_owned.png'
+            visible_object_path = side_mask_dir / f'{frame_idx:06d}_visible_object_owned.png'
+            constraint_path = side_mask_dir / f'{frame_idx:06d}_constraint_eligible_entity.png'
+            hand_support_path = side_mask_dir / f'{frame_idx:06d}_projected_mano_hand_support.png'
+            depth_order_support_path = side_mask_dir / f'{frame_idx:06d}_depth_order_query_support.png'
+            depth_order_npz_path = side_mask_dir / f'{frame_idx:06d}_depth_order_first_surface.npz'
+            save_bool_mask(non_object_path, non_object_owned)
+            save_bool_mask(visible_object_path, visible_object_owned)
+            save_bool_mask(constraint_path, constraint_eligible)
+            save_bool_mask(hand_support_path, hand_mask)
+            save_bool_mask(depth_order_support_path, depth_order_query_support)
+            np.savez_compressed(depth_order_npz_path, depth_mask_plane_m=depth_order_query_depth.astype(np.float32), support_mask=depth_order_query_support.astype(np.uint8), A_mask_from_source_coordinate_model=np.asarray(plane_contract['A_mask_from_source_coordinate_model'], dtype=np.float64), source_size_wh=np.asarray(plane_contract['source_size_wh'], dtype=np.int32), mask_size_wh=np.asarray(plane_contract['mask_size_wh'], dtype=np.int32), source=np.asarray('P09 accepted first-surface samples; nearest sample within bounded mask-plane radius'))
+            depth_order_support_sha256 = sha256_file(depth_order_support_path)
+            depth_order_npz_sha256 = sha256_file(depth_order_npz_path)
+            counts = {'non_object_owned_px': int(np.count_nonzero(non_object_owned)), 'visible_object_owned_px': int(np.count_nonzero(visible_object_owned)), 'constraint_eligible_entity_px': int(np.count_nonzero(constraint_eligible)), 'depth_order_query_support_px': int(np.count_nonzero(depth_order_query_support)), **hand_diag, **prox, 'contact_image_px': int(contact_image_px)}
+            judgment_fields = agent_judgment_provenance(judgment)
+            ownership_rows.append({'factor_family': 'visible_ownership', 'target_entity_id': str(args.target_entity_id), 'frame_idx': int(frame_idx), 'hand_side': side, 'variable_affected': 'O_t_surface_visibility', 'observation_type': 'projected_mano_visible_hand_ownership_mask', 'residual_or_quarantine_rule': 'quarantine object hard-surface constraints whose projected support overlaps the projected MANO hand support; this marks hand-owned/uncertain first-surface pixels, not accepted contact', 'provenance': {'annotations': str(args.annotations), 'object_mask_path': str(mask_path_raw), 'hand_support_mask_path': str(hand_support_path), 'reason': 'current MANO projection supplies hand-owned visible support where monocular depth at hand pixels is unreliable; Pi-agent interaction judgment configures whether this support quarantines object-surface constraints', **judgment_fields}, 'rendered_uncertainty_channel': 'visible object pixels under projected hand support are rendered/treated as ownership-uncertain rather than hard object surface when the agent interaction judgment says the hand is in front or unresolved', 'state': 'active_visible_ownership', 'agent_ownership_quarantine_mode': str(quarantine_mode), 'agent_contact_state': judgment.get('contact_state') if isinstance(judgment, dict) else None, 'agent_occlusion_relation': judgment.get('occlusion_relation') if isinstance(judgment, dict) else None, 'agent_depth_reliability': judgment.get('depth_reliability') if isinstance(judgment, dict) else None, 'image_plane_transform': plane_contract, 'non_object_owned_mask_path': str(non_object_path), 'visible_object_owned_mask_path': str(visible_object_path), 'constraint_eligible_entity_mask_path': str(constraint_path), 'adjusted_entity_mask_path': str(constraint_path), 'depth_order_query_support_mask_path': str(depth_order_support_path), 'depth_order_query_support_mask_sha256': depth_order_support_sha256, 'depth_order_first_surface_npz_path': str(depth_order_npz_path), 'depth_order_first_surface_npz_sha256': depth_order_npz_sha256, 'depth_order_query_semantics': 'projected MANO may query nearby P09-accepted object first-hit depth even where ownership mask marks hand/unknown; raw depth under hand is forbidden', 'depth_order_first_surface': depth_order_diag, 'counts': counts})
+            min_dist = prox.get('min_distance_px')
+            overlap_fraction = float(counts['overlap_px']) / max(1.0, float(counts['object_px']))
+            near_fraction = float(counts['near_px']) / max(1.0, float(counts['hand_px']))
+            if min_dist is None:
+                proximity_fraction = 0.0
+            else:
+                proximity_fraction = max(0.0, min(1.0, 1.0 - float(min_dist) / max(1.0, float(args.contact_image_band_px))))
+            image_contact_prior = max(0.05, min(0.65, 0.1 + 0.35 * proximity_fraction + 0.2 * min(1.0, 4.0 * overlap_fraction) + 0.1 * near_fraction))
+            contact_prior = combine_contact_prior(float(image_contact_prior), judgment)
+            support_uncertainty_m = float(args.contact_support_uncertainty_m)
+            weight_multiplier = 1.0
+            if isinstance(judgment, dict):
+                support_uncertainty_m = float(judgment['contact_support_uncertainty_m'])
+                weight_multiplier = float(judgment.get('contact_weight_multiplier', 1.0))
+            active_weight = float(args.contact_weight) * max(float(args.raw_proposal_weight_factor), contact_prior) * float(weight_multiplier)
+            if contact_state != 'active_contact_patch':
+                active_weight = 0.0
+            if emit_contact_row:
+                blockers = ['no_persistent_object_frame_contact_anchor', 'raw_depth_at_hand_pixels_quarantined']
+                if isinstance(judgment, dict):
+                    blockers.append('agent_interval_judgment_not_a_persistent_object_frame_anchor')
+                    if judgment.get('contact_state') == 'no_contact':
+                        blockers.append('agent_judged_no_contact')
+                    if contact_state == 'inactive_agent_contact_without_image_support':
+                        blockers.append('agent_contact_judgment_without_projected_image_support')
+                contact_rows.append({'factor_family': 'contact_patch', 'target_entity_id': str(args.target_entity_id), 'frame_idx': int(frame_idx), 'hand_side': side, 'variable_affected': 'H_t', 'observation_type': 'agent_judged_interaction_plus_projected_mano_object_image_adjacency', 'residual_or_quarantine_rule': 'Pi-agent interval contact/occlusion judgment sets the latent contact prior and support uncertainty; projected MANO/object geometry selects candidate local contact vertices when active; no persistent object-frame contact anchor is claimed', 'provenance': {'annotations': str(args.annotations), 'object_mask_path': str(mask_path_raw), 'hand_support_mask_path': str(hand_support_path), 'non_object_owned_mask_path': str(non_object_path), 'reason': 'Pi-agent visual interaction judgment supplies the contact/occlusion switch; projected MANO/object image adjacency supplies local geometric support and remains uncertain under raw hand-depth ambiguity', **judgment_fields}, 'rendered_uncertainty_channel': 'agent-judged contact/occlusion prior consumed as a soft graph switch; final render must still show posterior/uncertainty rather than treating the judgment as metric truth', 'state': str(contact_state), 'weight': float(active_weight), 'image_plane_transform': plane_contract, 'contact_patch_base_weight': float(args.contact_weight), 'contact_patch_band_m': float(args.contact_patch_band_m), 'contact_patch_target_margin_m': float(args.contact_patch_target_margin_m), 'contact_patch_support_uncertainty_m': float(support_uncertainty_m), 'object_support_uncertainty_m': float(support_uncertainty_m), 'contact_patch_deadband_m': float(args.contact_patch_target_margin_m + support_uncertainty_m), 'max_vertices': int(args.max_vertices), 'contact_state_prior_probability': float(contact_prior), 'contact_patch_prior_probability': float(contact_prior), 'image_contact_prior_probability': float(image_contact_prior), 'agent_contact_state': judgment.get('contact_state') if isinstance(judgment, dict) else None, 'agent_occlusion_relation': judgment.get('occlusion_relation') if isinstance(judgment, dict) else None, 'agent_depth_reliability': judgment.get('depth_reliability') if isinstance(judgment, dict) else None, 'agent_contact_weight_multiplier': float(weight_multiplier), 'contact_anchor_state': 'agent_interval_prior_no_stable_pose_anchor' if isinstance(judgment, dict) else 'image_adjacency_only_no_stable_pose_anchor', 'contact_anchor_residual_allowed': False, 'contact_anchor_blockers': blockers, 'contact_pose_anchor_key': None, 'image_contact_counts': counts, 'local_patch_sample_count': int(contact_image_px), 'local_patch_temporal_sample_count': 0, 'local_patch_support_state': 'agent_judgment_with_projected_mano_object_image_adjacency' if isinstance(judgment, dict) else 'projected_mano_object_image_adjacency', 'local_patch_support_consumed': bool(contact_state == 'active_contact_patch'), 'local_patch_support_uncertainty_m': float(support_uncertainty_m), 'global_object_support_uncertainty_m': float(support_uncertainty_m)})
+            diagnostics.append({'frame_idx': frame_idx, 'hand_side': side, 'image_candidate_contact': bool(image_candidate), 'emitted_contact_row': bool(emit_contact_row), 'contact_row_state': str(contact_state), 'agent_judgment_id': judgment.get('judgment_id') if isinstance(judgment, dict) else None, 'agent_ownership_quarantine_mode': str(quarantine_mode), 'contact_prior_probability': float(contact_prior), 'image_contact_prior_probability': float(image_contact_prior), 'counts': counts})
+            if frame_idx in set((int(x) for x in args.review_frames)):
+                raw_path = Path(str(frame.get('raw_frame_path', '')))
+                make_review(raw_path, object_mask, hand_mask, non_object_owned, review_dir / f'{frame_idx:06d}_{side}_contact_ownership.jpg', f'{frame_idx} {side} green=obj yellow=MANO red=hand-owned object')
+    duplicate_keys = [(r['frame_idx'], r['hand_side']) for r in contact_rows]
+    if len(duplicate_keys) != len(set(duplicate_keys)):
+        raise ValueError('duplicate contact rows emitted')
+    payload = {'schema': 'v19_visible_contact_ownership_factor_v2', 'method': 'v19_visible_contact_ownership_factor_from_projected_mano_object_mask_and_agent_interaction_judgment', 'case': str(args.case), 'target_entity_id': str(args.target_entity_id), 'claim_scope': 'Pi-agent interval interaction judgments supply explicit contact/occlusion priors; projected MANO/object image adjacency supplies local support and ownership masks. The report does not assert persistent contact anchors, exact hand depth, or object pose correction.', 'inputs': {'annotations': str(args.annotations), 'agent_interaction_judgment': None if args.agent_interaction_judgment is None else str(args.agent_interaction_judgment)}, 'parameters': {'frame_span': [start, end], 'sides': list(args.sides), 'hand_radius_px': int(args.hand_radius_px), 'hand_line_radius_px': int(args.hand_line_radius_px), 'ownership_dilation_px': int(args.ownership_dilation_px), 'depth_order_query_radius_mask_px': float(args.depth_order_query_radius_mask_px), 'contact_image_band_px': int(args.contact_image_band_px), 'min_contact_image_px': int(args.min_contact_image_px), 'contact_weight': float(args.contact_weight), 'contact_patch_band_m': float(args.contact_patch_band_m), 'contact_patch_target_margin_m': float(args.contact_patch_target_margin_m), 'contact_support_uncertainty_m': float(args.contact_support_uncertainty_m), 'agent_judgment_can_create_contact': bool(args.agent_judgment_can_create_contact), 'require_camera_mano_contract_aligned': bool(getattr(args, 'require_camera_mano_contract_aligned', False)), 'projection_image_plane_policy': 'project active K in source_rgb then apply exact P09 A_mask_from_source', 'depth_order_query_policy': 'use only P09 accepted first-surface object samples and a bounded nearest-sample mask-plane band; never consume raw depth under projected MANO'}, 'agent_interaction_judgment_summary': judgment_summary, 'summary': {'ownership_row_count': len(ownership_rows), 'contact_patch_row_count': len(contact_rows), 'active_contact_patch_row_count': int(sum((str(r.get('state')) == 'active_contact_patch' for r in contact_rows))), 'inactive_contact_patch_row_count': int(sum((str(r.get('state')) != 'active_contact_patch' for r in contact_rows))), 'contact_patch_state_counts': dict(Counter((str(r.get('state')) for r in contact_rows))), 'agent_ownership_quarantine_mode_counts': dict(Counter((str(r.get('agent_ownership_quarantine_mode')) for r in ownership_rows))), 'agent_contact_state_counts': dict(Counter((str(r.get('agent_contact_state')) for r in contact_rows if r.get('agent_contact_state') is not None))), 'agent_occlusion_relation_counts': dict(Counter((str(r.get('agent_occlusion_relation')) for r in ownership_rows if r.get('agent_occlusion_relation') is not None))), 'non_object_owned_px_total': int(sum(((r.get('counts') or {}).get('non_object_owned_px') or 0 for r in ownership_rows))), 'contact_image_px_total': int(sum(((r.get('image_contact_counts') or {}).get('contact_image_px') or 0 for r in contact_rows))), 'frames_with_active_contact_patch': sorted(set((int(r['frame_idx']) for r in contact_rows if str(r.get('state')) == 'active_contact_patch'))), 'frames_with_any_contact_patch_row': sorted(set((int(r['frame_idx']) for r in contact_rows)))}, 'ownership_rows': ownership_rows, 'factor_rows': contact_rows, 'diagnostics_preview': diagnostics[:160]}
+    return payload
+
+def interaction_factors_cli(argv=None) -> None:
+    args = interaction_parse_args(argv)
+    payload = interaction_build(args)
+    out = args.output_root / args.case / 'v19_visible_contact_ownership_factor_report.json'
+    write_json(out, payload)
+    print(json.dumps({'status': 'ok', 'report': str(out), 'summary': payload['summary']}, indent=2))
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+import numpy as np
+from scipy.optimize import LinearConstraint, minimize
+from scipy.spatial import cKDTree
+from gates.object.geometry import load_signed_face_authority
+
+def geometry_constraints_load_json(path: Path) -> Any:
+    with path.open('r', encoding='utf-8') as f:
+        return json.load(f)
+
+def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
+    """Treat an explicit unready/support-false P15 report as a physical-factor quarantine.
+
+    Older pose reports did not publish these fields, so missing readiness remains a
+    recorded legacy-compatible state rather than being silently converted to false.
+    """
+    graph = report.get('graph_support') if isinstance(report.get('graph_support'), dict) else {}
+    annotation_ready = report.get('annotation_ready')
+    support_sufficient = graph.get('sufficient')
+    explicitly_unready = annotation_ready is False or support_sufficient is False
+    return {'pose_report_status': report.get('status'), 'annotation_ready': annotation_ready if isinstance(annotation_ready, bool) else None, 'graph_support_sufficient': support_sufficient if isinstance(support_sufficient, bool) else None, 'explicitly_unready': explicitly_unready, 'legacy_readiness_fields_missing': annotation_ready is None and support_sufficient is None, 'policy': 'quarantine physical correction factors from unresolved object poses' if explicitly_unready else 'consume ready pose report or legacy report lacking an explicit rejection'}
+
+def load_mesh(path: Path) -> trimesh.Trimesh:
+    import trimesh
+    geom = trimesh.load(str(path), process=False)
+    if isinstance(geom, trimesh.Scene):
+        meshes = [g for g in geom.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not meshes:
+            raise RuntimeError(f'no mesh geometry in {path}')
+        geom = trimesh.util.concatenate(meshes)
+    if not isinstance(geom, trimesh.Trimesh):
+        raise RuntimeError(f'not mesh: {path}')
+    if len(geom.vertices) == 0 or len(geom.faces) == 0:
+        raise RuntimeError(f'empty mesh: {path}')
+    return trimesh.Trimesh(vertices=np.asarray(geom.vertices, dtype=float), faces=np.asarray(geom.faces, dtype=np.int64), process=False)
+
+def nearest_summary(values: np.ndarray) -> dict[str, float | int | None]:
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return {'count': 0, 'median': None, 'p90': None, 'p95': None, 'max': None, 'min': None}
+    return {'count': int(values.size), 'median': float(np.median(values)), 'p90': float(np.percentile(values, 90)), 'p95': float(np.percentile(values, 95)), 'max': float(np.max(values)), 'min': float(np.min(values))}
+
+def project(points_world: np.ndarray, r_c2w: np.ndarray, t_c2w: np.ndarray, intr: list[float]) -> np.ndarray:
+    (fx, fy, cx, cy) = [float(x) for x in intr]
+    cam = (points_world - t_c2w) @ r_c2w
+    z = np.maximum(cam[:, 2], 1e-09)
+    return np.stack([fx * cam[:, 0] / z + cx, fy * cam[:, 1] / z + cy], axis=1)
+
+def detector_bbox_in_intrinsics_grid(frame: dict[str, Any], hand_ann: dict[str, Any], intr: list[float], raw_video: dict[str, Any]) -> np.ndarray | None:
+    bbox = hand_ann.get('bbox_xyxy') if isinstance(hand_ann, dict) else None
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    raw_w = float(raw_video.get('width') or 0.0)
+    raw_h = float(raw_video.get('height') or 0.0)
+    if raw_w <= 0.0 or raw_h <= 0.0:
+        return None
+    (_, _, cx, cy) = [float(x) for x in intr]
+    scaled = np.asarray(bbox, dtype=float).copy()
+    scaled[[0, 2]] *= 2.0 * cx / raw_w
+    scaled[[1, 3]] *= 2.0 * cy / raw_h
+    return scaled
+
+def bbox_inside_fraction(uv: np.ndarray, bbox: np.ndarray) -> float:
+    if uv.ndim != 2 or uv.shape[0] == 0:
+        return 0.0
+    inside = (uv[:, 0] >= bbox[0]) & (uv[:, 0] <= bbox[2]) & (uv[:, 1] >= bbox[1]) & (uv[:, 1] <= bbox[3]) & np.isfinite(uv[:, 0]) & np.isfinite(uv[:, 1])
+    return float(np.mean(inside))
+
+def visible_2d_consistency(frame: dict[str, Any], hand_ann: dict[str, Any], intr: list[float] | None, proj0: np.ndarray | None, proj1: np.ndarray | None, same_frame: bool, raw_video: dict[str, Any]) -> dict[str, Any]:
+    if intr is None or proj0 is None or proj1 is None:
+        return {'state': 'not_evaluated_missing_projection', 'compatible_with_visible_2d': False}
+    bbox = detector_bbox_in_intrinsics_grid(frame, hand_ann, intr, raw_video)
+    if bbox is None or not same_frame:
+        return {'state': 'no_same_frame_detector_box_constraint', 'compatible_with_visible_2d': True}
+    before = bbox_inside_fraction(proj0, bbox)
+    after = bbox_inside_fraction(proj1, bbox)
+    diag = float(np.linalg.norm([bbox[2] - bbox[0], bbox[3] - bbox[1]]))
+    compatible = bool(after + 1e-12 >= before)
+    return {'state': 'preserves_or_improves_detector_box_containment' if compatible else 'degrades_detector_box_containment', 'compatible_with_visible_2d': compatible, 'detector_bbox_intrinsics_grid_xyxy': [float(x) for x in bbox.tolist()], 'projected_joint_inside_detector_box_fraction_before': before, 'projected_joint_inside_detector_box_fraction_after': after, 'detector_bbox_diag_px_in_intrinsics_grid': diag}
+
+def least_norm_halfspace_escape(points: np.ndarray, closest: np.ndarray, signed_depth: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
+    """Least-norm rigid translation satisfying local escape halfspaces.
+
+    For each penetrating vertex p_i with closest surface point q_i, n_i=(q_i-p_i)/||q_i-p_i||
+    is the local outward escape direction. A rigid translation t should satisfy
+    n_i dot t >= signed_depth_i in the first-order signed-distance model. The
+    solution is the projection of zero onto the intersection of those halfspaces.
+    """
+    disp = np.asarray(closest, dtype=float) - np.asarray(points, dtype=float)
+    signed_depth = np.asarray(signed_depth, dtype=float)
+    norms = np.linalg.norm(disp, axis=1)
+    valid = (norms > 1e-12) & np.isfinite(norms) & np.isfinite(signed_depth) & (signed_depth > 0.0)
+    if not np.any(valid):
+        return (np.zeros(3, dtype=float), {'solver': 'no_valid_penetrating_halfspaces', 'success': False, 'constraint_count': 0})
+    normals = disp[valid] / norms[valid, None]
+    depths = signed_depth[valid]
+    x0 = np.average(disp[valid], axis=0, weights=np.maximum(depths, 1e-12))
+    constraint = LinearConstraint(normals, depths, np.full_like(depths, np.inf))
+    res = minimize(lambda x: 0.5 * float(np.dot(x, x)), x0=x0, jac=lambda x: np.asarray(x, dtype=float), constraints=[constraint], method='SLSQP', options={'ftol': 1e-12, 'maxiter': 200, 'disp': False})
+    if res.success and np.all(np.isfinite(res.x)):
+        slack = normals @ res.x - depths
+        return (np.asarray(res.x, dtype=float), {'solver': 'least_norm_local_halfspace_escape', 'success': True, 'constraint_count': int(len(depths)), 'min_constraint_slack_m': float(np.min(slack)) if slack.size else None, 'max_constraint_violation_m': float(max(0.0, -float(np.min(slack)))) if slack.size else 0.0})
+    fallback = np.average(disp[valid], axis=0, weights=np.maximum(depths, 1e-12))
+    slack = normals @ fallback - depths
+    return (np.asarray(fallback, dtype=float), {'solver': 'weighted_mean_escape_fallback', 'success': False, 'constraint_count': int(len(depths)), 'message': str(getattr(res, 'message', 'unknown')), 'min_constraint_slack_m': float(np.min(slack)) if slack.size else None, 'max_constraint_violation_m': float(max(0.0, -float(np.min(slack)))) if slack.size else None})
+
+def inverse_object(points_world: np.ndarray, r_w_from_c: np.ndarray, t_w: np.ndarray) -> np.ndarray:
+    return (points_world - t_w) @ r_w_from_c
+
+def forward_object_vec(vec_canonical: np.ndarray, r_w_from_c: np.ndarray) -> np.ndarray:
+    return vec_canonical @ r_w_from_c.T
+
+def hand_arrays(arrays: dict[str, np.ndarray], side: str, frame_pos: int) -> tuple[np.ndarray, np.ndarray]:
+    return (np.asarray(arrays[f'{side}_vertices_world_m'][frame_pos], dtype=float), np.asarray(arrays[f'{side}_joints_world_m'][frame_pos], dtype=float))
+
+def frame_intrinsics(frame: dict[str, Any], side: str) -> list[float] | None:
+    for hand in frame.get('hands', []) if isinstance(frame.get('hands'), list) else []:
+        if hand.get('hand_side') == side:
+            metric_state = hand.get('metric_mano_state') if isinstance(hand.get('metric_mano_state'), dict) else {}
+            intr = hand.get('current_v18_camera_intrinsics_fx_fy_cx_cy') or metric_state.get('current_v18_camera_intrinsics_fx_fy_cx_cy')
+            if intr and len(intr) == 4:
+                return [float(x) for x in intr]
+    return None
+
+def frame_camera_pose(frame: dict[str, Any], fallback_r_c2w: np.ndarray, fallback_t_c2w: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
+    camera = frame.get('camera') if isinstance(frame.get('camera'), dict) else {}
+    transform = np.asarray(camera.get('T_world_camera_metric') or [], dtype=float)
+    if transform.shape == (4, 4) and np.all(np.isfinite(transform)):
+        return (transform[:3, :3], transform[:3, 3], 'annotation_frame_T_world_camera_metric')
+    return (fallback_r_c2w, fallback_t_c2w, 'hawor_npz_camera_pose_fallback')
+
+def completion_surface_contract(completion: dict[str, Any]) -> tuple[Path, str, dict[str, Any]]:
+    outputs = completion.get('outputs') if isinstance(completion.get('outputs'), dict) else {}
+    readiness = completion.get('geometry_readiness') if isinstance(completion.get('geometry_readiness'), dict) else {}
+    explicit_collision = outputs.get('collision_eligible_mesh_labeled')
+    legacy_completed = outputs.get('completed_mesh_labeled')
+    mesh_value = explicit_collision or legacy_completed
+    if not mesh_value:
+        raise RuntimeError('completion report lacks collision-eligible or legacy completed surface mesh')
+    semantics = 'collision_eligible_mesh_labeled' if explicit_collision else 'legacy_completed_mesh_labeled_unknown_collision_readiness'
+    return (Path(str(mesh_value)), semantics, readiness)
+
+def same_mesh_path(left: Path, right: Path) -> bool:
+    try:
+        return left.exists() and right.exists() and left.samefile(right)
+    except OSError:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+
+def signed_geometry_source_readiness(completion_readiness: dict[str, Any], sign_mesh_source_report: Path | None, sign_mesh_is_completion_surface: bool, sign_mesh_path: Path | None=None) -> dict[str, Any]:
+    if sign_mesh_source_report is not None:
+        payload = geometry_constraints_load_json(sign_mesh_source_report)
+        readiness = payload.get('geometry_readiness') if isinstance(payload.get('geometry_readiness'), dict) else {}
+        outputs = payload.get('outputs') if isinstance(payload.get('outputs'), dict) else {}
+        declared = readiness.get('signed_geometry_ready')
+        expected_value = readiness.get('signed_geometry_mesh') or readiness.get('collision_eligible_mesh') or outputs.get('signed_geometry_mesh') or outputs.get('collision_eligible_mesh_labeled')
+        if not expected_value:
+            return {'source': str(sign_mesh_source_report), 'signed_geometry_ready': None, 'legacy_readiness_fields_missing': declared is None, 'source_mesh_contract_missing': True, 'reason': 'sign source report does not bind signed readiness to a concrete mesh path'}
+        expected_path = Path(str(expected_value))
+        if sign_mesh_path is None or not same_mesh_path(sign_mesh_path, expected_path):
+            raise RuntimeError(f'sign mesh/source-report mismatch: signed readiness is bound to {expected_path}, not supplied sign mesh {sign_mesh_path}')
+        return {'source': str(sign_mesh_source_report), 'source_mesh': str(expected_path), 'signed_geometry_ready': declared if isinstance(declared, bool) else None, 'legacy_readiness_fields_missing': declared is None, 'source_mesh_contract_missing': False}
+    if sign_mesh_is_completion_surface:
+        declared = completion_readiness.get('signed_geometry_ready')
+        return {'source': 'completion_report.geometry_readiness', 'signed_geometry_ready': declared if isinstance(declared, bool) else None, 'legacy_readiness_fields_missing': declared is None}
+    return {'source': None, 'signed_geometry_ready': None, 'legacy_readiness_fields_missing': True, 'reason': 'explicit sign mesh lacks --sign-mesh-source-report; watertightness alone cannot establish physical sign readiness'}
+
+def build_geometric_constraints(argv=None) -> None:
+    import trimesh
+    import open3d as o3d
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--annotations', type=Path, required=True)
+    parser.add_argument('--hawor-npz', type=Path, required=True)
+    parser.add_argument('--pose-report', type=Path, required=True)
+    parser.add_argument('--completion-report', type=Path, required=True)
+    parser.add_argument('--sign-mesh', type=Path, default=None, help='optional watertight aligned hidden-volume mesh for signed nonpenetration hypotheses')
+    parser.add_argument('--sign-mesh-source-report', type=Path, default=None)
+    parser.add_argument('--skip-signed-distance', action='store_true', help='broadphase only: do not run expensive exact signed distance')
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--object-id', required=True)
+    args = parser.parse_args(argv)
+    annotations = geometry_constraints_load_json(args.annotations)
+    pose_report = geometry_constraints_load_json(args.pose_report)
+    pose_readiness = pose_graph_readiness(pose_report)
+    quarantine_unready_pose = bool(pose_readiness['explicitly_unready'])
+    pose_input_explicitly_ready = bool(pose_readiness['annotation_ready'] is True and pose_readiness['graph_support_sufficient'] is not False)
+    completion = geometry_constraints_load_json(args.completion_report)
+    (mesh_path, surface_mesh_semantics, geometry_readiness) = completion_surface_contract(completion)
+    observed_band_m = float(completion.get('observed_band_m') or 0.0)
+    surface_mesh = load_mesh(mesh_path)
+    surface_mesh_watertight = bool(surface_mesh.is_watertight)
+    surface_bounds_min = np.asarray(surface_mesh.bounds[0], dtype=float)
+    surface_bounds_max = np.asarray(surface_mesh.bounds[1], dtype=float)
+    (surface_samples, _) = trimesh.sample.sample_surface(surface_mesh, min(12000, max(1, len(surface_mesh.faces))), seed=np.random.default_rng(1818))
+    surface_tree = cKDTree(np.asarray(surface_samples, dtype=float))
+    sign_mesh_path = args.sign_mesh if args.sign_mesh is not None else mesh_path
+    sign_mesh = load_mesh(sign_mesh_path)
+    sign_mesh_watertight = bool(sign_mesh.is_watertight)
+    sign_source_readiness = signed_geometry_source_readiness(geometry_readiness, args.sign_mesh_source_report, sign_mesh_is_completion_surface=args.sign_mesh is None, sign_mesh_path=sign_mesh_path)
+    authority_payload = geometry_constraints_load_json(args.sign_mesh_source_report) if args.sign_mesh_source_report is not None else completion if args.sign_mesh is None else {}
+    authority_report_path = args.sign_mesh_source_report if args.sign_mesh_source_report is not None else args.completion_report if args.sign_mesh is None else None
+    signed_face_authority = load_signed_face_authority(authority_payload, source_report_path=authority_report_path, mesh_path=sign_mesh_path, mesh_face_count=len(sign_mesh.faces))
+    signed_face_authority_mask = np.asarray(signed_face_authority.pop('mask'), dtype=bool)
+    signed_face_authority.pop('provenance_code', None)
+    sign_source_readiness['signed_face_authority'] = signed_face_authority
+    signed_geometry_declared_ready = sign_source_readiness['signed_geometry_ready'] is True
+    signed_geometry_query_eligible = bool(sign_mesh_watertight and signed_geometry_declared_ready and (signed_face_authority.get('usable') is True))
+    signed_nonpenetration_physical_active = bool(signed_geometry_query_eligible and (not args.skip_signed_distance) and (not quarantine_unready_pose))
+    sign_scene = None
+    if not args.skip_signed_distance and signed_geometry_query_eligible:
+        sign_scene = o3d.t.geometry.RaycastingScene()
+        sign_scene.add_triangles(o3d.core.Tensor(np.asarray(sign_mesh.vertices, dtype=np.float32)), o3d.core.Tensor(np.asarray(sign_mesh.faces, dtype=np.uint32)))
+    sign_bounds_min = np.asarray(sign_mesh.bounds[0], dtype=float)
+    sign_bounds_max = np.asarray(sign_mesh.bounds[1], dtype=float)
+    npz = np.load(args.hawor_npz, allow_pickle=True)
+    arrays = {key: np.asarray(npz[key]) for key in npz.files}
+    frame_indices = np.asarray(arrays['frame_idx'], dtype=int)
+    frame_pos_by_idx = {int(f): i for (i, f) in enumerate(frame_indices)}
+    frames_by_idx = {int(f.get('frame_idx')): f for f in annotations.get('frames', [])}
+    raw_video_meta = annotations.get('raw_video') if isinstance(annotations.get('raw_video'), dict) else {}
+    accepted_pose_statuses = {'fit_to_visible_depth_samples', 'fit_to_visible_depth_archive_vertices', 'corrected_temporal_rigid_pose_graph', 'completed_temporal_rigid_pose_uncertain'}
+    pose_by_idx = {int(row['frame_idx']): row for row in pose_report.get('pose_rows', []) if row.get('status') in accepted_pose_statuses}
+    rows = []
+    corrective_rows = []
+    for (frame_idx, pose) in pose_by_idx.items():
+        if frame_idx not in frame_pos_by_idx:
+            continue
+        frame_pos = frame_pos_by_idx[frame_idx]
+        frame = frames_by_idx.get(frame_idx, {})
+        r_obj = np.asarray(pose['rotation_world_from_completed_canonical_matrix'], dtype=float)
+        t_obj = np.asarray(pose['translation_world_m'], dtype=float)
+        r_c2w_npz = np.asarray(arrays['R_c2w'][frame_pos], dtype=float)
+        t_c2w_npz = np.asarray(arrays['t_c2w'][frame_pos], dtype=float)
+        (r_c2w, t_c2w, camera_pose_source) = frame_camera_pose(frame, r_c2w_npz, t_c2w_npz)
+        hands_by_side = {str(h.get('hand_side')): h for h in frame.get('hands', []) if isinstance(h, dict)}
+        for side in ['left', 'right']:
+            hand_ann = hands_by_side.get(side, {})
+            metric_state = hand_ann.get('metric_mano_state') if isinstance(hand_ann.get('metric_mano_state'), dict) else {}
+            ann_vertices_raw = hand_ann.get('vertices_world_sample_m') or metric_state.get('vertices_world_sample_m') or []
+            ann_joints_raw = hand_ann.get('joints_current_v18_world_m') or metric_state.get('joints_current_v18_world_m') or []
+            ann_vertices = np.asarray(ann_vertices_raw, dtype=float) if isinstance(hand_ann, dict) else np.asarray([], dtype=float)
+            ann_joints = np.asarray(ann_joints_raw, dtype=float) if isinstance(hand_ann, dict) else np.asarray([], dtype=float)
+            if ann_vertices.ndim == 2 and ann_vertices.shape[1] == 3 and (len(ann_vertices) > 0):
+                verts_w = ann_vertices
+                if ann_joints.ndim == 2 and ann_joints.shape[1] == 3 and (len(ann_joints) > 0):
+                    joints_w = ann_joints
+                else:
+                    (_, joints_w) = hand_arrays(arrays, side, frame_pos)
+                hand_geometry_source = 'delivered_annotation_metric_mano_vertices_world_sample_m'
+            else:
+                if int(arrays[f'{side}_valid'][frame_pos]) == 0:
+                    continue
+                (verts_w, joints_w) = hand_arrays(arrays, side, frame_pos)
+                hand_geometry_source = 'hawor_npz_full_vertices_world_m_fallback'
+            same_frame = bool(hand_ann.get('same_frame_detection')) if isinstance(hand_ann, dict) and hand_ann.get('same_frame_detection') is not None else bool(int(arrays[f'{side}_detected_same_frame'][frame_pos])) if f'{side}_detected_same_frame' in arrays else False
+            verts_c = inverse_object(verts_w, r_obj, t_obj)
+            surface_aabb = ((verts_c >= surface_bounds_min) & (verts_c <= surface_bounds_max)).all(axis=1)
+            sign_aabb = ((verts_c >= sign_bounds_min) & (verts_c <= sign_bounds_max)).all(axis=1)
+            (unsigned_surface_dist, _) = surface_tree.query(verts_c, k=1, workers=-1)
+            near_surface = unsigned_surface_dist <= observed_band_m if observed_band_m > 0 else np.zeros(len(verts_c), dtype=bool)
+            signed = np.full(len(verts_c), np.nan, dtype=float)
+            penetrating = np.zeros(len(verts_c), dtype=bool)
+            correction_c = np.zeros(3, dtype=float)
+            correction_solver = {'solver': 'not_needed_no_authorized_penetration', 'success': True, 'constraint_count': 0}
+            signed_broadphase_candidate = sign_aabb.copy()
+            signed_local_authority_candidate = np.zeros(len(verts_c), dtype=bool)
+            signed_local_authority_rejected = np.zeros(len(verts_c), dtype=bool)
+            if signed_geometry_query_eligible and signed_broadphase_candidate.any() and (sign_scene is not None):
+                broad_idx = np.where(signed_broadphase_candidate)[0]
+                closest = sign_scene.compute_closest_points(o3d.core.Tensor(np.asarray(verts_c[broad_idx], dtype=np.float32)))
+                primitive = closest['primitive_ids'].numpy().astype(np.int64)
+                valid_primitive = (primitive >= 0) & (primitive < len(signed_face_authority_mask))
+                authorized = np.zeros(len(broad_idx), dtype=bool)
+                authorized[valid_primitive] = signed_face_authority_mask[primitive[valid_primitive]]
+                signed_local_authority_candidate[broad_idx[authorized]] = True
+                signed_local_authority_rejected[broad_idx[~authorized]] = True
+            signed_query_candidate = signed_local_authority_candidate
+            unresolved_topology_penetrating = np.zeros(len(verts_c), dtype=bool)
+            unresolved_topology_signed = np.full(len(verts_c), np.nan, dtype=float)
+            if signed_geometry_query_eligible and signed_local_authority_rejected.any() and (sign_scene is not None):
+                rejected_idx = np.where(signed_local_authority_rejected)[0]
+                rejected_signed = -sign_scene.compute_signed_distance(o3d.core.Tensor(np.asarray(verts_c[rejected_idx], dtype=np.float32))).numpy().astype(float)
+                unresolved_topology_signed[rejected_idx] = rejected_signed
+                unresolved_topology_penetrating[rejected_idx] = rejected_signed > 0.0
+            if signed_geometry_query_eligible and signed_query_candidate.any() and (sign_scene is not None):
+                candidate_idx = np.where(signed_query_candidate)[0]
+                query_tensor = o3d.core.Tensor(np.asarray(verts_c[candidate_idx], dtype=np.float32))
+                candidate_signed = -sign_scene.compute_signed_distance(query_tensor).numpy().astype(float)
+                signed[candidate_idx] = candidate_signed
+                penetrating[candidate_idx] = candidate_signed > 0.0
+                if penetrating.any():
+                    penetrating_points = o3d.core.Tensor(np.asarray(verts_c[penetrating], dtype=np.float32))
+                    closest = sign_scene.compute_closest_points(penetrating_points)['points'].numpy().astype(float)
+                    (correction_c, correction_solver) = least_norm_halfspace_escape(verts_c[penetrating], closest, signed[penetrating])
+            correction_w = forward_object_vec(correction_c, r_obj)
+            correction_norm_m = float(np.linalg.norm(correction_w))
+            max_penetration_m = float(np.nanmax(signed[penetrating])) if penetrating.any() else 0.0
+            constraint_count = int(correction_solver.get('constraint_count') or 0)
+            amplification_bound_m = float(np.sqrt(max(1, constraint_count)) * max_penetration_m) if penetrating.any() else 0.0
+            amplification_ratio = float(correction_norm_m / max_penetration_m) if max_penetration_m > 0.0 else None
+            bounded_local_escape = bool(not penetrating.any() or (correction_solver.get('success') is True and correction_norm_m <= amplification_bound_m + 1e-12))
+            correction_solver['max_penetration_depth_m'] = max_penetration_m
+            correction_solver['translation_to_max_penetration_ratio'] = amplification_ratio
+            correction_solver['orthogonal_independent_constraints_bound_m'] = amplification_bound_m
+            correction_solver['bounded_local_escape'] = bounded_local_escape
+            correction_solver['bounded_local_escape_semantics'] = 'accepted only when ||translation|| <= sqrt(num_penetrating_vertices) * max_penetration_depth; larger amplification indicates conflicting local escape directions or invalid sign support for a rigid hand correction'
+            joints_corr_w = joints_w + correction_w
+            intr = frame_intrinsics(frame, side)
+            reproj_summary = None
+            proj0 = None
+            proj1 = None
+            visible_consistency = {'state': 'not_evaluated_missing_projection', 'compatible_with_visible_2d': False}
+            if intr is not None:
+                proj0 = project(joints_w, r_c2w, t_c2w, intr)
+                proj1 = project(joints_corr_w, r_c2w, t_c2w, intr)
+                reproj_summary = nearest_summary(np.linalg.norm(proj1 - proj0, axis=1))
+                visible_consistency = visible_2d_consistency(frame, hand_ann, intr, proj0, proj1, same_frame, raw_video_meta)
+            if not signed_geometry_declared_ready:
+                app_state = 'inactive_signed_geometry_not_ready'
+                reason = 'completion/sign source does not explicitly declare signed_geometry_ready=true; watertightness, row count, or a single-view hidden prior cannot activate a signed nonpenetration correction'
+                correction_solver = {'solver': 'not_run_signed_geometry_not_ready', 'success': False, 'constraint_count': 0}
+            elif signed_face_authority.get('usable') is not True:
+                app_state = 'inactive_missing_mesh_bound_local_signed_face_authority'
+                reason = 'signed readiness cannot activate physical correction because the mesh-bound local face-authority contract is missing, unsafe, empty, or mismatched'
+                correction_solver = {'solver': 'not_run_missing_local_signed_face_authority', 'success': False, 'constraint_count': 0}
+            elif not sign_mesh_watertight:
+                app_state = 'inactive_nonwatertight_mesh_no_signed_correction'
+                reason = 'the declared sign source mesh is non-watertight, so signed nonpenetration remains inactive'
+                correction_solver = {'solver': 'not_run_nonwatertight_sign_mesh', 'success': False, 'constraint_count': 0}
+            elif penetrating.any() and bounded_local_escape and (visible_consistency.get('compatible_with_visible_2d') is True):
+                app_state = 'candidate_coordinate_correction_visible_2d_compatible'
+                reason = 'watertight sign mesh predicts local MANO/object penetration; least-norm local halfspace translation satisfies penetrating-vertex escape constraints and does not contradict available same-frame 2D hand-box evidence'
+            elif penetrating.any() and correction_solver.get('success') is not True:
+                app_state = 'not_applied_escape_solver_failed'
+                reason = 'watertight sign mesh predicts MANO/object penetration, but the rigid hand translation halfspace solver failed; coordinate update is held as uncertainty'
+            elif penetrating.any() and (not bounded_local_escape):
+                app_state = 'not_applied_local_escape_amplified'
+                reason = 'watertight sign mesh predicts MANO/object penetration, but satisfying local escape halfspaces requires translation larger than the penetration-depth-derived orthogonal constraint bound; this is treated as sign-support inconsistency, not H-prime'
+            elif penetrating.any():
+                app_state = 'not_applied_visible_2d_conflict_or_unmeasured'
+                reason = 'watertight sign mesh predicts locally authorized MANO/object penetration, but available visible 2D consistency is missing or degraded; coordinate update is held'
+            elif unresolved_topology_penetrating.any():
+                app_state = 'unresolved_topology_penetration_nearest_face_lacks_local_authority'
+                reason = 'watertight topology classifies MANO vertices inside, but their nearest boundary faces lack local first-hit authority; no physical correction is applied and signed promotion remains unresolved'
+            elif signed_broadphase_candidate.any() and args.skip_signed_distance:
+                app_state = 'uncertainty_signed_distance_not_evaluated_broadphase_support'
+                reason = 'MANO vertices are within the observed-surface band and inside the sign-mesh AABB, but exact signed distance was intentionally skipped for broadphase measurement'
+            elif near_surface.any() and sign_mesh_watertight and (not sign_aabb.any()):
+                app_state = 'uncertainty_sign_mesh_missing_near_surface_support'
+                reason = 'MANO vertices are within the observed-surface voxel band, but the watertight sign mesh does not cover those vertices; this falsifies using the sign mesh as a nonpenetration validator for this contact region'
+            elif surface_aabb.any() and (not sign_mesh_watertight):
+                app_state = 'uncertainty_only_nonwatertight_mesh_no_signed_correction'
+                reason = 'surface overlap exists but no watertight sign mesh is available, so this changes uncertainty only'
+            else:
+                app_state = 'no_penetration_no_coordinate_change_needed'
+                reason = 'sign-supporting compact-rigid mesh does not require nonpenetration correction for this hand/frame'
+            diagnostic_candidate_translation_world_m = correction_w.astype(float).tolist()
+            diagnostic_candidate_translation_norm_m = correction_norm_m
+            diagnostic_candidate_joint_reprojection_shift_px = reproj_summary
+            diagnostic_candidate_visible_2d_consistency = visible_consistency
+            if quarantine_unready_pose:
+                correction_w = np.zeros(3, dtype=float)
+                correction_norm_m = 0.0
+                reproj_summary = nearest_summary(np.zeros(len(joints_w), dtype=float)) if intr is not None else None
+                visible_consistency = {'state': 'not_evaluated_physical_candidate_quarantined_unready_object_pose_trajectory', 'compatible_with_visible_2d': False}
+                app_state = 'quarantined_unready_object_pose_trajectory'
+                reason = 'P15 explicitly reports annotation_ready=false or insufficient graph support; object-relative MANO/contact and nonpenetration measurements are retained only as diagnostics and cannot produce a physical correction'
+            row = {'frame_idx': int(frame_idx), 'hand_side': side, 'same_frame_detection': same_frame, 'object_id': args.object_id, 'status': 'mano_object_constraint_quarantined_unready_object_pose_trajectory' if quarantine_unready_pose else 'mano_object_constraint_measured' if signed_nonpenetration_physical_active else 'mano_object_unsigned_surface_measurement_signed_nonpenetration_inactive', 'annotation_ready': False, 'object_pose_input_ready_for_constraint_measurement': pose_input_explicitly_ready, 'object_pose_input_legacy_compatibility': bool(pose_readiness['legacy_readiness_fields_missing']), 'constraint_eligible_for_physical_correction': signed_nonpenetration_physical_active, 'object_pose_readiness': pose_readiness, 'surface_mesh_path': str(mesh_path), 'surface_mesh_semantics': surface_mesh_semantics, 'completion_geometry_readiness': geometry_readiness, 'signed_geometry_source_readiness': sign_source_readiness, 'signed_geometry_query_eligible': signed_geometry_query_eligible, 'signed_nonpenetration_factor_active': signed_nonpenetration_physical_active, 'sign_mesh_path': str(sign_mesh_path), 'sign_mesh_source_report': str(args.sign_mesh_source_report) if args.sign_mesh_source_report else None, 'signed_distance_semantics': 'positive_inside_negative_outside_zero_on_surface_open3d_raycasting_converted_from_negative_inside', 'completed_surface_mesh_watertight': surface_mesh_watertight, 'sign_mesh_watertight': sign_mesh_watertight, 'hand_geometry_source': hand_geometry_source, 'camera_pose_source_for_reprojection': camera_pose_source, 'hand_vertex_count': int(len(verts_w)), 'observed_band_m': observed_band_m, 'near_surface_vertex_count': int(near_surface.sum()), 'near_surface_vertex_fraction': float(near_surface.mean()), 'surface_aabb_candidate_vertex_count': int(surface_aabb.sum()), 'surface_aabb_candidate_vertex_fraction': float(surface_aabb.mean()), 'sign_aabb_candidate_vertex_count': int(sign_aabb.sum()), 'sign_aabb_candidate_vertex_fraction': float(sign_aabb.mean()), 'signed_broadphase_policy': 'all_vertices_inside_sign_mesh_AABB_then_nearest_face_authority_filter', 'signed_broadphase_candidate_vertex_count': int(signed_broadphase_candidate.sum()), 'signed_broadphase_candidate_vertex_fraction': float(signed_broadphase_candidate.mean()), 'signed_local_authority_candidate_vertex_count': int(signed_local_authority_candidate.sum()), 'signed_local_authority_rejected_vertex_count': int(signed_local_authority_rejected.sum()), 'unresolved_topology_penetrating_vertex_count': int(unresolved_topology_penetrating.sum()), 'unresolved_topology_penetration_depth_m': nearest_summary(unresolved_topology_signed[unresolved_topology_penetrating]), 'signed_query_candidate_vertex_count': int(signed_query_candidate.sum()), 'signed_query_candidate_vertex_fraction': float(signed_query_candidate.mean()), 'penetrating_vertex_count': int(penetrating.sum()), 'penetrating_vertex_fraction': float(penetrating.mean()), 'penetration_depth_m': nearest_summary(signed[penetrating]) if sign_mesh_watertight else nearest_summary(np.asarray([], dtype=float)), 'signed_distance_m': nearest_summary(signed[np.isfinite(signed)]), 'nearest_surface_unsigned_m': nearest_summary(np.asarray(unsigned_surface_dist, dtype=float)), 'candidate_translation_world_m': correction_w.astype(float).tolist(), 'candidate_translation_norm_m': correction_norm_m, 'diagnostic_candidate_translation_world_m_before_pose_quarantine': diagnostic_candidate_translation_world_m, 'diagnostic_candidate_translation_norm_m_before_pose_quarantine': diagnostic_candidate_translation_norm_m, 'diagnostic_candidate_joint_reprojection_shift_px_before_pose_quarantine': diagnostic_candidate_joint_reprojection_shift_px, 'diagnostic_candidate_visible_2d_consistency_before_pose_quarantine': diagnostic_candidate_visible_2d_consistency, 'candidate_translation_solver': correction_solver, 'candidate_joint_reprojection_shift_px': reproj_summary, 'candidate_visible_2d_consistency': visible_consistency, 'candidate_application_state': app_state, 'reason': reason}
+            rows.append(row)
+            if penetrating.any() and signed_nonpenetration_physical_active:
+                corrective_rows.append(row)
+    by_side = {}
+    for side in ['left', 'right']:
+        side_rows = [r for r in rows if r['hand_side'] == side]
+        correction_norms = np.asarray([r['candidate_translation_norm_m'] for r in side_rows], dtype=float)
+        penetrations = np.asarray([r['penetrating_vertex_count'] for r in side_rows], dtype=float)
+        by_side[side] = {'measured_frames': len(side_rows), 'frames_with_any_penetration': int(np.sum(penetrations > 0)) if len(penetrations) else 0, 'candidate_translation_norm_m': nearest_summary(correction_norms)}
+    report = {'method': 'build_v18_mano_object_constraint_state', 'status': 'completed_quarantined_unready_object_pose_trajectory' if quarantine_unready_pose else 'ok' if signed_nonpenetration_physical_active else 'completed_unsigned_surface_measurement_signed_nonpenetration_inactive', 'annotation_ready': False, 'object_pose_input_ready_for_constraint_measurement': pose_input_explicitly_ready, 'object_pose_input_legacy_compatibility': bool(pose_readiness['legacy_readiness_fields_missing']), 'physical_constraint_quarantined': quarantine_unready_pose, 'signed_nonpenetration_constraint_quarantined': not signed_nonpenetration_physical_active, 'unsigned_collision_surface_measurement_available': True, 'object_pose_readiness': pose_readiness, 'claim_scope': 'Object-relative MANO/contact and nonpenetration values are diagnostic-only because P15 explicitly reports an unready object trajectory; no candidate coordinate correction is exposed downstream.' if quarantine_unready_pose else 'Collision-eligible surface supports unsigned proximity measurement, but signed nonpenetration is inactive because geometry readiness is not explicitly true, the sign mesh is not watertight, or signed evaluation was skipped; no coordinate correction is exposed.' if not signed_nonpenetration_physical_active else 'Collision-eligible posed object surface supplies unsigned measurements and an explicitly ready watertight sign source supplies signed nonpenetration hypotheses. Coordinate corrections remain candidates until visible 2D consistency is inspected.', 'object_id': args.object_id, 'inputs': {'annotations': str(args.annotations), 'hawor_npz': str(args.hawor_npz), 'pose_report': str(args.pose_report), 'completion_report': str(args.completion_report), 'completed_surface_mesh': str(mesh_path), 'surface_mesh_semantics': surface_mesh_semantics, 'completion_geometry_readiness': geometry_readiness, 'sign_mesh': str(sign_mesh_path), 'sign_mesh_source_report': str(args.sign_mesh_source_report) if args.sign_mesh_source_report else None, 'skip_signed_distance': bool(args.skip_signed_distance)}, 'completed_surface_mesh_watertight': surface_mesh_watertight, 'surface_mesh_semantics': surface_mesh_semantics, 'completion_geometry_readiness': geometry_readiness, 'signed_geometry_source_readiness': sign_source_readiness, 'signed_geometry_query_eligible': signed_geometry_query_eligible, 'signed_face_authority': signed_face_authority, 'signed_nonpenetration_factor_active': signed_nonpenetration_physical_active, 'signed_nonpenetration_inactive_reason': None if signed_nonpenetration_physical_active else 'unready_object_pose' if quarantine_unready_pose else 'signed_distance_explicitly_skipped' if args.skip_signed_distance else 'signed_geometry_not_explicitly_ready_not_watertight_or_missing_local_face_authority', 'sign_mesh_watertight': sign_mesh_watertight, 'measured_pair_count': len(rows), 'candidate_correction_count': len(corrective_rows), 'diagnostic_penetrating_pair_count_before_pose_quarantine': int(sum((int(row.get('penetrating_vertex_count') or 0) > 0 for row in rows))), 'summary_by_side': by_side, 'constraint_rows': rows}
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.output_dir / 'v18_mano_object_constraint_state.json'
+    out_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+    print(json.dumps({k: report[k] for k in ['status', 'object_id', 'surface_mesh_semantics', 'completed_surface_mesh_watertight', 'sign_mesh_watertight', 'signed_geometry_query_eligible', 'signed_nonpenetration_factor_active', 'measured_pair_count', 'candidate_correction_count', 'summary_by_side']}, indent=2))

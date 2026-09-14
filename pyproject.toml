@@ -20,7 +20,7 @@ test = ["pytest>=8"]
 ego-annotate = "main:main"
 
 [tool.setuptools]
-py-modules = ["main", "render"]
+py-modules = ["main", "render", "evaluate"]
 
 [tool.setuptools.packages.find]
 where = ["."]
