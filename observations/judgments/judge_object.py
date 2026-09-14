@@ -1,7 +1,7 @@
 """Independent object image judgment, fixed to gpt-6-astra."""
 from utils.runtime import astra_request, judgment_cli
 
-PROMPT = 'Select the single manipulated object from actual raw video frames. Use open-vocabulary detector descriptions, no pixel clicks. Identify active intervals and representative frames, and distinguish evidence from uncertainty. The supplied frame_ids are the only legal frame identities.'
+PROMPT = 'Select the single manipulated object from actual raw video frames. Use concise open-vocabulary detector noun phrases, no pixel clicks. detector_text_prompts should each be a short 1-4 word object name with at most one essential modifier, e.g. "glass bottle" or "white handled mug". Put long appearance/action descriptions only in description, never in detector_text_prompts; OWLv2 has a 16-token encoder budget including special tokens. Identify active intervals and representative frames, and distinguish evidence from uncertainty. The supplied frame_ids are the only legal frame identities.'
 SCHEMA = {'type': 'object',
  'properties': {'objects': {'type': 'array',
                             'items': {'type': 'object',
@@ -85,3 +85,23 @@ def judge(evidence, images):
 
 if __name__ == '__main__':
     judgment_cli(judge)
+
+
+SHORTEN_PROMPT = """Shorten only the supplied detector text prompts into concise object noun phrases.
+Retain the core selected object and its visually necessary distinguishing attribute;
+remove action clauses, surrounding scene narrative and redundant adjectives. Do not
+change the object identity or invent a different object. The evidence gives the
+actual OWLv2 tokenizer counts and position budget including special tokens. Aim for
+1-4 words to leave room for subword tokenization. Return replacements and a rationale
+explaining which semantics were retained. This is an Astra judgment, not token truncation."""
+SHORTEN_SCHEMA = {'type':'object','required':['object_id','prompts','rationale'],
+    'additionalProperties':False,'properties':{'object_id':{'type':'string'},
+    'prompts':{'type':'array','minItems':1,'items':{'type':'string','minLength':1}},
+    'rationale':{'type':'string','minLength':1}}}
+
+
+def shorten_detector_prompts(evidence,images):
+    value,provenance=astra_request(SHORTEN_PROMPT,SHORTEN_SCHEMA,evidence,images)
+    if value['object_id']!=evidence['object_id']:raise ValueError('detector shortening changed object identity')
+    return {**value,'judgment_provenance':{'kind':'current_run_visual_judgment',
+        'judgment':'object_detector_prompt_shortening',**provenance}}

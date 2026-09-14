@@ -626,3 +626,31 @@ if __name__ == '__main__':
     unittest.main()
 
 from optimization.common.correspondences import first_hit_z, nearest_hand_first_hits
+
+
+class Owlv2TokenBudgetTests(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').environ.get('EGO_OWLV2_MODEL'),'set EGO_OWLV2_MODEL for actual tokenizer/processor CPU contract')
+    def test_real_clip_tokenizer_special_tokens_padding_and_overflow(self):
+        import os
+        from transformers import Owlv2Processor,Owlv2Config
+        from PIL import Image
+        from observations.object.owlv2 import text_budget_report,encode_detector_inputs
+        path=os.environ['EGO_OWLV2_MODEL']
+        processor=Owlv2Processor.from_pretrained(path,local_files_only=True)
+        config=Owlv2Config.from_pretrained(path,local_files_only=True)
+        prompts=['bottle','clear glass bottle with white cap','白色杯子']
+        report=text_budget_report(processor,config,prompts)
+        self.assertEqual(report['max_position_embeddings'],config.text_config.max_position_embeddings)
+        self.assertEqual(report['special_token_count'],2)
+        for prompt,row in zip(prompts,report['prompts']):
+            plain=processor.tokenizer(prompt,add_special_tokens=False)['input_ids']
+            self.assertEqual(row['token_count_including_special'],len(plain)+2)
+            self.assertFalse(row['truncated'])
+        accepted=[row['original_prompt'] for row in report['prompts'] if row['within_budget']]
+        inputs,_=encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),accepted)
+        self.assertEqual(tuple(inputs['input_ids'].shape),(len(accepted),config.text_config.max_position_embeddings))
+        self.assertEqual(inputs['attention_mask'].sum(1).tolist(),[r['token_count_including_special'] for r in report['prompts'] if r['within_budget']])
+        overflow='the very large transparent glass barbecue sauce bottle that is being held by the left hand near the table'
+        invalid=text_budget_report(processor,config,[overflow,'cup'])
+        self.assertFalse(invalid['valid']);self.assertGreater(invalid['prompts'][0]['token_count_including_special'],16)
+        with self.assertRaisesRegex(ValueError,'shorten with Astra'):encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),[overflow,'cup'])

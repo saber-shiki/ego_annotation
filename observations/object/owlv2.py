@@ -94,9 +94,36 @@ def finite_box(box: list[float], width: int, height: int) -> list[float] | None:
         return None
     return [x1, y1, x2, y2]
 
+def text_budget_report(processor, config, prompts):
+    """Count real CLIP tokens, including BOS/EOS, against encoder positions."""
+    budget=int(config.text_config.max_position_embeddings)
+    encoded=processor.tokenizer(prompts,add_special_tokens=True,padding=False,truncation=False)
+    token_ids=encoded['input_ids']
+    rows=[{'original_prompt':text,'effective_prompt':text,'token_ids':list(map(int,ids)),
+           'token_count_including_special':len(ids),'truncated':False,'within_budget':len(ids)<=budget}
+          for text,ids in zip(prompts,token_ids)]
+    return {'schema':'owlv2_text_budget_v1','max_position_embeddings':budget,
+        'special_token_count':processor.tokenizer.num_special_tokens_to_add(pair=False),
+        'padding':'max_length','truncation':False,'valid':all(r['within_budget'] for r in rows),'prompts':rows}
+
+
+def encode_detector_inputs(processor, model_config, image, prompts):
+    report=text_budget_report(processor,model_config,prompts)
+    if not report['valid']:
+        raise ValueError('OWLv2 query exceeds real tokenizer/model position budget; shorten with Astra before inference: '+json.dumps(report))
+    inputs=processor(images=image,return_tensors='pt')
+    text_inputs=processor.tokenizer(prompts,return_tensors='pt',padding='max_length',
+        max_length=report['max_position_embeddings'],truncation=False,add_special_tokens=True)
+    inputs.update(text_inputs)
+    if inputs['input_ids'].shape[-1]!=report['max_position_embeddings']:
+        raise ValueError('OWLv2 processor violated padded model-position budget')
+    return inputs,report
+
+
 def run_owlv2_frame(processor: Any, model: Any, image: Image.Image, prompts: list[str], threshold: float) -> list[dict[str, Any]]:
     import torch
-    inputs = processor(text=[prompts], images=image, return_tensors='pt').to(model.device)
+    inputs,_ = encode_detector_inputs(processor,model.config,image,prompts)
+    inputs=inputs.to(model.device)
     with torch.inference_mode():
         outputs = model(**inputs)
     target_sizes = [(image.height, image.width)]
@@ -151,7 +178,7 @@ def render_review(image_bgr: np.ndarray, detections: list[dict[str, Any]], selec
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import torch
     from transformers import Owlv2ForObjectDetection
-    from transformers import Owlv2Processor
+    from transformers import Owlv2Processor, Owlv2Config
     manifest = require_dict(load_json(args.raw_frame_manifest), 'raw frame manifest')
     rows_by_idx = manifest_rows(manifest)
     frames = parse_int_list(args.prompt_frames)
@@ -161,6 +188,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if device.type == 'cuda' and (not torch.cuda.is_available()):
         raise RuntimeError('CUDA requested for OWLv2 but torch.cuda.is_available() is false')
     processor = Owlv2Processor.from_pretrained(str(model_path), local_files_only=True)
+    budget=text_budget_report(processor,Owlv2Config.from_pretrained(str(model_path),local_files_only=True),prompts)
+    if not budget['valid']:raise ValueError('OWLv2 queries exceed tokenizer position budget; regenerate short detector noun phrases before model inference: '+json.dumps(budget))
     model = Owlv2ForObjectDetection.from_pretrained(str(model_path), local_files_only=True).to(device)
     model.eval()
     prompt_rows: list[dict[str, Any]] = []
@@ -200,7 +229,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     payload = {'case_id': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'description': args.description, 'prompt_source': 'owlv2_text_grounded_detector_boxes', 'point_coordinate_frame': f'manifest_pixels_{width}x{height}', 'prompt_image_width': width, 'prompt_image_height': height, 'object_surface_policy': 'OWLv2 text-grounded box prompts seed SAM2; masks containing broad hand/table/arm support remain P07 failures.', 'object_plan_payload': {'object_id': args.object_id, 'track_id': args.track_id, 'active_intervals': [{'start_frame': active_start, 'end_frame': active_end}], 'expected_visible_intervals': [{'start_frame': active_start, 'end_frame': active_end, 'visibility': 'visible_or_hand_occluded'}]}, 'owlv2_model': str(model_path), 'owlv2_box_threshold': float(args.box_threshold), 'point_prompts': prompt_rows}
     out_path = args.output_root / args.object_id / 'object_point_prompts_vlm.json'
     write_json(out_path, payload)
-    report = {'status': 'ok', 'method': 'build_v19_owlv2_object_box_prompts', 'claim_scope': 'text-grounded OWLv2 boxes for SAM2 prompting only; not masks, geometry, or pose', 'raw_frame_manifest': str(args.raw_frame_manifest), 'output_prompt_json': str(out_path), 'review_dir': str(args.review_dir), 'case_id': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'text_prompts': prompts, 'prompt_frames': frames, 'missing_prompt_frames': missing_frames, 'selected_first_visible_prompt': first_visible, 'detections': detection_records}
+    report = {'status': 'ok', 'method': 'build_v19_owlv2_object_box_prompts', 'claim_scope': 'text-grounded OWLv2 boxes for SAM2 prompting only; not masks, geometry, or pose', 'raw_frame_manifest': str(args.raw_frame_manifest), 'output_prompt_json': str(out_path), 'review_dir': str(args.review_dir), 'case_id': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'text_prompts': prompts, 'text_tokenization':budget, 'prompt_frames': frames, 'missing_prompt_frames': missing_frames, 'selected_first_visible_prompt': first_visible, 'detections': detection_records}
     write_json(args.output_root / args.object_id / 'v19_owlv2_object_box_prompt_report.json', report)
     print(json.dumps({k: v for (k, v) in report.items() if k != 'detections'}, indent=2))
     return report
@@ -228,6 +257,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 def main() -> None:
+    import sys
+    if sys.argv[1:2]==['text-contract']:
+        from transformers import Owlv2Config,Owlv2Processor
+        parser=argparse.ArgumentParser(description='CPU tokenizer/model budget check; no learned inference')
+        parser.add_argument('--model',type=Path,required=True)
+        parser.add_argument('--prompts',type=Path,required=True)
+        parser.add_argument('--output',type=Path,required=True)
+        args=parser.parse_args(sys.argv[2:])
+        processor=Owlv2Processor.from_pretrained(str(args.model),local_files_only=True)
+        config=Owlv2Config.from_pretrained(str(args.model),local_files_only=True)
+        value=text_budget_report(processor,config,load_json(args.prompts)['prompts'])
+        with args.output.open('x') as handle:json.dump(value,handle,indent=2)
+        return
     run(parse_args())
 if __name__ == '__main__':
     main()

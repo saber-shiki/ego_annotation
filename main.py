@@ -251,6 +251,33 @@ def appearance_candidate_ids(rows, annotations, object_id, preferred):
     return list(dict.fromkeys([preferred,*[row['frame_idx'] for row in ranked[:12]]]))
 
 
+def detector_prompt_contract(obj,images,assets,directory):
+    """Use actual model tokenization, asking the same Astra judge to shorten if needed."""
+    import os,subprocess
+    from observations.judgments.judge_object import shorten_detector_prompts
+    directory=Path(directory);directory.mkdir(parents=True,exist_ok=False)
+    prompts=list(obj['detector_text_prompts']);history=[]
+    for attempt in range(3):
+        prompt_path=directory/f'prompts_{attempt}.json';report_path=directory/f'tokens_{attempt}.json'
+        prompt_path.write_text(json.dumps({'prompts':prompts},indent=2))
+        subprocess.run([assets['owlv2_python'],'-m','observations.object.owlv2','text-contract',
+            '--model',assets['owlv2_model'],'--prompts',str(prompt_path),'--output',str(report_path)],
+            cwd=Path(__file__).resolve().parent,env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parent)+os.pathsep+os.environ.get('PYTHONPATH',''),
+                'HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1'},check=True)
+        report=load(report_path);history.append({'token_report_sha256':sha(report_path),'report':report})
+        if report['valid']:
+            result={'object_id':obj['object_id'],'original_prompts':obj['detector_text_prompts'],
+                'effective_prompts':prompts,'truncated':False,'shortening_history':history}
+            (directory/'contract.json').write_text(json.dumps(result,indent=2,allow_nan=False))
+            return result
+        if attempt==2:raise ValueError('Astra detector phrases still exceed real OWLv2 tokenizer budget after two shortening judgments')
+        judgment=shorten_detector_prompts({'object_id':obj['object_id'],'description':obj['description'],
+            'original_prompts':obj['detector_text_prompts'],'current_prompts':prompts,'token_budget':report},images)
+        path=directory/f'shortening_{attempt}.json';path.write_text(json.dumps(judgment,indent=2,allow_nan=False))
+        history[-1]['shortening_judgment']={'sha256':sha(path),'value':judgment}
+        prompts=judgment['prompts']
+
+
 def owned_surface_arguments(root, case, object_id, track_id, output, *, anchor=None):
     """Depth-order masks already excluded front hands; never subtract twice."""
     root=Path(root)
@@ -350,6 +377,8 @@ def annotate(args):
     obj=plan['objects'][0];object_id=obj['object_id'];track=obj['track_id']
     if not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v) for v in (args.case,object_id,track)):
         raise ValueError('unsafe case/object/track identity')
+    detector_contract=detector_prompt_contract(obj,images,assets,root/'state/detector_text')
+    record('detector_text',[(root/'state/detector_text/contract.json','detector_text_contract')])
     width,height=timing.source_size_wh
     camera_dir=root/'state/calibration';camera=camera_dir/'v19_camera_calibration_contract.json'
     def depth_job(stage,output,conditioned=False):
@@ -387,7 +416,7 @@ def annotate(args):
         '--prompt-frames',','.join(map(str,obj['detector_prompt_frames'])),
         '--active-start',obj['detector_active_interval'][0],'--active-end',obj['detector_active_interval'][1],
         '--owlv2-model',assets['owlv2_model'],'--box-threshold',.03,'--device','cuda','--box-only']
-    for prompt in obj['detector_text_prompts']:owlargs+=['--text-prompt',prompt]
+    for prompt in detector_contract['effective_prompts']:owlargs+=['--text-prompt',prompt]
     worker('owlv2',assets['owlv2_python'],'observations.object.owlv2',owlargs,
         [(detector/object_id/'object_point_prompts_vlm.json','object_boxes')])
     sam2=root/'measurements/object_tracks/sam2_owlv2_box_points';track_path=sam2/track/'sam2/sam2_track.json'

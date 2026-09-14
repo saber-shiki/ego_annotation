@@ -136,3 +136,14 @@ first-surface eligibility, exact K/radius rays, formal contact-state gradients,
 active/dense normalization, real MANO replay when assets are supplied, shared
 accepted-state export, full triangle RRD and MP4 rendering primitives. A passing
 CPU suite does not establish cold-video accuracy or three completed annotations.
+
+
+OWLv2 detector queries use its actual tokenizer/model positional budget, including
+BOS/EOS tokens. `judge_object` requests short object noun phrases while preserving
+the detailed object description separately. Before depth/MANO inference, the cold
+entry tokenizes all phrases in the OWLv2 environment; over-budget phrases trigger
+up to two same-Astra shortening judgments, each with original/effective text,
+token IDs/counts, rationale and image provenance saved under `state/detector_text`.
+No detector text is truncated. The inference worker rejects any remaining overflow
+before loading model weights and pads valid mixed-length queries to the model's
+actual positional budget.
