@@ -159,7 +159,18 @@ def main(argv=None):
     judgment.add_argument('--evidence',type=Path,required=True)
     judgment.add_argument('--image',type=Path,action='append',required=True)
     judgment.add_argument('--output',type=Path,required=True)
+    formal=commands.add_parser('fit-formal',help='solve a named prepared formal MANO interval')
+    formal.add_argument('--problem',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='fit-formal':
+        from optimization.problems import FormalManoInterval
+        values=load(args.problem)
+        for key in ('annotations','pose_report','completed_mesh','completion_report','output_dir','wilor_root','mano_left'):
+            values[key]=Path(values[key])
+        for key in ('depth_npz','factor_reports'):
+            if key in values:values[key]=tuple(Path(p) for p in values[key])
+        if values.get('hand_ray_prior') is not None:values['hand_ray_prior']=Path(values['hand_ray_prior'])
+        return solve(FormalManoInterval(**values))
     if args.command=='judge':
         import importlib
         if args.output.exists():raise ValueError('judgment output must be create-only')

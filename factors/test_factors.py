@@ -84,7 +84,6 @@ class DemoGeometry(unittest.TestCase):
         self.assertAlmostEqual(float(hit["t_hit"].numpy()[0]), 0.5)
 
 
-    unittest.main()
 
 """Primary pad activation must couple to unsigned full-triangle fitting gradients."""
 import sys

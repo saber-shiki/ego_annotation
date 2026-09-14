@@ -126,3 +126,48 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
     if output.exists():raise ValueError('final destination appeared during export')
     staging.rename(output)
     return document
+
+
+def export_scene(state_path,binding_path,fit_report_path,run_root,bundle_manifest,output):
+    """Validate an actual fitted archive and publish complete JSON/RRD geometry."""
+    from utils.state import in_run, input_identity
+    from gates.object.geometry import validate_posterior
+    from observations.object.shape import mesh_arrays
+    root=Path(run_root).resolve()
+    for path in (state_path,binding_path,fit_report_path):in_run(path,root)
+    in_run(output,root,must_exist=False)
+    binding=load(binding_path);fit=load(fit_report_path)
+    reference=binding['refined_posterior']
+    if sha(in_run(reference['path'],root))!=reference['sha256']:
+        raise ValueError('refined state changed before export')
+    validate_posterior(load(reference['path']),binding['object_id'],root)
+    if fit['input_hashes']['pose_report']!=sha(binding_path):
+        raise ValueError('fitter consumed another pose binding')
+    mesh_contract=binding['render_mesh_contract']
+    mesh_path=in_run(mesh_contract['required_mesh_path'],root)
+    if sha(mesh_path)!=mesh_contract['required_mesh_sha256'] or fit['mesh_sha256']!=sha(mesh_path):
+        raise ValueError('fitter/export mesh identity mismatch')
+    vertices,faces=mesh_arrays(mesh_path)
+    with np.load(state_path,allow_pickle=False) as archive:state=dict(archive)
+    if not np.array_equal(state['object_faces'],faces) or not np.allclose(state['object_vertices_canonical'],vertices,atol=1e-6,rtol=0):
+        raise ValueError('fit changed complete canonical mesh topology or vertices')
+    judgment_path=in_run(fit['interaction_judgments'],root)
+    if sha(judgment_path)!=fit['input_hashes']['interaction_judgments']:
+        raise ValueError('interaction judgment changed since fit')
+    identity=input_identity(root/'input/runtime_input_contract.json',root,bundle_manifest)
+    raw=indexed(load(root/'input/raw_frame_manifest/manifest.json')['frames'])
+    return export(state,binding,identity.case,binding['object_id'],binding.get('track_id',binding['object_id']),
+        Path(output),raw_frames=raw,visibility=load(judgment_path),identity=identity,
+        provenance={'fit_report_sha256':sha(fit_report_path),'input_hashes':fit['input_hashes']})
+
+
+def main(argv=None):
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ('state','binding','fit-report','run-root','bundle-manifest','output'):
+        parser.add_argument('--'+name,type=Path,required=True)
+    args=parser.parse_args(argv)
+    return export_scene(args.state,args.binding,args.fit_report,args.run_root,args.bundle_manifest,args.output)
+
+
+if __name__=='__main__':main()

@@ -12,7 +12,6 @@ import os
 import stat
 import subprocess
 import urllib.request
-import jsonschema
 from utils.state import sha
 
 ASTRA_MODEL = 'gpt-6-astra'
@@ -58,6 +57,7 @@ def astra_request(prompt, schema, evidence, images):
                  if message.get('type')=='message' and message.get('role')=='assistant'
                  for part in message.get('content',[]) if part.get('type')=='output_text')
     result=json.loads(text)
+    import jsonschema
     jsonschema.validate(result,schema)
     return result, {'request_model':ASTRA_MODEL,'response_model':raw['model'],
         'gateway_model_group':group,'disable_fallbacks':True,'response_id':raw.get('id'),
@@ -83,3 +83,57 @@ def judgment_cli(judge):
 def run_model(command, *, cwd, environment):
     """Run an explicit model command in its provisioned environment; never retry elsewhere."""
     return subprocess.run([str(x) for x in command],cwd=cwd,env=environment,check=True)
+
+def install_offline_dinov2_hub(local_repo: Path, local_checkpoint: Path) -> dict:
+    """Route only the frozen DINOv2 hub request to byte-bound local assets."""
+    from urllib.parse import urlparse
+    import ast
+    from utils.state import sha as sha256_file
+    import torch
+    local_repo = local_repo.expanduser().resolve()
+    local_checkpoint = local_checkpoint.expanduser().resolve()
+    hubconf = local_repo / 'hubconf.py'
+    if not hubconf.is_file():
+        raise RuntimeError(f'missing offline DINOv2 hubconf: {hubconf}')
+    if not local_checkpoint.is_file():
+        raise RuntimeError(f'missing offline DINOv2 checkpoint: {local_checkpoint}')
+    actual_hubconf_sha256 = sha256_file(hubconf)
+    expected_hubconf_sha256 = 'c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64'
+    if actual_hubconf_sha256 != expected_hubconf_sha256:
+        raise RuntimeError(f'offline DINOv2 hubconf hash mismatch: {hubconf}')
+    imported_entries = {alias.asname or alias.name for node in ast.walk(ast.parse(hubconf.read_text(encoding='utf-8'), filename=str(hubconf))) if isinstance(node, ast.ImportFrom) for alias in node.names}
+    if 'dinov2_vitl14_reg' not in imported_entries:
+        raise RuntimeError(f'offline DINOv2 source lacks dinov2_vitl14_reg: {local_repo}')
+    original_load = torch.hub.load
+    expected_checkpoint_sha256 = '36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51'
+    actual_checkpoint_sha256 = sha256_file(local_checkpoint)
+    if actual_checkpoint_sha256 != expected_checkpoint_sha256:
+        raise RuntimeError(f'offline DINOv2 checkpoint hash mismatch: {local_checkpoint}')
+    state = {'source': 'local', 'repo': str(local_repo), 'hubconf_sha256': actual_hubconf_sha256, 'expected_hubconf_sha256': expected_hubconf_sha256, 'required_entry': 'dinov2_vitl14_reg', 'available_entry_count': int(len(imported_entries)), 'intercepted_load_calls': 0, 'intercepted_checkpoint_load_calls': 0, 'checkpoint_path': str(local_checkpoint), 'checkpoint_sha256': actual_checkpoint_sha256, 'expected_checkpoint_sha256': expected_checkpoint_sha256, 'network_resolution_allowed': False}
+
+    def offline_load(repo_or_dir, model, *load_args, **load_kwargs):
+        if str(repo_or_dir) == 'facebookresearch/dinov2':
+            state['intercepted_load_calls'] += 1
+            load_kwargs.pop('source', None)
+            load_kwargs.pop('skip_validation', None)
+            return original_load(str(local_repo), model, *load_args, source='local', **load_kwargs)
+        raise RuntimeError(f'undeclared torch.hub resolution is forbidden in model worker: {repo_or_dir}/{model}')
+
+    def offline_state_dict_from_url(url, *load_args, **load_kwargs):
+        filename = str(load_kwargs.get('file_name') or Path(urlparse(str(url)).path).name)
+        if filename != 'dinov2_vitl14_reg4_pretrain.pth':
+            raise RuntimeError(f'undeclared torch checkpoint URL is forbidden in model worker: {url}')
+        checkpoint = local_checkpoint
+        if not checkpoint.is_file():
+            raise RuntimeError(f'offline DINOv2 checkpoint is missing; network download is forbidden: {checkpoint}')
+        actual_hash = sha256_file(checkpoint)
+        if actual_hash != expected_checkpoint_sha256:
+            raise RuntimeError(f'offline DINOv2 checkpoint hash mismatch: {checkpoint}')
+        state['intercepted_checkpoint_load_calls'] += 1
+        state['checkpoint_path'] = str(checkpoint)
+        state['checkpoint_sha256'] = actual_hash
+        map_location = load_kwargs.get('map_location', None)
+        return torch.load(checkpoint, map_location=map_location, weights_only=False)
+    torch.hub.load_state_dict_from_url = offline_state_dict_from_url
+    torch.hub.load = offline_load
+    return state

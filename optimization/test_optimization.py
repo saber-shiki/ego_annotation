@@ -217,3 +217,33 @@ class CorrectionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class FormalProblemTests(unittest.TestCase):
+    def problem(self, **kwargs):
+        from optimization.problems import FormalManoInterval
+        from pathlib import Path
+        p=Path('fixture')
+        return FormalManoInterval('case','object',p,p,p,p,[p],p,p,p,0,2,**kwargs)
+
+    def test_hot3d_fixes_object_and_preserves_translation_support_gates(self):
+        args=self.problem(profile='hot3d_shared',factor_reports=[Path('factor')]).arguments()
+        self.assertFalse(args.optimize_object_translation)
+        self.assertTrue(args.optimize_contact_state)
+        self.assertTrue(args.require_active_full_K_mano_contract)
+        self.assertTrue(args.visible_surface_depth_order_term)
+        self.assertTrue(args.freeze_translation_without_visible_surface_support)
+        self.assertTrue(args.gate_translation_with_visible_surface_support)
+
+    def test_optional_named_factors_and_forbidden_boolean_combinations(self):
+        self.assertTrue(self.problem(profile='contact_geometry').arguments().contact_state_geometry_likelihood)
+        self.assertTrue(self.problem(profile='object_delta').arguments().optimize_object_translation)
+        self.assertFalse(self.problem(profile='no_dense_barrier').arguments().dense_observed_surface_barrier)
+        with self.assertRaises(ValueError):self.problem(profile='hand_ray_prior').arguments()
+        with self.assertRaises(ValueError):self.problem(profile='unknown').arguments()
+        with self.assertRaises(ValueError):self.problem(numeric_options={'optimize_object_translation':True}).arguments()
+
+    def test_empty_formal_interval_does_not_invent_geometry(self):
+        from optimization.hand.fit import optimize_rows
+        result,states,archive=optimize_rows([],None,None,None,None)
+        self.assertEqual(result['status'],'no_rows');self.assertEqual(states,[])
+        self.assertEqual(archive['vertices_world_m'].shape,(0,778,3))

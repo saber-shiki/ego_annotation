@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Anatomical contact declarations and shared visual reachability qualification."""
 import numpy as np
 from utils.data import frame_ids
@@ -250,3 +251,187 @@ def validate_visual_proximity_contract(rep, appearance_manifest_path):
 
 from pathlib import Path
 from utils.state import sha
+
+def contact_patch_anchor_coherence(rows: list[FrameHandRow]) -> dict[str, Any]:
+    from typing import Any
+    import numpy as np
+    from collections import Counter
+    from utils.geometry import inverse_object
+    from utils.data import numeric_summary
+    from utils.data import FrameHandRow
+    centroids_object: list[np.ndarray] = []
+    row_spreads: list[float] = []
+    support_uncertainties: list[float] = []
+    anchor_states: Counter[str] = Counter()
+    allowed_count = 0
+    active_count = 0
+    for row in rows:
+        if row.contact_anchor_state:
+            anchor_states[str(row.contact_anchor_state)] += 1
+        if row.contact_anchor_residual_allowed:
+            allowed_count += 1
+        if row.contact_patch_factor_state != 'active_contact_patch' or len(row.contact_patch_target_world_m) == 0:
+            continue
+        active_count += 1
+        targets_object = inverse_object(row.contact_patch_target_world_m, row.object_rotation_world_from_object, row.object_translation_world_m)
+        centroid = np.median(targets_object, axis=0)
+        centroids_object.append(centroid.astype(float))
+        spread = np.linalg.norm(targets_object - centroid[None, :], axis=1)
+        row_spreads.extend(spread.astype(float).tolist())
+        support_uncertainties.append(float(row.contact_patch_support_uncertainty_m))
+    if centroids_object:
+        centroid_arr = np.asarray(centroids_object, dtype=float)
+        median_centroid = np.median(centroid_arr, axis=0)
+        centroid_dispersion = np.linalg.norm(centroid_arr - median_centroid[None, :], axis=1)
+    else:
+        median_centroid = np.zeros((3,), dtype=float)
+        centroid_dispersion = np.asarray([], dtype=float)
+    centroid_summary = numeric_summary(np.asarray(centroid_dispersion, dtype=float))
+    support_summary = numeric_summary(np.asarray(support_uncertainties, dtype=float))
+    dispersion_p95 = centroid_summary.get('p95') if isinstance(centroid_summary, dict) else None
+    support_p95 = support_summary.get('p95') if isinstance(support_summary, dict) else None
+    return {'active_contact_patch_rows_with_targets': int(active_count), 'contact_anchor_state_counts': dict(sorted(anchor_states.items())), 'contact_anchor_residual_allowed_count': int(allowed_count), 'object_frame_contact_centroid_median': median_centroid.astype(float).tolist(), 'object_frame_centroid_dispersion_m': centroid_summary, 'row_patch_spread_m': numeric_summary(np.asarray(row_spreads, dtype=float)), 'support_uncertainty_m': support_summary, 'centroid_dispersion_p95_exceeds_support_p95': bool(dispersion_p95 is not None and support_p95 is not None and (float(dispersion_p95) > float(support_p95))), 'claim_scope': 'Diagnostic support for a persistent object-frame A_t contact anchor. If stable anchor rows are absent or dispersion exceeds support, local contact must remain a sliding/bounded visible-surface hypothesis rather than a point-anchor force on H_t.'}
+
+def load_visible_ownership_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    from typing import Any
+    from pathlib import Path
+    return load_factor_rows(report_path, 'ownership_rows', expected_family='visible_ownership', target_entity_id=target_entity_id)
+
+def load_factor_rows(report_path: Path | None, row_key: str, *, expected_family: str, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    from typing import Any
+    from pathlib import Path
+    from utils.data import as_list
+    from utils.data import load_json
+    if report_path is None:
+        return {}
+    if not report_path.exists():
+        raise FileNotFoundError(f'missing {expected_family} factor report: {report_path}')
+    payload = load_json(report_path)
+    if not isinstance(payload, dict):
+        raise ValueError(f'{expected_family} factor report is not a JSON object: {report_path}')
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in as_list(payload.get(row_key)):
+        if not isinstance(row, dict):
+            continue
+        key = validate_factor_row_contract(row, expected_family=expected_family, target_entity_id=target_entity_id, report_path=report_path)
+        if key in out:
+            raise ValueError(f'duplicate {expected_family} factor row for {key} while reading {report_path}')
+        out[key] = row
+    return out
+
+def validate_factor_row_contract(row: dict[str, Any], *, expected_family: str, target_entity_id: str, report_path: Path) -> tuple[int, str]:
+    from typing import Any
+    from pathlib import Path
+    from observations.interaction.evidence import FACTOR_REQUIRED_FIELDS
+    missing = [field for field in FACTOR_REQUIRED_FIELDS if row.get(field) in (None, '')]
+    if missing:
+        raise ValueError(f'{expected_family} factor row lacks required fields {missing} in {report_path}: {row}')
+    family = str(row.get('factor_family') or '')
+    if family != expected_family:
+        raise ValueError(f'factor row family {family!r} does not match expected {expected_family!r} in {report_path}: {row}')
+    if str(row.get('target_entity_id')) != str(target_entity_id):
+        raise ValueError(f"{expected_family} factor target {row.get('target_entity_id')} does not match solver target {target_entity_id} in {report_path}")
+    provenance = row.get('provenance')
+    if not isinstance(provenance, dict) or not provenance:
+        raise ValueError(f'{expected_family} factor row has empty/non-dict provenance in {report_path}: {row}')
+    return (int(row['frame_idx']), str(row['hand_side']))
+
+def merge_factor_row_maps(family: str, specific: dict[tuple[int, str], dict[str, Any]], generic: dict[tuple[int, str], dict[str, Any]]) -> dict[tuple[int, str], dict[str, Any]]:
+    from typing import Any
+    merged = dict(generic)
+    overlap = sorted(set(merged) & set(specific))
+    if overlap:
+        raise ValueError(f'factor family {family} supplied by both generic and family-specific reports for keys: {overlap[:5]}')
+    merged.update(specific)
+    return merged
+
+def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entity_id: str) -> dict[str, dict[tuple[int, str], dict[str, Any]]]:
+    from typing import Any
+    from pathlib import Path
+    from utils.data import as_list
+    from utils.data import load_json
+    out: dict[str, dict[tuple[int, str], dict[str, Any]]] = {'visible_ownership': {}, 'surface_eligibility': {}, 'visible_surface_track': {}, 'hand_observation_visibility': {}, 'hand_depth_shift_prior': {}, 'contact_patch': {}}
+    for report_path in list(report_paths or []):
+        if not report_path.exists():
+            raise FileNotFoundError(f'missing generic factor report: {report_path}')
+        payload = load_json(report_path)
+        rows: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            rows.extend([r for r in as_list(payload.get('ownership_rows')) if isinstance(r, dict)])
+            rows.extend([r for r in as_list(payload.get('factor_rows')) if isinstance(r, dict)])
+        for row in rows:
+            family = str(row.get('factor_family') or '')
+            if family not in out:
+                continue
+            key = validate_factor_row_contract(row, expected_family=family, target_entity_id=target_entity_id, report_path=report_path)
+            if key in out[family]:
+                raise ValueError(f'duplicate generic {family} factor row for {key} while reading {report_path}')
+            out[family][key] = row
+    return out
+
+def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
+    from typing import Any
+    import numpy as np
+    import argparse
+    if not isinstance(row, dict):
+        return {'state': 'missing_contact_patch_row', 'weight': 0.0, 'band_m': float(args.contact_patch_band_m), 'target_margin_m': float(args.contact_patch_target_margin_m), 'support_uncertainty_m': float(args.contact_patch_support_uncertainty_m), 'support_uncertainty_source': 'default_arg_missing_contact_patch_row', 'local_patch_support_state': None, 'local_patch_support_consumed': False, 'local_patch_support_uncertainty_m': None, 'global_object_support_uncertainty_m': None, 'local_patch_sample_count': 0, 'local_patch_temporal_sample_count': 0, 'max_vertices': int(args.max_contact_patch_vertices), 'prior_probability': 0.0, 'contact_anchor_state': None, 'contact_anchor_residual_allowed': False, 'contact_anchor_blockers': [], 'contact_pose_anchor_key': None}
+    state = str(row.get('state') or 'active_contact_patch')
+    try:
+        raw_weight = float(row.get('weight', args.contact_patch_weight) or 0.0)
+    except Exception:
+        raw_weight = float(args.contact_patch_weight)
+    try:
+        base_weight = float(row.get('contact_patch_base_weight', row.get('base_weight', raw_weight)) or raw_weight)
+    except Exception:
+        base_weight = raw_weight
+    weight = base_weight if bool(args.optimize_contact_state) else raw_weight
+    try:
+        band_m = float(row.get('contact_patch_band_m', row.get('band_m', args.contact_patch_band_m)) or args.contact_patch_band_m)
+    except Exception:
+        band_m = float(args.contact_patch_band_m)
+    try:
+        target_margin_m = float(row.get('contact_patch_target_margin_m', row.get('target_margin_m', args.contact_patch_target_margin_m)) or args.contact_patch_target_margin_m)
+    except Exception:
+        target_margin_m = float(args.contact_patch_target_margin_m)
+    try:
+        max_vertices = int(row.get('max_vertices', args.max_contact_patch_vertices) or args.max_contact_patch_vertices)
+    except Exception:
+        max_vertices = int(args.max_contact_patch_vertices)
+    try:
+        support_uncertainty_m = float(row.get('object_support_uncertainty_m', row.get('contact_patch_support_uncertainty_m', row.get('support_uncertainty_m', args.contact_patch_support_uncertainty_m))) or args.contact_patch_support_uncertainty_m)
+    except Exception:
+        support_uncertainty_m = float(args.contact_patch_support_uncertainty_m)
+    raw_prior = row.get('contact_state_prior_probability', row.get('contact_patch_prior_probability', row.get('latent_contact_confidence', None)))
+    try:
+        prior_probability = float(raw_prior) if raw_prior is not None else 1.0 if max(0.0, weight) > 0.0 and state == 'active_contact_patch' else 0.0
+    except Exception:
+        prior_probability = 1.0 if max(0.0, weight) > 0.0 and state == 'active_contact_patch' else 0.0
+
+    def optional_float(raw: Any) -> float | None:
+        try:
+            val = float(raw)
+        except Exception:
+            return None
+        return val if np.isfinite(val) else None
+    blockers = row.get('contact_anchor_blockers')
+    local_unc = optional_float(row.get('local_patch_support_uncertainty_m'))
+    global_unc = optional_float(row.get('global_object_support_uncertainty_m'))
+    try:
+        local_count = int(row.get('local_patch_sample_count', 0) or 0)
+    except Exception:
+        local_count = 0
+    try:
+        temporal_count = int(row.get('local_patch_temporal_sample_count', 0) or 0)
+    except Exception:
+        temporal_count = 0
+    return {'state': state, 'weight': max(0.0, weight), 'prior_probability': float(np.clip(prior_probability, 0.0, 1.0)), 'band_m': max(0.0, band_m), 'target_margin_m': max(0.0, target_margin_m), 'support_uncertainty_m': max(0.0, support_uncertainty_m), 'support_uncertainty_source': row.get('contact_patch_support_uncertainty_source') if isinstance(row.get('contact_patch_support_uncertainty_source'), str) else None, 'local_patch_support_state': row.get('local_patch_support_state') if isinstance(row.get('local_patch_support_state'), str) else None, 'local_patch_support_consumed': bool(row.get('local_patch_support_consumed')), 'local_patch_support_uncertainty_m': local_unc, 'global_object_support_uncertainty_m': global_unc, 'local_patch_sample_count': max(0, local_count), 'local_patch_temporal_sample_count': max(0, temporal_count), 'max_vertices': max(0, max_vertices), 'contact_anchor_state': row.get('contact_anchor_state'), 'contact_anchor_residual_allowed': bool(row.get('contact_anchor_residual_allowed')), 'contact_anchor_blockers': blockers if isinstance(blockers, list) else [], 'contact_pose_anchor_key': row.get('contact_pose_anchor_key') if isinstance(row.get('contact_pose_anchor_key'), str) else None}
+
+def load_visible_surface_track_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    from typing import Any
+    from pathlib import Path
+    return load_factor_rows(report_path, 'factor_rows', expected_family='visible_surface_track', target_entity_id=target_entity_id)
+
+def load_surface_eligibility_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    from typing import Any
+    from pathlib import Path
+    return load_factor_rows(report_path, 'factor_rows', expected_family='surface_eligibility', target_entity_id=target_entity_id)

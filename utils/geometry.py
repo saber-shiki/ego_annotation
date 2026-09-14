@@ -153,3 +153,59 @@ def apply_native_pose(
         "scale_xyz": scale.tolist(),
         "metric_status": "native_monocular_scene_units_not_sensor_meters",
     }
+
+def object_vec_to_world(vec_object: np.ndarray, r_world_from_object: np.ndarray) -> np.ndarray:
+    import numpy as np
+    return vec_object @ r_world_from_object.T
+
+def inverse_object(points_world: np.ndarray, r_world_from_object: np.ndarray, t_world: np.ndarray) -> np.ndarray:
+    import numpy as np
+    return (points_world - t_world[None, :]) @ r_world_from_object
+
+def world_to_camera(points_world: np.ndarray, frame: dict[str, Any]) -> np.ndarray:
+    from typing import Any
+    import numpy as np
+    (r_c2w, t_c2w) = frame_camera_pose(frame)
+    return (points_world - t_c2w[None, :]) @ r_c2w
+
+def frame_camera_pose(frame: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    from typing import Any
+    import numpy as np
+    camera_raw = frame.get('camera')
+    camera: dict[str, Any] = camera_raw if isinstance(camera_raw, dict) else {}
+    transform = np.asarray(camera.get('T_world_camera_metric') or [], dtype=float)
+    if transform.shape != (4, 4):
+        raise RuntimeError(f"frame {frame.get('frame_idx')} lacks T_world_camera_metric")
+    return (transform[:3, :3], transform[:3, 3])
+
+
+def project_world_intrinsics(points_world: np.ndarray, r_c2w: np.ndarray, t_c2w: np.ndarray, intr: list[float]) -> np.ndarray:
+    import numpy as np
+    (fx, fy, cx, cy) = [float(x) for x in intr]
+    cam = (points_world - t_c2w) @ r_c2w
+    z = np.maximum(cam[:, 2], 1e-09)
+    return np.stack([fx * cam[:, 0] / z + cx, fy * cam[:, 1] / z + cy], axis=1)
+
+def transform_source_uv_to_mask(uv_source: np.ndarray | None, A_mask_from_source: np.ndarray) -> np.ndarray | None:
+    import numpy as np
+    from utils.geometry import finite_image_affine
+    if uv_source is None:
+        return None
+    uv = np.asarray(uv_source, dtype=np.float64)
+    if uv.ndim != 2 or uv.shape[1] != 2:
+        return uv
+    homogeneous = np.column_stack([uv, np.ones((len(uv),), dtype=np.float64)])
+    transformed = homogeneous @ finite_image_affine(A_mask_from_source, 'A_mask_from_source').T
+    return transformed[:, :2] / transformed[:, 2:3]
+
+def finite_image_affine(value: Any, label: str) -> np.ndarray:
+    from typing import Any
+    import numpy as np
+    affine = np.asarray(value, dtype=np.float64)
+    if affine.shape != (3, 3) or not np.isfinite(affine).all():
+        raise RuntimeError(f'{label} must be a finite 3x3 affine')
+    if not np.allclose(affine[2], [0.0, 0.0, 1.0], atol=1e-12, rtol=0.0):
+        raise RuntimeError(f'{label} must use homogeneous affine pixel coordinates')
+    if abs(float(np.linalg.det(affine))) < 1e-12:
+        raise RuntimeError(f'{label} is singular')
+    return affine

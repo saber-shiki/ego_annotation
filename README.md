@@ -46,8 +46,21 @@ Main-environment package installation: `pip install --no-deps .`; provision the
 listed core/visual dependencies in the isolated runtime first. Heavy observation
 providers will use their separately declared environments.
 
-Raw-video orchestration, remaining model adapters, formal paths,
-MP4/evaluation and final legacy removal are under migration. The historical documentation below
+Model workers now contain the actual HaWoR, UniDepth, OWLv2, SAM2, SAM3D and
+TRELLIS implementations. Heavy dependencies are imported in the worker functions,
+not at pipeline import time. Every worker requires provisioned model paths;
+HaWoR gets a fresh private raw-video copy before any upstream detector/SLAM call.
+
+`python main.py fit-formal --problem INPUTS_JSON` invokes the extracted full
+per-hand interval solver through a named `FormalManoInterval` profile. The
+HOT3D profile fixes object translation and enables its original full-K and
+translation-support gates. Optional compositions are named, and numeric tuning
+cannot switch Boolean factor families. This candidate still requires the formal
+full-MANO acceptance stage before physical publication.
+
+Cold raw-video business orchestration, observation assembly/ownership and RGB edge
+production, remaining formal acceptance/shared-tail paths, MP4/evaluation and final
+legacy removal are under migration. The historical documentation below
 is retained only during extraction and does not describe the new CLI.
 
 ---

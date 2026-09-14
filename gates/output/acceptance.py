@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Complete renderable mesh/timeline contract, independent of physical acceptance."""
 import numpy as np
 from observations.common import pose_from_values
@@ -33,3 +34,11 @@ def timeline(z):
         for i in np.flatnonzero(hv):mesh(z[side+'_vertices_world'][i],z[side+'_faces'])
     mesh(z['object_vertices_canonical'],z['object_faces'])
     return ids,times,order,T,K,size,valid
+
+def reject_rejected_annotation_path(path: Path) -> None:
+    from pathlib import Path
+    raw = str(path)
+    hits = [marker for marker in REJECTED_ANNOTATION_PATH_MARKERS if marker in raw]
+    if hits:
+        raise ValueError(f'rejected H-prime/final-v7 annotation source supplied to interval MANO solver: {path}. Use same-run source observations, not a previously corrected candidate.')
+REJECTED_ANNOTATION_PATH_MARKERS = ('v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard', 'verified_hprime_final', 'hprime_final')

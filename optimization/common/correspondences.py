@@ -112,3 +112,140 @@ def closest(scene, points):
     q = out["points"].numpy().reshape(shape)
     n = out["primitive_normals"].numpy().reshape(shape)
     return q, n
+
+def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, max_constraints: int, eps: float, reference_vertices_world: np.ndarray | None=None, object_translation_delta_world: np.ndarray | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    from typing import Any
+    import numpy as np
+    import open3d as o3d
+    from utils.geometry import inverse_object
+    from utils.geometry import object_vec_to_world
+    from utils.data import FrameHandRow
+    obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
+    signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
+    hard_eps = float(eps) + max(0.0, float(row.observed_surface_support_uncertainty_m))
+    penetrating = np.where(signed > hard_eps)[0]
+    if penetrating.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object[penetrating], dtype=np.float32)))
+    primitive_ids = closest['primitive_ids'].numpy().astype(np.int64)
+    valid = (primitive_ids >= 0) & (primitive_ids < len(row.face_strict_observed))
+    observed = np.zeros_like(valid, dtype=bool)
+    observed[valid] = row.face_strict_observed[primitive_ids[valid]]
+    idx = penetrating[observed]
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    closest_obj = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object[idx], dtype=np.float32)))['points'].numpy().astype(float)
+    disp = closest_obj - vertices_object[idx]
+    norms = np.linalg.norm(disp, axis=1)
+    good = norms > 1e-12
+    idx = idx[good]
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    normals_world = object_vec_to_world(disp[good] / norms[good, None], row.object_rotation_world_from_object)
+    depths = signed[idx]
+    reference = row.current_vertices_world if reference_vertices_world is None else reference_vertices_world
+    reference_to_query = vertices_world[idx] - reference[idx] - obj_delta[None, :]
+    required = np.sum(normals_world * reference_to_query, axis=1) + depths
+    order = np.argsort(required)[::-1]
+    if len(order) > int(max_constraints):
+        order = order[:int(max_constraints)]
+    return (idx[order].astype(np.int64), normals_world[order].astype(float), required[order].astype(float))
+
+def merge_constraints(base_idx: np.ndarray, base_normals: np.ndarray, base_depths: np.ndarray, new_idx: np.ndarray, new_normals: np.ndarray, new_depths: np.ndarray, cap: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    import numpy as np
+    best: dict[int, tuple[np.ndarray, float]] = {}
+    for (idx, normal, depth) in zip(base_idx.astype(int), base_normals, base_depths.astype(float)):
+        best[int(idx)] = (np.asarray(normal, dtype=float), float(depth))
+    for (idx, normal, depth) in zip(new_idx.astype(int), new_normals, new_depths.astype(float)):
+        old = best.get(int(idx))
+        if old is None or float(depth) > old[1]:
+            best[int(idx)] = (np.asarray(normal, dtype=float), float(depth))
+    if not best:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    items = sorted(best.items(), key=lambda kv: kv[1][1], reverse=True)[:int(cap)]
+    idx = np.asarray([k for (k, _) in items], dtype=np.int64)
+    normals = np.stack([v[0] for (_, v) in items]).astype(float)
+    depths = np.asarray([v[1] for (_, v) in items], dtype=float)
+    return (idx, normals, depths)
+
+def dense_observed_surface_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, reference_vertices_world: np.ndarray | None=None, object_translation_delta_world: np.ndarray | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Linearized observed-surface barrier for every MANO vertex near a trusted face.
+
+    The active set only constrains vertices already known to penetrate.  This
+    dense barrier adds tangent-plane inequalities for all vertices whose nearest
+    object face is depth-observed.  A vertex currently outside the object gets a
+    negative required displacement, so it contributes zero loss unless the
+    optimizer moves it inward across that observed surface.  A vertex currently
+    inside gets a positive required displacement along the outward normal.
+    """
+    from typing import Any
+    import numpy as np
+    import open3d as o3d
+    from utils.geometry import inverse_object
+    from utils.geometry import object_vec_to_world
+    from utils.data import FrameHandRow
+    obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
+    signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
+    closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32)))
+    primitive_ids = closest['primitive_ids'].numpy().astype(np.int64)
+    valid = (primitive_ids >= 0) & (primitive_ids < len(row.face_strict_observed))
+    observed = np.zeros_like(valid, dtype=bool)
+    observed[valid] = row.face_strict_observed[primitive_ids[valid]]
+    idx = np.where(observed)[0].astype(np.int64)
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    closest_obj = closest['points'].numpy().astype(float)[idx]
+    disp = closest_obj - vertices_object[idx]
+    norms = np.linalg.norm(disp, axis=1)
+    good = norms > 1e-12
+    idx = idx[good]
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    signed_idx = signed[idx]
+    normal_obj = disp[good] / norms[good, None]
+    outside = signed_idx < 0.0
+    normal_obj[outside] *= -1.0
+    normals_world = object_vec_to_world(normal_obj, row.object_rotation_world_from_object)
+    reference = row.current_vertices_world if reference_vertices_world is None else reference_vertices_world
+    reference_to_query = vertices_world[idx] - reference[idx] - obj_delta[None, :]
+    required = np.sum(normals_world * reference_to_query, axis=1) + signed_idx
+    return (idx.astype(np.int64), normals_world.astype(float), required.astype(float))
+
+def contact_patch_targets_from_vertices(vertices_world: np.ndarray, scene: Any, object_rotation_world_from_object: np.ndarray, object_translation_world_m: np.ndarray, face_strict_observed: np.ndarray, face_normals_object: np.ndarray, *, max_vertices: int, band_m: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    from typing import Any
+    import numpy as np
+    import open3d as o3d
+    from utils.geometry import inverse_object
+    from utils.geometry import object_vec_to_world
+    if int(max_vertices) <= 0 or float(band_m) <= 0.0 or (not np.any(face_strict_observed)):
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    vertices_object = inverse_object(vertices_world, object_rotation_world_from_object, object_translation_world_m)
+    closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32)))
+    primitive_ids = closest['primitive_ids'].numpy().astype(np.int64)
+    valid = (primitive_ids >= 0) & (primitive_ids < len(face_strict_observed))
+    observed = np.zeros_like(valid, dtype=bool)
+    observed[valid] = np.asarray(face_strict_observed, dtype=bool)[primitive_ids[valid]]
+    closest_obj = closest['points'].numpy().astype(float)
+    closest_world = closest_obj @ np.asarray(object_rotation_world_from_object, dtype=float).T + np.asarray(object_translation_world_m, dtype=float)[None, :]
+    distances = np.linalg.norm(np.asarray(vertices_world, dtype=float) - closest_world, axis=1)
+    candidate = observed & np.isfinite(distances) & (distances <= float(band_m))
+    idx = np.where(candidate)[0].astype(np.int64)
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    order = np.argsort(distances[idx])[:int(max_vertices)]
+    idx = idx[order]
+    primitive = primitive_ids[idx]
+    normals_obj = np.asarray(face_normals_object, dtype=float)[primitive]
+    normal_norms = np.linalg.norm(normals_obj, axis=1)
+    good = normal_norms > 1e-09
+    idx = idx[good]
+    primitive = primitive[good]
+    normals_obj = normals_obj[good]
+    normal_norms = normal_norms[good]
+    if idx.size == 0:
+        return (np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float))
+    normals_obj = normals_obj / normal_norms[:, None]
+    normals = object_vec_to_world(normals_obj, object_rotation_world_from_object)
+    return (idx.astype(np.int64), closest_world[idx].astype(float), normals.astype(float), distances[idx].astype(float))

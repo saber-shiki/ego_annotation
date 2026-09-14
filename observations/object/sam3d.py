@@ -1,0 +1,190 @@
+from __future__ import annotations
+from utils.runtime import install_offline_dinov2_hub
+from utils.state import sha as sha256_file
+import argparse
+import ast
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+import numpy as np
+from PIL import Image
+
+def install_offline_moge_checkpoint(local_checkpoint: Path) -> dict:
+    """Bind Ruicheng/moge-vitl to one immutable local checkpoint, never HF I/O."""
+    local_checkpoint = local_checkpoint.expanduser().resolve()
+    if not local_checkpoint.is_file():
+        raise RuntimeError(f'missing offline MoGe checkpoint: {local_checkpoint}')
+    expected_sha256 = 'da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f'
+    actual_sha256 = sha256_file(local_checkpoint)
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError(f'offline MoGe checkpoint hash mismatch: {local_checkpoint}')
+    import huggingface_hub
+    import moge.model.v1 as moge_v1
+    state = {'repo_id': 'Ruicheng/moge-vitl', 'filename': 'model.pt', 'checkpoint_path': str(local_checkpoint), 'checkpoint_bytes': int(local_checkpoint.stat().st_size), 'checkpoint_sha256': actual_sha256, 'expected_checkpoint_sha256': expected_sha256, 'intercepted_download_calls': 0, 'network_resolution_allowed': False}
+
+    def offline_hf_hub_download(repo_id, filename, *download_args, **download_kwargs):
+        if str(repo_id) == 'Ruicheng/moge-vitl' and str(filename) == 'model.pt':
+            state['intercepted_download_calls'] += 1
+            return str(local_checkpoint)
+        raise RuntimeError(f'undeclared Hugging Face resolution is forbidden in SAM3D: {repo_id}/{filename}')
+    huggingface_hub.hf_hub_download = offline_hf_hub_download
+    moge_v1.hf_hub_download = offline_hf_hub_download
+    return state
+
+def load_rgb(path: Path) -> np.ndarray:
+    image = Image.open(path).convert('RGB')
+    return np.asarray(image, dtype=np.uint8)
+
+def load_mask(path: Path) -> np.ndarray:
+    mask = Image.open(path).convert('L')
+    return np.asarray(mask, dtype=np.uint8) > 0
+
+def as_numpy(value) -> np.ndarray:
+    import torch
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+def mesh_arrays(mesh_obj) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    vertices = as_numpy(mesh_obj.vertices).astype(np.float64)
+    faces = as_numpy(mesh_obj.faces).astype(np.int64)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
+        raise RuntimeError('SAM3D mesh has no valid vertices')
+    if faces.ndim != 2 or faces.shape[1] != 3 or len(faces) == 0:
+        raise RuntimeError('SAM3D mesh has no valid triangular faces')
+    if not np.isfinite(vertices).all():
+        raise RuntimeError('SAM3D mesh vertices contain non-finite values')
+    colors = None
+    attrs = getattr(mesh_obj, 'vertex_attrs', None)
+    if attrs is not None:
+        attrs_np = as_numpy(attrs)
+        if attrs_np.ndim == 2 and attrs_np.shape[0] == vertices.shape[0] and (attrs_np.shape[1] >= 3):
+            colors = np.clip(attrs_np[:, :3], 0.0, 1.0)
+    return (vertices, faces, colors)
+
+def export_mesh_arrays(vertices: np.ndarray, faces: np.ndarray, path: Path, colors: np.ndarray | None=None) -> dict:
+    import trimesh
+    vertices = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    if colors is not None:
+        colors = np.asarray(colors, dtype=np.float64)
+        mesh.visual.vertex_colors = np.concatenate([(np.clip(colors, 0.0, 1.0) * 255.0).astype(np.uint8), np.full((len(colors), 1), 255, dtype=np.uint8)], axis=1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.export(path)
+    extent = vertices.max(axis=0) - vertices.min(axis=0)
+    return {'vertices': int(len(vertices)), 'faces': int(len(faces)), 'extent': [float(x) for x in extent], 'center': [float(x) for x in vertices.mean(axis=0)], 'depth_positive_fraction': float(np.count_nonzero(vertices[:, 2] > 0.0) / len(vertices)), 'watertight': bool(mesh.is_watertight), 'winding_consistent': bool(mesh.is_winding_consistent)}
+
+def export_raw_mesh(mesh_obj, path: Path) -> dict:
+    (vertices, faces, colors) = mesh_arrays(mesh_obj)
+    stats = export_mesh_arrays(vertices, faces, path, colors)
+    return {'vertices': stats['vertices'], 'faces': stats['faces'], 'extent_model_units': stats['extent'], 'center_model_units': stats['center'], 'watertight': stats['watertight'], 'winding_consistent': stats['winding_consistent']}
+
+def tensor_list(value) -> list[float] | None:
+    if value is None:
+        return None
+    arr = as_numpy(value).astype(float).reshape(-1)
+    return [float(x) for x in arr]
+
+def parse_case(raw: str) -> tuple[str, Path, Path, int]:
+    parts = raw.split('|')
+    if len(parts) != 4:
+        raise RuntimeError('--case must have format name|image_path|mask_path|seed')
+    (name, image, mask, seed) = parts
+    if not name.strip():
+        raise RuntimeError('case name is empty')
+    return (name.strip(), Path(image), Path(mask), int(seed))
+
+def run_one_case(inference, output_root: Path, name: str, image_path: Path, mask_path: Path, seed: int, args: argparse.Namespace) -> dict:
+    case_dir = output_root / name
+    case_dir.mkdir(parents=True, exist_ok=True)
+    image = load_rgb(image_path)
+    mask = load_mask(mask_path)
+    if image.shape[:2] != mask.shape:
+        raise RuntimeError(f'{name}: image shape {image.shape[:2]} differs from mask shape {mask.shape}')
+    if int(mask.sum()) < int(args.min_mask_pixels):
+        raise RuntimeError(f'{name}: mask has too few foreground pixels: {int(mask.sum())}')
+    output = inference(image, mask, seed=int(seed))
+    mesh_list = output.get('mesh')
+    if not mesh_list:
+        raise RuntimeError(f'{name}: SAM3D returned no mesh output')
+    mesh_path = case_dir / args.mesh_name
+    mesh_obj = mesh_list[0]
+    mesh_stats = export_raw_mesh(mesh_obj, mesh_path)
+    (vertices_local, faces, colors) = mesh_arrays(mesh_obj)
+    rotation = tensor_list(output.get('rotation'))
+    translation = tensor_list(output.get('translation'))
+    scale = tensor_list(output.get('scale'))
+    if rotation is None or translation is None or scale is None:
+        raise RuntimeError(f'{name}: SAM3D returned mesh without complete native rotation/translation/scale')
+    (vertices_p3d, vertices_opencv, pose_contract) = apply_native_pose(vertices_local, np.asarray(rotation, dtype=np.float64), np.asarray(translation, dtype=np.float64), np.asarray(scale, dtype=np.float64))
+    native_p3d_path = case_dir / args.native_p3d_mesh_name
+    native_opencv_path = case_dir / args.native_opencv_mesh_name
+    native_p3d_stats = export_mesh_arrays(vertices_p3d, faces, native_p3d_path, colors)
+    native_opencv_stats = export_mesh_arrays(vertices_opencv, faces, native_opencv_path, colors)
+    if native_p3d_stats['depth_positive_fraction'] < float(args.min_native_positive_depth_fraction):
+        raise RuntimeError(f"{name}: SAM3D native pose leaves only {native_p3d_stats['depth_positive_fraction']:.4f} vertices at positive depth")
+    glb_path = case_dir / args.glb_name
+    glb = output.get('glb')
+    if glb is None:
+        raise RuntimeError(f'{name}: SAM3D returned no GLB output')
+    glb.export(str(glb_path))
+    gs_path = None
+    if output.get('gs') is not None:
+        gs_path = case_dir / args.gaussian_name
+        output['gs'].save_ply(str(gs_path))
+    report = {'status': 'ok', 'name': name, 'image': str(image_path), 'mask': str(mask_path), 'seed': int(seed), 'mask_pixels': int(mask.sum()), 'image_shape_h_w': [int(image.shape[0]), int(image.shape[1])], 'mesh': str(mesh_path), 'native_pose_mesh_pytorch3d_camera': str(native_p3d_path), 'native_pose_mesh_opencv_camera': str(native_opencv_path), 'glb': str(glb_path), 'gaussian': str(gs_path) if gs_path else None, 'mesh_stats': mesh_stats, 'pose': {'rotation': rotation, 'translation': translation, 'scale': scale}, 'native_pose_contract': {**pose_contract, 'raw_mesh_frame': 'native local generator frame shared with Gaussian local coordinates', 'glb_frame': 'standalone presentation frame; official to_glb applies a separate z-up-to-y-up rotation and must not be fed back into native pose', 'native_pose_mesh_pytorch3d_camera': str(native_p3d_path), 'native_pose_mesh_opencv_camera': str(native_opencv_path), 'native_pose_mesh_pytorch3d_camera_stats': native_p3d_stats, 'native_pose_mesh_opencv_camera_stats': native_opencv_stats, 'metric_bridge_requirement': 'scale the complete camera-origin scene similarity (native translation and object scale together) using prediction-side sensor depth; never treat native units as meters'}, 'moge_offline': args.offline_asset_binding['moge_offline'], 'dinov2_offline': args.offline_asset_binding['dinov2_offline'], 'huggingface_offline': args.offline_asset_binding['huggingface_offline']}
+    (case_dir / 'qc_sam3d_objects_mesh_v7.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return report
+
+def run(args: argparse.Namespace) -> dict:
+    import torch
+    os.environ.setdefault('LIDRA_SKIP_INIT', 'true')
+    os.environ.setdefault('CUDA_HOME', os.environ.get('CONDA_PREFIX', ''))
+    os.environ['HF_HUB_OFFLINE'] = '1'
+    os.environ['TRANSFORMERS_OFFLINE'] = '1'
+    moge_offline = install_offline_moge_checkpoint(args.moge_checkpoint)
+    dinov2_offline = install_offline_dinov2_hub(args.dinov2_repo, args.dinov2_checkpoint)
+    huggingface_offline = {'HF_HUB_OFFLINE': os.environ.get('HF_HUB_OFFLINE'), 'TRANSFORMERS_OFFLINE': os.environ.get('TRANSFORMERS_OFFLINE'), 'hf_home': os.environ.get('HF_HOME'), 'network_resolution_allowed': False}
+    args.offline_asset_binding = {'moge_offline': moge_offline, 'dinov2_offline': dinov2_offline, 'huggingface_offline': huggingface_offline}
+    sys.path.insert(0, str(args.repo))
+    sys.path.insert(0, str(args.repo / 'notebook'))
+    from inference import Inference
+    cases = [parse_case(raw) for raw in args.case]
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    inference = Inference(str(args.config), compile=bool(args.compile))
+    case_reports = [run_one_case(inference, args.output_dir, name, image, mask, seed, args) for (name, image, mask, seed) in cases]
+    report = {'status': 'ok', 'method': 'remote_run_sam3d_objects_mesh_v7', 'repo': str(args.repo), 'config': str(args.config), 'moge_offline': moge_offline, 'dinov2_offline': dinov2_offline, 'huggingface_offline': huggingface_offline, 'cases': case_reports, 'torch': {'version': torch.__version__, 'cuda': torch.version.cuda, 'cuda_available': bool(torch.cuda.is_available()), 'device_count': int(torch.cuda.device_count()), 'current_device': int(torch.cuda.current_device()) if torch.cuda.is_available() else None, 'device_name': torch.cuda.get_device_name() if torch.cuda.is_available() else None}}
+    (args.output_dir / 'qc_sam3d_objects_mesh_v7.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    print(json.dumps(report, indent=2))
+    return report
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--repo', type=Path, required=True)
+    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--dinov2-repo', type=Path, required=True)
+    parser.add_argument('--dinov2-checkpoint', type=Path, default=None, help='Required immutable local dinov2_vitl14_reg4_pretrain.pth; cache discovery is forbidden')
+    parser.add_argument('--moge-checkpoint', type=Path, default=None, help='Required immutable local Ruicheng/moge-vitl model.pt blob; network/cache discovery is forbidden')
+    parser.add_argument('--case', action='append', required=True)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--mesh-name', default='sam3d_mesh.ply')
+    parser.add_argument('--native-p3d-mesh-name', default='sam3d_mesh_native_pose_pytorch3d_camera.ply')
+    parser.add_argument('--native-opencv-mesh-name', default='sam3d_mesh_native_pose_opencv_camera.ply')
+    parser.add_argument('--glb-name', default='sam3d_mesh.glb')
+    parser.add_argument('--gaussian-name', default='sam3d_gaussian.ply')
+    parser.add_argument('--min-mask-pixels', type=int, default=100)
+    parser.add_argument('--min-native-positive-depth-fraction', type=float, default=0.99)
+    parser.add_argument('--compile', action='store_true')
+    args = parser.parse_args()
+    if args.dinov2_checkpoint is None:
+        parser.error('--dinov2-checkpoint is required for fail-closed offline SAM3D')
+    if args.moge_checkpoint is None:
+        parser.error('--moge-checkpoint is required for fail-closed offline SAM3D')
+    return args
+from utils.geometry import quaternion_wxyz_to_matrix, apply_native_pose
+if __name__ == '__main__':
+    run(parse_args())

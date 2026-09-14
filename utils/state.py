@@ -266,3 +266,12 @@ def require_run_artifact(path, root, role, *, object_id=None, frame_ids=None):
     if not receipt.get('producer_id'):
         raise ValueError('missing producer identity')
     return receipt
+
+def sha256_file(path: Path) -> str:
+    import hashlib
+    from pathlib import Path
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for block in iter(lambda : handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
