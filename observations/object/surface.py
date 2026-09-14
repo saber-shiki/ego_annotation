@@ -84,7 +84,6 @@ def load_depth_sources(paths: list[Path]) -> dict[int, dict[str, Any]]:
                 continue
             frames[idx] = {'source': str(path), 'depth': depth[i], 'intrinsics': intrinsics[i]}
     return frames
-
 import hashlib
 import json
 from pathlib import Path
@@ -279,7 +278,6 @@ class MetricEligibility:
         if row.get('class_code_array_sha256') != array_sha256(classes) or row.get('metric_candidate_array_sha256') != array_sha256(eligible):
             raise ValueError('metric eligibility raster array hash mismatch')
         return (eligible, {'manifest': str(self.path), 'raster': str(raster_path), 'counts': row.get('counts'), 'class_codes': CLASS_CODES})
-
 import argparse
 import copy
 import json
@@ -1420,7 +1418,6 @@ def surface_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--rigid-extent-ratio-max', type=float, default=2.75, help='Mark visible surfaces whose orientation-invariant extent diagonal differs from the robust visible-population median by more than this factor as ineligible for rigid pose fitting.')
     parser.add_argument('--rigid-extent-axis-ratio-max', type=float, default=3.25, help='Axis-wise companion to --rigid-extent-ratio-max for detecting elongated hand/background leakage.')
     return parser.parse_args(argv)
-
 import argparse
 import hashlib
 import json
@@ -1766,7 +1763,6 @@ def depth_order_parse_args(argv=None) -> argparse.Namespace:
     if not np.isfinite(args.depth_order_tolerance_m) or args.depth_order_tolerance_m < 0 or (not np.isfinite(args.near_m)) or (args.near_m <= 0) or (args.uncertainty_padding_mask_px < 0):
         parser.error('invalid depth-order tolerance or near plane')
     return args
-
 import argparse
 import copy
 import json
@@ -1994,3 +1990,1055 @@ def build_anchor_evidence(argv=None) -> None:
     report = {'method': 'build_v18_compact_rigid_evidence_bundle', 'status': 'ok', 'case': args.case, 'object_id': args.object_id, 'output_dir': str(out_dir), 'selection_rule': selection_rule, 'selection_note': args.selection_note, 'selected_frame_idx': int(selected['frame_idx']), 'selected_anchor_atomic_binding': anchor_binding, 'selected': selected, 'candidate_count': len(candidates), 'candidate_summary': {'visible_depth_vertex_count_max': int(candidates[0]['visible_depth_vertex_count']), 'visible_depth_vertex_count_median': float(np.median([c['visible_depth_vertex_count'] for c in candidates])), 'mask_area_px_max': int(max((c['mask_area_px'] for c in candidates)))}, 'depth_fused_object_row': depth_fused_selected, 'partial_metric_geometry_paths': partial_mesh_paths, 'all_candidate_frames': [{k: c[k] for k in ['frame_idx', 'visible_depth_vertex_count', 'mask_area_px', 'raw_frame_path', 'mask_path']} for c in candidates]}
     (out_dir / 'evidence_bundle_report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps(report, indent=2))
+import numpy as np
+from PIL import Image
+FALSE_READY: dict[str, bool] = {'annotation_ready': False, 'deliverable_ready': False, 'accuracy_target_met': False, 'object_geometry_complete': False, 'object_pose_requirement_met': False, 'rigid_pose_requirement_met': False, 'v3_solver_complete': False}
+STATUS = 'v18_part_visible_surface_evidence'
+CLAIM = 'This artifact extracts bounded depth-backed visible surfaces for accepted part/segment masks. The surfaces are part-level visible geometry evidence only; they do not reconstruct hidden geometry, estimate part pose, or complete object pose.'
+
+def resize_bool_mask(mask: np.ndarray, shape_hw: tuple[int, int]) -> np.ndarray:
+    if mask.shape == shape_hw:
+        return mask
+    image = Image.fromarray(mask.astype(np.uint8) * 255)
+    resized = image.resize((shape_hw[1], shape_hw[0]), Image.Resampling.NEAREST)
+    return np.asarray(resized) > 0
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+import cv2
+import numpy as np
+from utils.data import as_list as visible_track_as_list
+from utils.geometry import frame_camera_pose
+from utils.data import load_json as visible_track_load_json
+from utils.data import numeric_summary as visible_track_numeric_summary
+from utils.data import write_json as visible_track_write_json
+STATE_ACTIVE = 'active_visible_surface'
+STATE_NO_MASK = 'no_visible_surface_observation'
+STATE_EMPTY_MASK = 'empty_visible_surface_mask'
+STATE_MISSING_DEPTH = 'missing_metric_depth'
+STATE_NO_DEPTH_SUPPORT = 'visible_mask_without_metric_depth_support'
+
+def coherent_first_surface_mask(*, mask: np.ndarray, depth_row: dict[str, Any], enabled: bool, min_gap_m: float, min_retained_fraction: float, min_removed_fraction: float) -> tuple[np.ndarray, dict[str, Any]]:
+    """Keep the nearest coherent depth component inside a model mask.
+
+    A visible-surface mask is an object/part support region, but depth inside it
+    can contain holes, background, or mixed transparent/edge pixels. The first
+    physical surface that can occlude a hand is the nearest coherent component,
+    not a disconnected far-depth tail. Smooth depth variation is preserved; only
+    a clear upper-tail depth discontinuity creates a filtered solver mask.
+    """
+    depth = np.asarray(depth_row['depth'], dtype=np.float32)
+    mask_d = resize_bool_mask(mask.astype(bool), depth.shape)
+    valid = mask_d & np.isfinite(depth) & (depth > 1e-05)
+    z = np.sort(depth[valid].astype(float))
+    diag: dict[str, Any] = {'enabled': bool(enabled), 'input_mask_area_px_depth_grid': int(mask_d.sum()), 'input_valid_depth_pixels': int(z.size), 'state': 'disabled' if not enabled else 'no_filter_applied', 'cutoff_depth_m': None, 'retained_valid_depth_pixels': int(z.size), 'removed_valid_depth_pixels': 0, 'removed_valid_depth_fraction': 0.0, 'depth_m_before': visible_track_numeric_summary(z)}
+    if not enabled or z.size < 32:
+        return (mask_d, diag)
+    gaps = np.diff(z)
+    if gaps.size == 0:
+        return (mask_d, diag)
+    lo = max(0, int(0.5 * z.size) - 1)
+    hi = max(lo + 1, int(0.995 * z.size) - 1)
+    cand = gaps[lo:hi]
+    if cand.size == 0:
+        return (mask_d, diag)
+    gap_idx = lo + int(np.argmax(cand))
+    max_gap = float(gaps[gap_idx])
+    positive = cand[cand > 0]
+    median_gap = float(np.median(positive)) if positive.size else 0.0
+    required_gap = max(float(min_gap_m), 25.0 * median_gap)
+    cutoff = float(z[gap_idx])
+    retained = depth[valid] <= cutoff
+    retained_count = int(np.count_nonzero(retained))
+    removed_count = int(z.size - retained_count)
+    retained_fraction = float(retained_count / max(1, z.size))
+    removed_fraction = float(removed_count / max(1, z.size))
+    q90 = float(np.percentile(z, 90.0))
+    q95 = float(np.percentile(z, 95.0))
+    q90_removed = int(np.count_nonzero(z > q90))
+    q90_removed_fraction = float(q90_removed / max(1, z.size))
+    diag.update({'candidate_gap_m': max_gap, 'median_upper_tail_gap_m': median_gap, 'required_gap_m': required_gap, 'candidate_cutoff_depth_m': cutoff, 'candidate_retained_fraction': retained_fraction, 'candidate_removed_fraction': removed_fraction, 'q90_depth_m': q90, 'q95_depth_m': q95, 'q95_minus_q90_m': float(q95 - q90)})
+    if max_gap < required_gap or retained_fraction < float(min_retained_fraction) or removed_fraction < float(min_removed_fraction):
+        if q95 - q90 >= float(min_gap_m) and 1.0 - q90_removed_fraction >= float(min_retained_fraction) and (q90_removed_fraction >= float(min_removed_fraction)):
+            cutoff = q90
+            retained = depth[valid] <= cutoff
+            retained_count = int(np.count_nonzero(retained))
+            removed_count = int(z.size - retained_count)
+            retained_fraction = float(retained_count / max(1, z.size))
+            removed_fraction = float(removed_count / max(1, z.size))
+            diag['state'] = 'applied_upper_tail_quantile_depth_filter'
+        else:
+            diag['state'] = 'no_clear_disconnected_far_depth_component'
+            return (mask_d, diag)
+    filtered = np.zeros_like(mask_d, dtype=bool)
+    valid_indices = np.argwhere(valid)
+    keep_indices = valid_indices[retained]
+    filtered[keep_indices[:, 0], keep_indices[:, 1]] = True
+    applied_state = str(diag.get('state') or '')
+    if not applied_state.startswith('applied_'):
+        applied_state = 'applied_disconnected_far_depth_tail_filter'
+    diag.update({'state': applied_state, 'cutoff_depth_m': cutoff, 'retained_valid_depth_pixels': retained_count, 'removed_valid_depth_pixels': removed_count, 'removed_valid_depth_fraction': removed_fraction, 'depth_m_after': visible_track_numeric_summary(depth[filtered].astype(float))})
+    return (filtered, diag)
+
+def write_mask(mask: np.ndarray, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), mask.astype(np.uint8) * 255)
+    return path
+
+def parse_spans(values: list[list[int]] | None) -> list[tuple[int, int]]:
+    if not values:
+        raise RuntimeError('at least one --frame-span START END is required')
+    spans: list[tuple[int, int]] = []
+    for pair in values:
+        if len(pair) != 2:
+            raise RuntimeError(f'invalid --frame-span value: {pair}')
+        (a, b) = (int(pair[0]), int(pair[1]))
+        if b < a:
+            raise RuntimeError(f'decreasing frame span {a}:{b}')
+        spans.append((a, b))
+    return spans
+
+def frame_ids_from_spans(spans: list[tuple[int, int]]) -> list[int]:
+    out: set[int] = set()
+    for (a, b) in spans:
+        out.update(range(a, b + 1))
+    return sorted(out)
+
+def load_frames(annotations: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {int(f['frame_idx']): f for f in visible_track_as_list(annotations.get('frames')) if isinstance(f, dict) and f.get('frame_idx') is not None}
+
+def entity_tokens(entity_id: str) -> set[str]:
+    raw = str(entity_id)
+    tokens = {raw}
+    if raw.startswith('object:'):
+        tokens.add(raw.split(':', 1)[1])
+    else:
+        tokens.add(f'object:{raw}')
+    return tokens
+
+def row_matches_target(row: dict[str, Any], target_entity_id: str) -> bool:
+    tokens = entity_tokens(target_entity_id)
+    for key in ('target_entity_id', 'object_id', 'entity_id', 'track_id'):
+        value = row.get(key)
+        if isinstance(value, str):
+            return value in tokens
+    return True
+
+def load_mask_rows(report_path: Path, target_entity_id: str) -> dict[int, dict[str, Any]]:
+    if not report_path.exists():
+        raise FileNotFoundError(f'missing visible mask report: {report_path}')
+    payload = visible_track_load_json(report_path)
+    rows: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        for key in ('saved_mask_rows_after_start', 'target_mask_rows', 'surface_rows'):
+            rows.extend([r for r in visible_track_as_list(payload.get(key)) if isinstance(r, dict) and row_matches_target(r, target_entity_id)])
+            if rows:
+                break
+    out: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if row.get('frame_idx') is None:
+            continue
+        raw = row.get('saved_mask_path') or row.get('mask_path')
+        if not isinstance(raw, str):
+            continue
+        path = Path(raw)
+        if path.exists():
+            frame_idx = int(row['frame_idx'])
+            if frame_idx in out:
+                raise RuntimeError(f'duplicate visible mask row for target {target_entity_id} frame {frame_idx} in {report_path}')
+            out[frame_idx] = dict(row)
+    return out
+
+def load_mask(path: Path) -> np.ndarray:
+    arr = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if arr is None:
+        raise RuntimeError(f'could not decode visible surface mask: {path}')
+    return arr > 0
+
+def load_ownership_rows(report_path: Path | None, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    if report_path is None:
+        return {}
+    payload = visible_track_load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in visible_track_as_list(payload.get('ownership_rows') if isinstance(payload, dict) else None):
+        if not isinstance(row, dict) or not row_matches_target(row, target_entity_id):
+            continue
+        if row.get('frame_idx') is None or row.get('hand_side') is None:
+            continue
+        key = (int(row['frame_idx']), str(row['hand_side']))
+        if key in out:
+            raise RuntimeError(f'duplicate ownership row for target {target_entity_id} frame/side {key} in {report_path}')
+        out[key] = dict(row)
+    return out
+
+def lift_mask_depth_samples(*, frame: dict[str, Any], frame_idx: int, mask: np.ndarray, depth_row: dict[str, Any], stride: int, max_samples: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    depth = np.asarray(depth_row['depth'], dtype=np.float32)
+    mask_d = resize_bool_mask(mask.astype(bool), depth.shape)
+    valid = mask_d & np.isfinite(depth) & (depth > 1e-05)
+    (ys_all, xs_all) = np.nonzero(valid)
+    if xs_all.size == 0:
+        empty = {'pixel_uv': np.zeros((0, 2), dtype=np.float32), 'depth_m': np.zeros((0,), dtype=np.float32), 'points_camera_m': np.zeros((0, 3), dtype=np.float32), 'points_world_m': np.zeros((0, 3), dtype=np.float32)}
+        return (empty, {'surface_state': STATE_NO_DEPTH_SUPPORT, 'mask_area_px_raw': int(mask.sum()), 'mask_area_px_depth_grid': int(mask_d.sum()), 'valid_depth_pixels': 0, 'sample_count': 0, 'depth_m': visible_track_numeric_summary(np.zeros((0,), dtype=float))})
+    stride = max(1, int(stride))
+    sampled_grid = np.zeros_like(valid, dtype=bool)
+    sampled_grid[::stride, ::stride] = True
+    sampled = valid & sampled_grid
+    (ys, xs) = np.nonzero(sampled)
+    if xs.size == 0:
+        (ys, xs) = (ys_all, xs_all)
+    if int(max_samples) > 0 and xs.size > int(max_samples):
+        order = np.linspace(0, xs.size - 1, int(max_samples), dtype=np.int64)
+        ys = ys[order]
+        xs = xs[order]
+    z = depth[ys, xs].astype(np.float64)
+    intr = np.asarray(depth_row['intrinsics'], dtype=np.float64).reshape(-1)
+    if intr.size == 9:
+        (fx, fy, cx, cy) = (float(intr[0]), float(intr[4]), float(intr[2]), float(intr[5]))
+    else:
+        (fx, fy, cx, cy) = [float(v) for v in intr[:4]]
+    x_cam = (xs.astype(np.float64) - cx) * z / fx
+    y_cam = (ys.astype(np.float64) - cy) * z / fy
+    pts_cam = np.column_stack([x_cam, y_cam, z])
+    (r_c2w, t_c2w) = frame_camera_pose(frame)
+    pts_world = pts_cam @ r_c2w.T + t_c2w[None, :]
+    arrays = {'pixel_uv': np.column_stack([xs, ys]).astype(np.float32), 'depth_m': z.astype(np.float32), 'points_camera_m': pts_cam.astype(np.float32), 'points_world_m': pts_world.astype(np.float32)}
+    summary = {'surface_state': STATE_ACTIVE, 'mask_area_px_raw': int(mask.sum()), 'mask_area_px_depth_grid': int(mask_d.sum()), 'valid_depth_pixels': int(xs_all.size), 'sample_count': int(xs.size), 'depth_m': visible_track_numeric_summary(z.astype(float)), 'bbox_world_min_m': pts_world.min(axis=0).astype(float).tolist(), 'bbox_world_max_m': pts_world.max(axis=0).astype(float).tolist(), 'extent_world_m': (pts_world.max(axis=0) - pts_world.min(axis=0)).astype(float).tolist()}
+    return (arrays, summary)
+
+def render_review(*, frame: dict[str, Any], frame_idx: int, mask: np.ndarray, samples: dict[str, np.ndarray], output_path: Path, title: str) -> bool:
+    raw = frame.get('raw_frame_path')
+    image = cv2.imread(str(raw), cv2.IMREAD_COLOR) if isinstance(raw, str) else None
+    if image is None:
+        return False
+    mask_img = resize_bool_mask(mask.astype(bool), image.shape[:2])
+    overlay = image.copy()
+    overlay[mask_img] = (180, 0, 180)
+    canvas = cv2.addWeighted(overlay, 0.35, image, 0.65, 0.0)
+    uv = np.asarray(samples.get('pixel_uv', np.zeros((0, 2))), dtype=float)
+    if uv.size:
+        if mask.shape[:2] != image.shape[:2]:
+            sx = image.shape[1] / float(mask.shape[1])
+            sy = image.shape[0] / float(mask.shape[0])
+            uv = uv * np.asarray([sx, sy], dtype=float)[None, :]
+        max_pts = 4500
+        if len(uv) > max_pts:
+            uv = uv[np.linspace(0, len(uv) - 1, max_pts, dtype=np.int64)]
+        for (u, v) in uv.astype(int):
+            if 0 <= u < image.shape[1] and 0 <= v < image.shape[0]:
+                cv2.circle(canvas, (int(u), int(v)), 1, (0, 220, 0), -1, lineType=cv2.LINE_AA)
+    cv2.putText(canvas, title, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return bool(cv2.imwrite(str(output_path), canvas))
+
+def build_visible_surface_track(args: argparse.Namespace) -> dict[str, Any]:
+    spans = parse_spans(args.frame_span)
+    frame_ids = frame_ids_from_spans(spans)
+    annotations = visible_track_load_json(args.annotations)
+    frames = load_frames(annotations)
+    mask_rows = load_mask_rows(args.visible_mask_report, str(args.target_entity_id))
+    ownership_rows = load_ownership_rows(args.visible_ownership_factor_report, str(args.target_entity_id))
+    depth_rows = load_depth_sources(list(args.depth_npz))
+    case_root = args.output_root / args.case
+    sample_dir = case_root / 'visible_surface_samples'
+    review_dir = case_root / 'review_frames'
+    filtered_mask_dir = case_root / 'first_surface_masks'
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    sides = list(args.sides)
+    frame_surface_rows: list[dict[str, Any]] = []
+    factor_rows: list[dict[str, Any]] = []
+    state_counts: Counter[str] = Counter()
+    review_frames = set((int(f) for f in args.review_frames))
+    for frame_idx in frame_ids:
+        frame = frames.get(frame_idx)
+        mask_row = mask_rows.get(frame_idx)
+        depth_row = depth_rows.get(frame_idx)
+        frame_surface: dict[str, Any]
+        surface_npz_path: Path | None = None
+        mask_path: Path | None = None
+        if frame is None:
+            frame_surface = {'frame_idx': int(frame_idx), 'surface_state': 'missing_annotation_frame'}
+        elif mask_row is None:
+            frame_surface = {'frame_idx': int(frame_idx), 'surface_state': STATE_NO_MASK}
+        else:
+            mask_path = Path(str(mask_row.get('saved_mask_path') or mask_row.get('mask_path')))
+            mask = load_mask(mask_path)
+            if not np.any(mask):
+                frame_surface = {'frame_idx': int(frame_idx), 'surface_state': STATE_EMPTY_MASK, 'surface_mask_path': str(mask_path), 'mask_area_px_raw': 0, 'valid_depth_pixels': 0, 'sample_count': 0}
+            elif depth_row is None:
+                frame_surface = {'frame_idx': int(frame_idx), 'surface_state': STATE_MISSING_DEPTH, 'surface_mask_path': str(mask_path), 'mask_area_px_raw': int(mask.sum()), 'valid_depth_pixels': 0, 'sample_count': 0}
+            else:
+                (depth_mask, depth_filter_diag) = coherent_first_surface_mask(mask=mask, depth_row=depth_row, enabled=bool(args.coherent_first_surface_depth_filter), min_gap_m=float(args.first_surface_depth_gap_min_m), min_retained_fraction=float(args.first_surface_min_retained_fraction), min_removed_fraction=float(args.first_surface_min_removed_fraction))
+                factor_mask_path = mask_path
+                if str(depth_filter_diag.get('state') or '').startswith('applied_'):
+                    factor_mask_path = write_mask(depth_mask, filtered_mask_dir / f'{frame_idx:06d}_first_surface_depth_filtered.png')
+                (samples, summary) = lift_mask_depth_samples(frame=frame, frame_idx=frame_idx, mask=depth_mask, depth_row=depth_row, stride=int(args.sample_stride), max_samples=int(args.max_samples_per_frame))
+                frame_surface = {'frame_idx': int(frame_idx), 'surface_mask_path': str(factor_mask_path), 'raw_surface_mask_path': str(mask_path), 'depth_filter': depth_filter_diag, **summary}
+                if frame_surface['surface_state'] == STATE_ACTIVE:
+                    surface_npz_path = sample_dir / f'{frame_idx:06d}_visible_surface_samples.npz'
+                    np.savez_compressed(surface_npz_path, **samples, metadata_json=json.dumps({'frame_idx': int(frame_idx), 'surface_mask_path': str(factor_mask_path), 'raw_surface_mask_path': str(mask_path), 'depth_filter': depth_filter_diag, 'claim': 'visible first-surface samples only; no hidden geometry or object pose'}))
+                    frame_surface['visible_surface_npz_path'] = str(surface_npz_path)
+                    if frame_idx in review_frames:
+                        review_path = review_dir / f'{frame_idx:06d}_visible_surface_track.jpg'
+                        ok = render_review(frame=frame, frame_idx=frame_idx, mask=depth_mask, samples=samples, output_path=review_path, title=f'visible surface track frame {frame_idx}')
+                        if ok:
+                            frame_surface['review_path'] = str(review_path)
+                else:
+                    frame_surface['visible_surface_npz_path'] = None
+        state_counts[str(frame_surface.get('surface_state'))] += 1
+        frame_surface_rows.append(frame_surface)
+        for side in sides:
+            factor_surface = dict(frame_surface)
+            ownership_row = ownership_rows.get((int(frame_idx), str(side)))
+            ownership_mask_path = None
+            if frame is not None and depth_row is not None and (ownership_row is not None) and isinstance(ownership_row.get('adjusted_entity_mask_path'), str) and Path(str(ownership_row.get('adjusted_entity_mask_path'))).exists():
+                ownership_mask_path = Path(str(ownership_row['adjusted_entity_mask_path']))
+                ownership_mask = load_mask(ownership_mask_path)
+                if np.any(ownership_mask):
+                    (ownership_depth_mask, ownership_depth_filter_diag) = coherent_first_surface_mask(mask=ownership_mask, depth_row=depth_row, enabled=bool(args.coherent_first_surface_depth_filter), min_gap_m=float(args.first_surface_depth_gap_min_m), min_retained_fraction=float(args.first_surface_min_retained_fraction), min_removed_fraction=float(args.first_surface_min_removed_fraction))
+                    factor_mask_path = ownership_mask_path
+                    if str(ownership_depth_filter_diag.get('state') or '').startswith('applied_'):
+                        factor_mask_path = write_mask(ownership_depth_mask, filtered_mask_dir / f'{frame_idx:06d}_{side}_ownership_first_surface_depth_filtered.png')
+                    (ownership_samples, ownership_summary) = lift_mask_depth_samples(frame=frame, frame_idx=frame_idx, mask=ownership_depth_mask, depth_row=depth_row, stride=int(args.sample_stride), max_samples=int(args.max_samples_per_frame))
+                    factor_surface = {'frame_idx': int(frame_idx), 'surface_mask_path': str(factor_mask_path), 'raw_surface_mask_path': str(ownership_mask_path), 'depth_filter': ownership_depth_filter_diag, **ownership_summary}
+                    if factor_surface['surface_state'] == STATE_ACTIVE:
+                        side_npz_path = sample_dir / f'{frame_idx:06d}_{side}_ownership_filtered_visible_surface_samples.npz'
+                        np.savez_compressed(side_npz_path, **ownership_samples, metadata_json=json.dumps({'frame_idx': int(frame_idx), 'hand_side': str(side), 'surface_mask_path': str(factor_mask_path), 'raw_surface_mask_path': str(ownership_mask_path), 'depth_filter': ownership_depth_filter_diag, 'visible_ownership_factor_report': str(args.visible_ownership_factor_report), 'claim': 'visible first-surface samples after side-specific hand-owned-pixel quarantine; no hidden geometry or object pose'}))
+                        factor_surface['visible_surface_npz_path'] = str(side_npz_path)
+                        if frame_idx in review_frames:
+                            review_path = review_dir / f'{frame_idx:06d}_{side}_ownership_filtered_visible_surface_track.jpg'
+                            ok = render_review(frame=frame, frame_idx=frame_idx, mask=ownership_depth_mask, samples=ownership_samples, output_path=review_path, title=f'ownership-filtered visible surface f{frame_idx} {side}')
+                            if ok:
+                                factor_surface['review_path'] = str(review_path)
+                    else:
+                        factor_surface['visible_surface_npz_path'] = None
+                else:
+                    factor_surface = {'frame_idx': int(frame_idx), 'surface_state': STATE_EMPTY_MASK, 'surface_mask_path': str(ownership_mask_path), 'mask_area_px_raw': 0, 'valid_depth_pixels': 0, 'sample_count': 0, 'visible_surface_npz_path': None}
+            active = factor_surface.get('surface_state') == STATE_ACTIVE
+            factor_rows.append({'factor_family': 'visible_surface_track', 'target_entity_id': args.target_entity_id, 'frame_idx': int(frame_idx), 'hand_side': side, 'variable_affected': 'H_t_and_constraint_eligibility', 'observation_type': 'model_mask_metric_depth_visible_first_surface' if ownership_mask_path is None else 'ownership_filtered_model_mask_metric_depth_visible_first_surface', 'surface_state': str(factor_surface.get('surface_state')), 'residual_or_quarantine_rule': 'if active, MANO vertices projecting into the visible first-surface mask are constrained by one-sided depth order; hidden signed-volume nonpenetration is quarantined for this target/frame', 'quarantine_hidden_volume': bool(active and args.quarantine_hidden_volume), 'surface_mask_path': factor_surface.get('surface_mask_path'), 'visible_surface_npz_path': factor_surface.get('visible_surface_npz_path'), 'valid_depth_pixels': int(factor_surface.get('valid_depth_pixels', 0) or 0), 'sample_count': int(factor_surface.get('sample_count', 0) or 0), 'mask_area_px_raw': int(factor_surface.get('mask_area_px_raw', 0) or 0), 'raw_surface_mask_path': factor_surface.get('raw_surface_mask_path'), 'depth_filter': factor_surface.get('depth_filter'), 'depth_order_margin_m': float(args.depth_order_margin_m), 'provenance': {'annotations': str(args.annotations), 'visible_mask_report': str(args.visible_mask_report), 'visible_ownership_factor_report': None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), 'depth_npz': [str(p) for p in args.depth_npz], 'mask_source_row': mask_row if mask_row is not None else None, 'ownership_source_row': ownership_row if ownership_row is not None else None}, 'rendered_uncertainty_channel': 'visible first-surface mask/depth and MANO depth-order residual; no hidden volume accepted'})
+    active_rows = [r for r in frame_surface_rows if r.get('surface_state') == STATE_ACTIVE]
+    report = {'method': 'build_v18_visible_surface_track_factor', 'status': 'ok', 'claim_scope': 'Visible first-surface track factor only: model-produced mask plus metric depth samples. It does not assert hidden geometry, object pose, contact, or signed nonpenetration.', 'case': args.case, 'target_entity_id': args.target_entity_id, 'inputs': {'annotations': str(args.annotations), 'visible_mask_report': str(args.visible_mask_report), 'depth_npz': [str(p) for p in args.depth_npz]}, 'parameters': {'frame_spans': [[int(a), int(b)] for (a, b) in spans], 'sides': sides, 'sample_stride': int(args.sample_stride), 'max_samples_per_frame': int(args.max_samples_per_frame), 'quarantine_hidden_volume': bool(args.quarantine_hidden_volume), 'depth_order_margin_m': float(args.depth_order_margin_m), 'coherent_first_surface_depth_filter': bool(args.coherent_first_surface_depth_filter), 'first_surface_depth_gap_min_m': float(args.first_surface_depth_gap_min_m), 'first_surface_min_retained_fraction': float(args.first_surface_min_retained_fraction), 'first_surface_min_removed_fraction': float(args.first_surface_min_removed_fraction)}, 'summary': {'frame_count_requested': int(len(frame_ids)), 'surface_frame_count': int(len(frame_surface_rows)), 'factor_row_count': int(len(factor_rows)), 'state_counts': dict(state_counts), 'valid_depth_pixels': visible_track_numeric_summary(np.asarray([r.get('valid_depth_pixels', 0) for r in active_rows], dtype=float)), 'sample_count': visible_track_numeric_summary(np.asarray([r.get('sample_count', 0) for r in active_rows], dtype=float)), 'mask_area_px_raw': visible_track_numeric_summary(np.asarray([r.get('mask_area_px_raw', 0) for r in active_rows], dtype=float))}, 'surface_rows': frame_surface_rows, 'factor_rows': factor_rows}
+    out = case_root / 'v18_visible_surface_track_factor_report.json'
+    visible_track_write_json(out, report)
+    print(json.dumps({'status': 'ok', 'report': str(out), 'summary': report['summary']}, indent=2)[:6000])
+    return report
+
+def visible_track_parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--case', required=True)
+    p.add_argument('--target-entity-id', required=True)
+    p.add_argument('--annotations', type=Path, required=True)
+    p.add_argument('--visible-mask-report', type=Path, required=True)
+    p.add_argument('--visible-ownership-factor-report', type=Path, default=None, help='Optional visible ownership factor report. When a frame/side has adjusted_entity_mask_path, build side-specific visible surface samples from object-owned pixels only.')
+    p.add_argument('--depth-npz', type=Path, action='append', required=True)
+    p.add_argument('--frame-span', nargs=2, type=int, action='append', required=True)
+    p.add_argument('--sides', nargs='+', choices=('left', 'right'), default=['left', 'right'])
+    p.add_argument('--output-root', type=Path, required=True)
+    p.add_argument('--sample-stride', type=int, default=6)
+    p.add_argument('--max-samples-per-frame', type=int, default=6000)
+    p.add_argument('--depth-order-margin-m', type=float, default=0.01)
+    p.add_argument('--coherent-first-surface-depth-filter', action=argparse.BooleanOptionalAction, default=False, help='When a model mask contains a disconnected far-depth tail, replace its solver mask with the nearest coherent first-surface component before emitting visible-surface factors.')
+    p.add_argument('--first-surface-depth-gap-min-m', type=float, default=0.05, help='Minimum metric depth discontinuity required before pruning far-depth mask pixels as non-first-surface outliers.')
+    p.add_argument('--first-surface-min-retained-fraction', type=float, default=0.5, help='Do not apply first-surface pruning if the nearest component would retain less than this fraction of valid mask depth pixels.')
+    p.add_argument('--first-surface-min-removed-fraction', type=float, default=0.01, help='Do not write a filtered mask unless the far-depth component removes at least this fraction of valid mask depth pixels.')
+    p.add_argument('--quarantine-hidden-volume', action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument('--review-frames', nargs='*', type=int, default=[])
+    return p.parse_args(argv)
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+import numpy as np
+from utils.data import as_list as face_eligibility_as_list
+from utils.geometry import frame_camera_pose as face_eligibility_frame_camera_pose
+from utils.data import load_json as face_eligibility_load_json
+from utils.data import load_mesh
+from utils.data import numeric_summary as face_eligibility_numeric_summary
+from utils.data import pose_map
+from utils.data import write_json as face_eligibility_write_json
+STATE_OBSERVED = 'observed_depth_supported'
+STATE_HAND_QUARANTINED = 'hand_owned_depth_quarantined'
+STATE_FREE = 'free_space_rejected'
+STATE_HIDDEN = 'hidden_unvalidated'
+STATE_OUTSIDE = 'outside_view'
+STATE_UNRESOLVED = 'unresolved'
+
+def face_eligibility_parse_spans(values: list[list[int]] | None) -> list[tuple[int, int]]:
+    if not values:
+        raise RuntimeError('at least one --frame-span START END is required')
+    spans: list[tuple[int, int]] = []
+    for pair in values:
+        if len(pair) != 2:
+            raise RuntimeError(f'invalid frame span: {pair}')
+        (a, b) = (int(pair[0]), int(pair[1]))
+        if b < a:
+            raise RuntimeError(f'invalid decreasing span {a}:{b}')
+        spans.append((a, b))
+    return spans
+
+def face_eligibility_frame_ids_from_spans(spans: list[tuple[int, int]]) -> list[int]:
+    ids: set[int] = set()
+    for (a, b) in spans:
+        ids.update(range(a, b + 1))
+    return sorted(ids)
+
+def face_eligibility_load_frames(annotations: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {int(frame['frame_idx']): frame for frame in face_eligibility_as_list(annotations.get('frames')) if isinstance(frame, dict) and frame.get('frame_idx') is not None}
+
+def face_support_samples(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    tri = vertices[np.asarray(faces, dtype=np.int64)]
+    return np.stack([tri[:, 0], tri[:, 1], tri[:, 2], 0.5 * (tri[:, 0] + tri[:, 1]), 0.5 * (tri[:, 1] + tri[:, 2]), 0.5 * (tri[:, 2] + tri[:, 0]), tri.mean(axis=1)], axis=1)
+
+def classify_faces_against_depth(*, frame: dict[str, Any], vertices_object: np.ndarray, faces: np.ndarray, pose: tuple[np.ndarray, np.ndarray], depth_row: dict[str, Any] | None, support_margin_m: float, free_space_margin_m: float, min_supported_samples: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    n_faces = int(len(faces))
+    if depth_row is None:
+        masks = {STATE_OBSERVED: np.zeros(n_faces, dtype=bool), STATE_FREE: np.zeros(n_faces, dtype=bool), STATE_HIDDEN: np.zeros(n_faces, dtype=bool), STATE_OUTSIDE: np.ones(n_faces, dtype=bool), STATE_UNRESOLVED: np.zeros(n_faces, dtype=bool)}
+        return (masks, {'state': 'missing_depth', 'frame_idx': int(frame['frame_idx']), 'face_count': n_faces})
+    (r_obj, t_obj) = pose
+    samples_obj = face_support_samples(vertices_object, faces)
+    flat_obj = samples_obj.reshape(-1, 3)
+    flat_world = flat_obj @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
+    (r_c2w, t_c2w) = face_eligibility_frame_camera_pose(frame)
+    flat_cam = (flat_world - t_c2w[None, :]) @ r_c2w
+    depth = np.asarray(depth_row['depth'], dtype=np.float32)
+    (height, width) = depth.shape
+    (u, v, valid) = project_points(flat_cam, np.asarray(depth_row['intrinsics'], dtype=float), width, height)
+    z_obs = np.full((flat_cam.shape[0],), np.nan, dtype=float)
+    if np.any(valid):
+        z = depth[v[valid], u[valid]].astype(float)
+        finite = np.isfinite(z) & (z > 1e-05)
+        valid_ids = np.where(valid)[0]
+        z_obs[valid_ids[finite]] = z[finite]
+    finite = np.isfinite(z_obs)
+    residual = flat_cam[:, 2].astype(float) - z_obs
+    finite_2d = finite.reshape(n_faces, -1)
+    residual_2d = residual.reshape(n_faces, -1)
+    supported = finite_2d & (np.abs(residual_2d) <= float(support_margin_m))
+    free = finite_2d & (residual_2d < -float(free_space_margin_m))
+    behind = finite_2d & (residual_2d > float(support_margin_m))
+    supported_count = np.count_nonzero(supported, axis=1)
+    free_count = np.count_nonzero(free, axis=1)
+    behind_count = np.count_nonzero(behind, axis=1)
+    finite_count = np.count_nonzero(finite_2d, axis=1)
+    free_mask = free_count > 0
+    observed_mask = (supported_count >= int(min_supported_samples)) & ~free_mask
+    outside_mask = finite_count == 0
+    hidden_mask = (finite_count > 0) & (behind_count >= np.maximum(1, finite_count - supported_count)) & ~observed_mask & ~free_mask
+    unresolved_mask = ~(observed_mask | free_mask | outside_mask | hidden_mask)
+    masks = {STATE_OBSERVED: observed_mask.astype(bool), STATE_FREE: free_mask.astype(bool), STATE_HIDDEN: hidden_mask.astype(bool), STATE_OUTSIDE: outside_mask.astype(bool), STATE_UNRESOLVED: unresolved_mask.astype(bool)}
+    summary = {'state': 'face_support_depth_classified', 'frame_idx': int(frame['frame_idx']), 'depth_source': str(depth_row.get('source')), 'face_count': n_faces, 'sample_count': int(flat_cam.shape[0]), 'finite_sample_count': int(np.count_nonzero(finite)), 'face_state_counts': {key: int(np.count_nonzero(mask)) for (key, mask) in masks.items()}, 'sample_depth_residual_m': face_eligibility_numeric_summary(residual[finite]), 'supported_sample_count': face_eligibility_numeric_summary(supported_count.astype(float)), 'free_space_sample_count': face_eligibility_numeric_summary(free_count.astype(float)), 'behind_sample_count': face_eligibility_numeric_summary(behind_count.astype(float))}
+    return (masks, summary)
+
+def nested_get(row: dict[str, Any], dotted: str) -> Any:
+    cur: Any = row
+    for key in dotted.split('.'):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+def load_pose_support_uncertainty(pose_report: dict[str, Any], *, stat: str, default_m: float) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for row in face_eligibility_as_list(pose_report.get('pose_rows')) if isinstance(pose_report, dict) else []:
+        if not isinstance(row, dict) or row.get('frame_idx') is None:
+            continue
+        raw = nested_get(row, stat)
+        if raw is None:
+            raw = default_m
+        try:
+            val = float(raw)
+        except Exception:
+            val = float(default_m)
+        out[int(row['frame_idx'])] = max(0.0, val)
+    return out
+
+def load_visible_ownership_rows(path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
+    if path is None or not path.exists():
+        return {}
+    payload = face_eligibility_load_json(path)
+    rows: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in face_eligibility_as_list(payload.get('ownership_rows')) if isinstance(payload, dict) else []:
+        if isinstance(row, dict) and row.get('frame_idx') is not None and (row.get('hand_side') is not None):
+            rows[int(row['frame_idx']), str(row['hand_side'])] = row
+    return rows
+
+def load_bool_mask(path: str | None) -> np.ndarray | None:
+    if not isinstance(path, str) or not path:
+        return None
+    mask_path = Path(path)
+    if not mask_path.exists():
+        raise FileNotFoundError(f'explicit ownership mask path is missing: {mask_path}')
+    import cv2
+    arr = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if arr is None:
+        raise RuntimeError(f'explicit ownership mask path could not be decoded: {mask_path}')
+    return arr > 0
+
+def mask_membership(mask: np.ndarray, uv: np.ndarray, dilation_px: int) -> np.ndarray:
+    if mask is None or uv.ndim != 2 or uv.shape[1] != 2:
+        return np.zeros((len(uv),), dtype=bool)
+    (h, w) = mask.shape
+    u = np.rint(uv[:, 0]).astype(int)
+    v = np.rint(uv[:, 1]).astype(int)
+    valid = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    inside = np.zeros((len(uv),), dtype=bool)
+    if not np.any(valid):
+        return inside
+    radius = max(0, int(dilation_px))
+    x0 = np.clip(u[valid] - radius, 0, w - 1)
+    x1 = np.clip(u[valid] + radius, 0, w - 1)
+    y0 = np.clip(v[valid] - radius, 0, h - 1)
+    y1 = np.clip(v[valid] + radius, 0, h - 1)
+    integral = np.pad(mask.astype(np.int32), ((1, 0), (1, 0)), mode='constant').cumsum(axis=0).cumsum(axis=1)
+    area = integral[y1 + 1, x1 + 1] - integral[y0, x1 + 1] - integral[y1 + 1, x0] + integral[y0, x0]
+    inside[np.where(valid)[0]] = area > 0
+    return inside
+
+def ownership_face_quarantine(*, frame: dict[str, Any], vertices_object: np.ndarray, faces: np.ndarray, pose: tuple[np.ndarray, np.ndarray], depth_row: dict[str, Any] | None, ownership_row: dict[str, Any] | None, dilation_px: int) -> np.ndarray:
+    mask = load_bool_mask(None if ownership_row is None else ownership_row.get('non_object_owned_mask_path'))
+    if mask is None or depth_row is None:
+        return np.zeros((len(faces),), dtype=bool)
+    (r_obj, t_obj) = pose
+    samples_obj = face_support_samples(vertices_object, faces)
+    flat_world = samples_obj.reshape(-1, 3) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
+    (r_c2w, t_c2w) = face_eligibility_frame_camera_pose(frame)
+    flat_cam = (flat_world - t_c2w[None, :]) @ r_c2w
+    depth = np.asarray(depth_row['depth'], dtype=np.float32)
+    (height, width) = depth.shape
+    (u, v, valid) = project_points(flat_cam, np.asarray(depth_row['intrinsics'], dtype=float), width, height)
+    uv = np.column_stack([u.astype(float), v.astype(float)])
+    inside = mask_membership(mask, uv, int(dilation_px)) & valid
+    if inside.shape[0] != flat_cam.shape[0]:
+        return np.zeros((len(faces),), dtype=bool)
+    return inside.reshape(len(faces), -1).any(axis=1)
+
+def write_face_masks(path: Path, masks: dict[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **{key: mask.astype(np.bool_) for (key, mask) in masks.items()})
+
+def build_face_eligibility(args: argparse.Namespace) -> dict[str, Any]:
+    spans = face_eligibility_parse_spans(args.frame_span)
+    frame_ids = face_eligibility_frame_ids_from_spans(spans)
+    annotations = face_eligibility_load_json(args.annotations)
+    frames = face_eligibility_load_frames(annotations)
+    pose_report = face_eligibility_load_json(args.pose_report)
+    poses = pose_map(pose_report)
+    support_uncertainty_by_frame = load_pose_support_uncertainty(pose_report, stat=str(args.surface_support_uncertainty_stat), default_m=float(args.default_surface_support_uncertainty_m))
+    mesh = load_mesh(args.completed_mesh)
+    vertices_object = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    depth_rows = load_depth_sources(list(args.depth_npz))
+    ownership_rows = load_visible_ownership_rows(args.visible_ownership_factor_report)
+    output_case = args.output_root / args.case
+    output_case.mkdir(parents=True, exist_ok=True)
+    factor_rows: list[dict[str, Any]] = []
+    frame_summaries: list[dict[str, Any]] = []
+    state_counter: Counter[str] = Counter()
+    for frame_idx in frame_ids:
+        frame = frames.get(frame_idx)
+        pose = poses.get(frame_idx)
+        if frame is None or pose is None:
+            state_counter['missing_frame_or_pose'] += 1
+            continue
+        (base_masks, summary) = classify_faces_against_depth(frame=frame, vertices_object=vertices_object, faces=faces, pose=pose, depth_row=depth_rows.get(frame_idx), support_margin_m=float(args.support_margin_m), free_space_margin_m=float(args.free_space_margin_m), min_supported_samples=int(args.min_supported_samples))
+        frame_summaries.append(summary)
+        surface_support_uncertainty_m = float(support_uncertainty_by_frame.get(frame_idx, float(args.default_surface_support_uncertainty_m)))
+        for side in args.sides:
+            hand_owned = ownership_face_quarantine(frame=frame, vertices_object=vertices_object, faces=faces, pose=pose, depth_row=depth_rows.get(frame_idx), ownership_row=ownership_rows.get((frame_idx, side)), dilation_px=int(args.ownership_face_overlap_dilation_px))
+            masks = {key: value.copy() for (key, value) in base_masks.items()}
+            if np.any(hand_owned):
+                masks[STATE_HAND_QUARANTINED] = hand_owned
+                masks[STATE_OBSERVED] &= ~hand_owned
+            else:
+                masks[STATE_HAND_QUARANTINED] = hand_owned
+            eligible_hard = masks[STATE_OBSERVED].copy()
+            mask_path = output_case / 'face_state_masks' / side / f'{frame_idx:06d}_surface_eligibility_faces.npz'
+            write_face_masks(mask_path, {**masks, 'eligible_hard_observed': eligible_hard})
+            counts = {key: int(np.count_nonzero(value)) for (key, value) in masks.items()}
+            counts['eligible_hard_observed'] = int(np.count_nonzero(eligible_hard))
+            factor_rows.append({'factor_family': 'surface_eligibility', 'target_entity_id': args.object_id, 'frame_idx': int(frame_idx), 'hand_side': side, 'variable_affected': 'constraint_eligibility', 'observation_type': 'posed_mesh_face_support_samples_x_metric_depth', 'residual_or_quarantine_rule': 'only eligible_hard_observed faces may produce MANO nonpenetration; observed-surface residuals are hard only beyond observed_surface_support_uncertainty_m, while free-space, hidden, outside-view, unresolved, and hand-owned faces are not hard constraints', 'provenance': {'annotations': str(args.annotations), 'pose_report': str(args.pose_report), 'completed_mesh': str(args.completed_mesh), 'depth_npz': [str(p) for p in args.depth_npz], 'visible_ownership_factor_report': None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report)}, 'rendered_uncertainty_channel': 'surface eligibility should render eligible observed faces separately from free-space rejected, hidden, outside-view, unresolved, hand-owned, and support-uncertain faces', 'face_state_npz_path': str(mask_path), 'observed_surface_support_uncertainty_m': float(surface_support_uncertainty_m), 'surface_support_uncertainty_m': float(surface_support_uncertainty_m), 'surface_support_uncertainty_stat': str(args.surface_support_uncertainty_stat), 'face_count': int(len(faces)), 'counts': counts})
+            for (key, value) in counts.items():
+                state_counter[f'{side}:{key}'] += int(value)
+    report = {'method': 'build_v18_surface_eligibility_factor', 'status': 'ok', 'claim_scope': 'Reusable face/patch eligibility factor records; not a MANO correction by themselves.', 'case': args.case, 'target_entity_id': args.object_id, 'inputs': {'annotations': str(args.annotations), 'pose_report': str(args.pose_report), 'completed_mesh': str(args.completed_mesh), 'depth_npz': [str(p) for p in args.depth_npz], 'visible_ownership_factor_report': None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report)}, 'parameters': {'frame_spans': [[int(a), int(b)] for (a, b) in spans], 'sides': list(args.sides), 'support_margin_m': float(args.support_margin_m), 'free_space_margin_m': float(args.free_space_margin_m), 'min_supported_samples': int(args.min_supported_samples), 'ownership_face_overlap_dilation_px': int(args.ownership_face_overlap_dilation_px), 'surface_support_uncertainty_stat': str(args.surface_support_uncertainty_stat), 'default_surface_support_uncertainty_m': float(args.default_surface_support_uncertainty_m)}, 'summary': {'frame_count_requested': int(len(frame_ids)), 'factor_row_count': int(len(factor_rows)), 'state_counts': dict(state_counter), 'frame_face_state_counts': {key: face_eligibility_numeric_summary(np.asarray([s.get('face_state_counts', {}).get(key, 0) for s in frame_summaries], dtype=float)) for key in [STATE_OBSERVED, STATE_FREE, STATE_HIDDEN, STATE_OUTSIDE, STATE_UNRESOLVED]}, 'observed_surface_support_uncertainty_m': face_eligibility_numeric_summary(np.asarray([float(r.get('observed_surface_support_uncertainty_m', 0.0)) for r in factor_rows], dtype=float))}, 'frame_summaries': frame_summaries, 'factor_rows': factor_rows}
+    report_path = output_case / 'v18_surface_eligibility_factor_report.json'
+    face_eligibility_write_json(report_path, report)
+    print(json.dumps({'status': 'ok', 'report': str(report_path), 'factor_rows': len(factor_rows)}, indent=2))
+    return report
+
+def face_eligibility_parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--case', required=True)
+    p.add_argument('--object-id', required=True)
+    p.add_argument('--annotations', type=Path, required=True)
+    p.add_argument('--pose-report', type=Path, required=True)
+    p.add_argument('--completed-mesh', type=Path, required=True)
+    p.add_argument('--depth-npz', type=Path, action='append', required=True)
+    p.add_argument('--frame-span', nargs=2, type=int, action='append', required=True)
+    p.add_argument('--sides', nargs='+', choices=('left', 'right'), default=['left', 'right'])
+    p.add_argument('--visible-ownership-factor-report', type=Path, default=None)
+    p.add_argument('--output-root', type=Path, required=True)
+    p.add_argument('--support-margin-m', type=float, default=0.015)
+    p.add_argument('--free-space-margin-m', type=float, default=0.025)
+    p.add_argument('--min-supported-samples', type=int, default=2)
+    p.add_argument('--ownership-face-overlap-dilation-px', type=int, default=2)
+    p.add_argument('--surface-support-uncertainty-stat', default='observed_to_mesh_final.p95_m', help='Dotted pose_rows[] field emitted as observed_surface_support_uncertainty_m for solver nonpenetration slack.')
+    p.add_argument('--default-surface-support-uncertainty-m', type=float, default=0.0)
+    return p.parse_args(argv)
+import argparse
+import hashlib
+import json
+import pickle
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+import cv2
+import numpy as np
+from scipy.spatial import cKDTree
+POSE_MEASUREMENT_STATUSES = {'fit_to_visible_depth_samples', 'fit_to_visible_depth_archive_vertices', 'fit_to_object_owned_rgb_calibrated_pnp'}
+
+@dataclass
+class FactorBuildFrame:
+    frame_idx: int
+    T_world_camera: np.ndarray
+    rotation_world_object: np.ndarray
+    translation_world_object: np.ndarray
+    observed_camera: np.ndarray
+    observed_uv: np.ndarray
+    observed_depth_confidence: np.ndarray
+    ownership_quality_weight: float
+    image_source_size_wh: tuple[int, int]
+    calibration_size_wh: tuple[int, int]
+    K_calibration: np.ndarray
+    K_image_source: np.ndarray
+    mask_depth_transform_contract: dict[str, Any] | None
+    mask_path: str
+    depth_npz_path: str
+    target_mask: np.ndarray
+    hand_unknown: np.ndarray
+    target_or_unknown: np.ndarray
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.expanduser().resolve().open('rb') as handle:
+        for chunk in iter(lambda : handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def load_mano_faces(path: Path) -> np.ndarray:
+    resolved = path.expanduser().resolve()
+    with resolved.open('rb') as handle:
+        payload = pickle.load(handle, encoding='latin1')
+    faces = np.asarray(payload.get('f') if isinstance(payload, dict) else [], dtype=np.int64)
+    if faces.ndim != 2 or faces.shape[1] != 3 or len(faces) == 0 or (np.min(faces) < 0) or (np.max(faces) >= 778):
+        raise RuntimeError(f'invalid MANO triangle topology: {resolved}')
+    return faces
+
+def image_targets_load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.expanduser().resolve().read_text(encoding='utf-8'))
+    if not isinstance(value, dict):
+        raise RuntimeError(f'expected JSON object: {path}')
+    return value
+
+def image_targets_load_mesh(path: Path) -> trimesh.Trimesh:
+    import trimesh
+    mesh = trimesh.load(path.expanduser().resolve(), force='mesh', process=False)
+    if not isinstance(mesh, trimesh.Trimesh) or len(mesh.vertices) == 0 or len(mesh.faces) == 0:
+        raise RuntimeError(f'invalid triangle mesh: {path}')
+    if not np.isfinite(np.asarray(mesh.vertices)).all():
+        raise RuntimeError(f'non-finite mesh vertices: {path}')
+    return mesh
+
+def world_to_camera(points: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    return (np.asarray(points) - T_world_camera[:3, 3]) @ T_world_camera[:3, :3]
+
+def camera_to_world(points: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    return np.asarray(points) @ T_world_camera[:3, :3].T + T_world_camera[:3, 3]
+
+def canonical_to_camera(canonical: np.ndarray, rotation_world_object: np.ndarray, translation_world_object: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    world = np.asarray(canonical) @ rotation_world_object.T + translation_world_object[None, :]
+    return world_to_camera(world, T_world_camera)
+
+def resize_intrinsics_xy(K_source: np.ndarray, source_size_wh: tuple[int, int], target_size_wh: tuple[int, int]) -> np.ndarray:
+    (source_width, source_height) = (int(source_size_wh[0]), int(source_size_wh[1]))
+    (target_width, target_height) = (int(target_size_wh[0]), int(target_size_wh[1]))
+    if source_width <= 0 or source_height <= 0 or target_width <= 0 or (target_height <= 0):
+        raise RuntimeError(f'invalid image-plane sizes: source={source_size_wh}, target={target_size_wh}')
+    sx = float(target_width) / float(source_width)
+    sy = float(target_height) / float(source_height)
+    K = np.asarray(K_source, dtype=np.float64).copy()
+    K[0, 0] *= sx
+    K[1, 1] *= sy
+    K[0, 2] = sx * (K[0, 2] + 0.5) - 0.5
+    K[1, 2] = sy * (K[1, 2] + 0.5) - 0.5
+    return K
+
+def resize_intrinsics(K_source: np.ndarray, source_size: int, raster_size: int) -> np.ndarray:
+    return resize_intrinsics_xy(K_source, (int(source_size), int(source_size)), (int(raster_size), int(raster_size)))
+
+def resize_mask(mask: np.ndarray, raster_size: int) -> np.ndarray:
+    interpolation = getattr(cv2, 'INTER_NEAREST_EXACT', cv2.INTER_NEAREST)
+    return cv2.resize(mask.astype(np.uint8), (raster_size, raster_size), interpolation=interpolation) > 0
+
+def project_camera(points_camera: np.ndarray, K: np.ndarray) -> np.ndarray:
+    points = np.asarray(points_camera, dtype=np.float64)
+    z = np.maximum(points[:, 2], 1e-09)
+    return np.column_stack((K[0, 0] * points[:, 0] / z + K[0, 2], K[1, 1] * points[:, 1] / z + K[1, 2]))
+
+def deterministic_indices(count: int, max_count: int) -> np.ndarray:
+    if count <= max_count:
+        return np.arange(count, dtype=np.int64)
+    return np.unique(np.rint(np.linspace(0, count - 1, num=max_count)).astype(np.int64))
+
+def validate_camera_transform(transform: np.ndarray, frame_idx: int) -> np.ndarray:
+    transform = np.asarray(transform, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        raise RuntimeError(f'frame {frame_idx} has invalid T_world_camera_metric')
+    rotation = transform[:3, :3]
+    if np.linalg.norm(rotation.T @ rotation - np.eye(3)) > 0.0001 or abs(np.linalg.det(rotation) - 1.0) > 0.0001:
+        raise RuntimeError(f'frame {frame_idx} has non-rigid T_world_camera_metric')
+    if not np.allclose(transform[3], np.asarray([0.0, 0.0, 0.0, 1.0]), atol=1e-06):
+        raise RuntimeError(f'frame {frame_idx} has malformed homogeneous camera transform')
+    return transform
+
+class BatchFirstHitRasterizer:
+
+    def __init__(self, faces: np.ndarray, raster_size: int, K_raster: np.ndarray, device: str):
+        import torch
+        from pytorch3d.renderer import MeshRasterizer, RasterizationSettings
+        from pytorch3d.utils.camera_conversions import cameras_from_opencv_projection
+        self.device = device
+        self.faces = torch.tensor(faces, dtype=torch.int64, device=device)
+        self.size = int(raster_size)
+        cameras = cameras_from_opencv_projection(torch.eye(3, dtype=torch.float32, device=device)[None], torch.zeros(1, 3, dtype=torch.float32, device=device), torch.tensor(K_raster, dtype=torch.float32, device=device)[None], torch.tensor([[self.size, self.size]], dtype=torch.float32, device=device))
+        self.rasterizer = MeshRasterizer(cameras=cameras, raster_settings=RasterizationSettings(image_size=self.size, blur_radius=0.0, faces_per_pixel=1, cull_backfaces=False, bin_size=0))
+
+    def render(self, vertices_camera: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+        import torch
+        from pytorch3d.structures import Meshes
+        verts = [torch.tensor(v, dtype=torch.float32, device=self.device) for v in vertices_camera]
+        with torch.no_grad():
+            fragments = self.rasterizer(Meshes(verts=verts, faces=[self.faces] * len(verts)))
+        zbuf = fragments.zbuf[..., 0].detach().cpu().numpy().astype(np.float64)
+        pix = fragments.pix_to_face[..., 0].detach().cpu().numpy()
+        valid = (pix >= 0) & np.isfinite(zbuf) & (zbuf > 1e-06)
+        return (np.where(valid, zbuf, np.nan), valid)
+
+def annotation_object(frame: dict[str, Any], object_id: str) -> dict[str, Any] | None:
+    for obj in frame.get('objects', []) if isinstance(frame.get('objects'), list) else []:
+        if obj.get('object_id') == object_id:
+            return obj
+    legacy = frame.get('object') if isinstance(frame.get('object'), dict) else None
+    if legacy and legacy.get('object_id') in (None, object_id):
+        return legacy
+    return None
+
+def build_hand_unknown_mask(hand_npz: Any, hand_rows_by_frame: dict[int, list[int]], mano_faces: np.ndarray, frame_idx: int, T_world_camera: np.ndarray, K_raster: np.ndarray, raster_size: int, dilation_px: int) -> np.ndarray:
+    """Rasterize the complete projected MANO triangle silhouette as unknown support.
+
+    A convex hull of MANO vertices can mark large background wedges as hand.  The
+    factor contract needs the actual triangle silhouette: pixels covered by the
+    projected hand are unknown, while pixels outside it may be used as known
+    background for the object silhouette term.
+    """
+    unknown = np.zeros((raster_size, raster_size), dtype=np.uint8)
+    faces = np.asarray(mano_faces, dtype=np.int64)
+    for row_pos in hand_rows_by_frame.get(int(frame_idx), []):
+        vertices_world = np.asarray(hand_npz['vertices_current_v18_world_from_hawor_projection_relift_m'][row_pos], dtype=np.float64)
+        vertices_camera = world_to_camera(vertices_world, T_world_camera)
+        valid_vertex = np.isfinite(vertices_camera).all(axis=1) & (vertices_camera[:, 2] > 1e-06)
+        valid_faces = valid_vertex[faces].all(axis=1)
+        if not np.any(valid_faces):
+            continue
+        face_vertices = vertices_camera[faces[valid_faces]]
+        projected = np.empty((len(face_vertices), 3, 2), dtype=np.float64)
+        z = face_vertices[:, :, 2]
+        projected[:, :, 0] = K_raster[0, 0] * face_vertices[:, :, 0] / z + K_raster[0, 2]
+        projected[:, :, 1] = K_raster[1, 1] * face_vertices[:, :, 1] / z + K_raster[1, 2]
+        finite = np.isfinite(projected).all(axis=(1, 2))
+        projected = projected[finite]
+        if len(projected) == 0:
+            continue
+        projected = np.clip(projected, -2.0 * raster_size, 3.0 * raster_size)
+        polygons = [np.rint(poly).astype(np.int32) for poly in projected]
+        cv2.fillPoly(unknown, polygons, 1)
+    if dilation_px > 0:
+        radius = int(dilation_px)
+        unknown = cv2.dilate(unknown, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)))
+    return unknown > 0
+
+def image_targets_load_frames(args: argparse.Namespace) -> tuple[list[FactorBuildFrame], np.ndarray]:
+    annotations = image_targets_load_json(args.annotations)
+    measurement_report = image_targets_load_json(args.pose_report)
+    factor_pose_report = image_targets_load_json(args.factor_pose_report) if args.factor_pose_report else measurement_report
+    measurement_rows = {int(row['frame_idx']): row for row in measurement_report.get('pose_rows', []) if isinstance(row, dict) and str(row.get('status') or '') in POSE_MEASUREMENT_STATUSES}
+    factor_pose_rows = {int(row['frame_idx']): row for row in factor_pose_report.get('pose_rows', []) if isinstance(row, dict) and row.get('frame_idx') is not None}
+    hand_npz = np.load(args.hand_npz)
+    mano_faces = load_mano_faces(args.mano_faces_pkl)
+    hand_rows_by_frame: dict[int, list[int]] = {}
+    for (pos, frame_idx) in enumerate(np.asarray(hand_npz['frame_idx']).astype(int).tolist()):
+        hand_rows_by_frame.setdefault(int(frame_idx), []).append(int(pos))
+    depth_archives: dict[str, Any] = {}
+    frames: list[FactorBuildFrame] = []
+    K_raster: np.ndarray | None = None
+    raster_size_wh = (int(args.raster_size), int(args.raster_size))
+    for frame in annotations.get('frames', []):
+        if not isinstance(frame, dict) or frame.get('frame_idx') is None:
+            continue
+        idx = int(frame['frame_idx'])
+        if args.frame_start is not None and idx < int(args.frame_start):
+            continue
+        if args.frame_end is not None and idx > int(args.frame_end):
+            continue
+        if idx not in measurement_rows or idx not in factor_pose_rows:
+            continue
+        obj = annotation_object(frame, args.object_id)
+        if obj is None:
+            continue
+        visible = obj.get('visible_geometry_candidate') if isinstance(obj.get('visible_geometry_candidate'), dict) else None
+        if not isinstance(visible, dict):
+            continue
+        ownership = visible.get('first_surface_depth_ownership')
+        if not isinstance(ownership, dict) or ownership.get('enabled') is not True or ownership.get('fail_closed') is True:
+            continue
+        if float(ownership.get('retained_fraction') or 0.0) < float(args.min_ownership_fraction):
+            continue
+        mask_path = Path(str(visible.get('mask_path') or obj.get('mask_path') or '')).expanduser().resolve()
+        mask_raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask_raw is None or mask_raw.ndim != 2:
+            raise RuntimeError(f'failed to read object-owned mask: {mask_path}')
+        (image_height, image_width) = (int(mask_raw.shape[0]), int(mask_raw.shape[1]))
+        raw_path = Path(str(frame.get('raw_frame_path') or '')).expanduser().resolve()
+        raw_gray = cv2.imread(str(raw_path), cv2.IMREAD_GRAYSCALE)
+        if raw_gray is None or raw_gray.ndim != 2:
+            raise RuntimeError(f'failed to read raw RGB frame for image-plane contract: {raw_path}')
+        if raw_gray.shape != mask_raw.shape:
+            raise RuntimeError(f'raw RGB shape {raw_gray.shape} != object mask shape {mask_raw.shape} at frame {idx}')
+        image_size_wh = (image_width, image_height)
+        calibration_width = int(frame.get('source_width') or args.source_size)
+        calibration_height = int(frame.get('source_height') or args.source_size)
+        (fx, fy, cx, cy) = np.asarray(visible['intrinsics_fx_fy_cx_cy'], dtype=np.float64).tolist()
+        K_calibration = np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+        K_image = resize_intrinsics_xy(K_calibration, (calibration_width, calibration_height), image_size_wh)
+        K_current = resize_intrinsics_xy(K_image, image_size_wh, raster_size_wh)
+        if K_raster is None:
+            K_raster = K_current
+        elif not np.allclose(K_current, K_raster, atol=1e-06):
+            raise RuntimeError('per-frame intrinsics differ; factor batch contract is invalid')
+        mask_depth_contract = visible.get('mask_depth_transform_contract')
+        if isinstance(mask_depth_contract, dict):
+            declared_mask_size = tuple((int(v) for v in mask_depth_contract.get('mask_size_wh', [])))
+            declared_depth_size = tuple((int(v) for v in mask_depth_contract.get('depth_size_wh', [])))
+            if declared_mask_size not in {image_size_wh, ()} or declared_depth_size not in {(calibration_width, calibration_height), ()}:
+                raise RuntimeError(f'mask/depth plane contract size mismatch at frame {idx}: mask={declared_mask_size}, image={image_size_wh}, depth={declared_depth_size}, calibration={(calibration_width, calibration_height)}')
+            declared_affine = np.asarray(mask_depth_contract.get('A_depth_from_mask_coordinate_model') or [], dtype=np.float64)
+            expected_affine = np.asarray([[float(calibration_width) / float(image_width), 0.0, 0.5 * float(calibration_width) / float(image_width) - 0.5], [0.0, float(calibration_height) / float(image_height), 0.5 * float(calibration_height) / float(image_height) - 0.5], [0.0, 0.0, 1.0]], dtype=np.float64)
+            if declared_affine.shape == (3, 3) and (not np.allclose(declared_affine, expected_affine, atol=1e-06, rtol=0.0)):
+                raise RuntimeError(f'mask/depth affine contract mismatch at frame {idx}')
+        observed = np.asarray(visible.get('camera_vertices_sample_m') or [], dtype=np.float64)
+        valid_observed = np.isfinite(observed).all(axis=1) & (observed[:, 2] > 1e-06)
+        observed = observed[valid_observed]
+        if len(observed) < int(args.min_observed_points):
+            continue
+        confidence_path = Path(str(visible.get('depth_npz') or '')).expanduser().resolve()
+        if not confidence_path.is_file():
+            raise RuntimeError(f'depth confidence archive missing for frame {idx}: {confidence_path}')
+        confidence_key = str(confidence_path)
+        if confidence_key not in depth_archives:
+            depth_archives[confidence_key] = np.load(confidence_path, allow_pickle=False)
+        depth_archive = depth_archives[confidence_key]
+        confidence_frames = np.asarray(depth_archive['frame_idx'], dtype=np.int64)
+        matching = np.flatnonzero(confidence_frames == idx)
+        if len(matching) != 1:
+            raise RuntimeError(f'depth confidence archive has no unique frame {idx}: {confidence_path}')
+        depth_frame = int(matching[0])
+        confidence_map = np.asarray(depth_archive['confidence'][depth_frame], dtype=np.float64)
+        if confidence_map.shape != (calibration_height, calibration_width):
+            raise RuntimeError(f'depth confidence shape {confidence_map.shape} != calibration plane {(calibration_height, calibration_width)} for frame {idx}')
+        source_uv = project_camera(observed, K_calibration)
+        source_px = np.rint(source_uv).astype(np.int64)
+        source_px[:, 0] = np.clip(source_px[:, 0], 0, calibration_width - 1)
+        source_px[:, 1] = np.clip(source_px[:, 1], 0, calibration_height - 1)
+        finite_confidence = confidence_map[np.isfinite(confidence_map)]
+        fallback_confidence = float(np.median(finite_confidence)) if len(finite_confidence) else 1.0
+        observed_confidence = confidence_map[source_px[:, 1], source_px[:, 0]]
+        observed_confidence = np.nan_to_num(observed_confidence, nan=fallback_confidence, posinf=float(np.max(finite_confidence)) if len(finite_confidence) else fallback_confidence, neginf=float(np.min(finite_confidence)) if len(finite_confidence) else fallback_confidence)
+        uv = project_camera(observed, K_current)
+        inside = (uv[:, 0] >= 0.0) & (uv[:, 0] < args.raster_size) & (uv[:, 1] >= 0.0) & (uv[:, 1] < args.raster_size)
+        observed = observed[inside]
+        uv = uv[inside]
+        observed_confidence = observed_confidence[inside]
+        if len(observed) < int(args.min_observed_points):
+            continue
+        target_mask = resize_mask(mask_raw > 0, int(args.raster_size))
+        T_world_camera = validate_camera_transform(frame['camera']['T_world_camera_metric'], idx)
+        hand_unknown = build_hand_unknown_mask(hand_npz, hand_rows_by_frame, mano_faces, idx, T_world_camera, K_current, int(args.raster_size), int(args.hand_unknown_dilation_px))
+        pose_row = factor_pose_rows[idx]
+        rotation = np.asarray(pose_row['rotation_world_from_completed_canonical_matrix'], dtype=np.float64)
+        translation = np.asarray(pose_row['translation_world_m'], dtype=np.float64)
+        if rotation.shape != (3, 3) or translation.shape != (3,) or (not np.isfinite(rotation).all()) or (not np.isfinite(translation).all()):
+            raise RuntimeError(f'invalid factor pose row for frame {idx}')
+        frames.append(FactorBuildFrame(frame_idx=idx, T_world_camera=T_world_camera, rotation_world_object=rotation, translation_world_object=translation, observed_camera=observed, observed_uv=uv, observed_depth_confidence=observed_confidence, ownership_quality_weight=float(np.clip(1.0 - float(ownership.get('removed_fraction') or 0.0) / max(float(args.max_removed_fraction_for_full_weight), 1e-06), float(args.min_depth_factor_weight), 1.0)), image_source_size_wh=image_size_wh, calibration_size_wh=(calibration_width, calibration_height), K_calibration=K_calibration, K_image_source=K_image, mask_depth_transform_contract=mask_depth_contract if isinstance(mask_depth_contract, dict) else None, mask_path=str(mask_path), depth_npz_path=str(confidence_path), target_mask=target_mask, hand_unknown=hand_unknown, target_or_unknown=target_mask | hand_unknown))
+    if K_raster is None or len(frames) < int(args.min_frames):
+        raise RuntimeError(f'only {len(frames)} eligible factor frames, need {args.min_frames}')
+    return (frames, K_raster)
+
+def canonical_point_map(zbuf: np.ndarray, rendered: np.ndarray, K: np.ndarray, T_world_camera: np.ndarray, rotation_world_object: np.ndarray, translation_world_object: np.ndarray) -> np.ndarray:
+    (vv, uu) = np.nonzero(rendered)
+    z = zbuf[vv, uu]
+    points_camera = np.column_stack(((uu - K[0, 2]) * z / K[0, 0], (vv - K[1, 2]) * z / K[1, 1], z))
+    points_world = camera_to_world(points_camera, T_world_camera)
+    points_canonical = (points_world - translation_world_object[None, :]) @ rotation_world_object
+    out = np.full(zbuf.shape + (3,), np.nan, dtype=np.float64)
+    out[vv, uu] = points_canonical
+    return out
+
+def build_frame_factors(frame: FactorBuildFrame, zbuf: np.ndarray, rendered: np.ndarray, K: np.ndarray, args: argparse.Namespace) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    point_map = canonical_point_map(zbuf, rendered, K, frame.T_world_camera, frame.rotation_world_object, frame.translation_world_object)
+    observed_idx = deterministic_indices(len(frame.observed_camera), int(args.max_observed_factors_per_frame))
+    observed = frame.observed_camera[observed_idx]
+    observed_uv = frame.observed_uv[observed_idx]
+    observed_confidence = frame.observed_depth_confidence[observed_idx]
+    observed_px = np.rint(observed_uv).astype(np.int64)
+    observed_px[:, 0] = np.clip(observed_px[:, 0], 0, args.raster_size - 1)
+    observed_px[:, 1] = np.clip(observed_px[:, 1], 0, args.raster_size - 1)
+    hit = rendered[observed_px[:, 1], observed_px[:, 0]]
+    observed_hand_unknown = frame.hand_unknown[observed_px[:, 1], observed_px[:, 0]]
+    depth_points = point_map[observed_px[hit, 1], observed_px[hit, 0]]
+    depth_z = observed[hit, 2]
+    depth_confidence = observed_confidence[hit]
+    valid_depth = np.isfinite(depth_points).all(axis=1) & np.isfinite(depth_z) & (depth_z > 1e-06) & np.isfinite(depth_confidence)
+    depth_points = depth_points[valid_depth]
+    depth_z = depth_z[valid_depth]
+    depth_confidence = depth_confidence[valid_depth]
+    (conf_lo, conf_hi) = np.percentile(depth_confidence, [10.0, 90.0]) if len(depth_confidence) else (0.0, 1.0)
+    conf_bad = np.clip((depth_confidence - conf_lo) / max(conf_hi - conf_lo, 1e-06), 0.0, 1.0)
+    confidence_weight = 1.0 - (1.0 - float(args.min_depth_factor_weight)) * conf_bad
+    boundary_distance = cv2.distanceTransform(frame.target_mask.astype(np.uint8), cv2.DIST_L2, 3)
+    hit_px = observed_px[hit][valid_depth]
+    boundary_weight = np.where(boundary_distance[hit_px[:, 1], hit_px[:, 0]] <= float(args.boundary_downweight_radius_px), float(args.boundary_weight), 1.0)
+    depth_weights = np.clip(float(frame.ownership_quality_weight) * confidence_weight * boundary_weight, float(args.min_depth_factor_weight), 1.0)
+    sil_points: list[np.ndarray] = []
+    sil_targets: list[np.ndarray] = []
+    sil_kinds: list[int] = []
+    outside = rendered & ~frame.target_or_unknown
+    outside_coords = np.column_stack(np.nonzero(outside)[::-1])
+    if len(outside_coords) and np.any(frame.target_or_unknown):
+        target_coords = np.column_stack(np.nonzero(frame.target_or_unknown)[::-1])
+        selected = deterministic_indices(len(outside_coords), int(args.max_outside_silhouette_factors_per_frame))
+        selected_coords = outside_coords[selected]
+        (_, nearest) = cKDTree(target_coords).query(selected_coords, k=1, workers=-1)
+        nearest_target = target_coords[nearest]
+        points = point_map[selected_coords[:, 1], selected_coords[:, 0]]
+        valid = np.isfinite(points).all(axis=1)
+        sil_points.append(points[valid])
+        sil_targets.append(nearest_target[valid].astype(np.float64))
+        sil_kinds.append(np.zeros(int(np.count_nonzero(valid)), dtype=np.int8))
+    missing_uv = observed_uv[~hit & ~observed_hand_unknown]
+    if len(missing_uv) and np.any(rendered):
+        rendered_coords = np.column_stack(np.nonzero(rendered)[::-1])
+        selected = deterministic_indices(len(missing_uv), int(args.max_missing_silhouette_factors_per_frame))
+        selected_uv = missing_uv[selected]
+        (_, nearest) = cKDTree(rendered_coords).query(selected_uv, k=1, workers=-1)
+        nearest_rendered = rendered_coords[nearest]
+        points = point_map[nearest_rendered[:, 1], nearest_rendered[:, 0]]
+        valid = np.isfinite(points).all(axis=1)
+        sil_points.append(points[valid])
+        sil_targets.append(selected_uv[valid].astype(np.float64))
+        sil_kinds.append(np.ones(int(np.count_nonzero(valid)), dtype=np.int8))
+    if sil_points:
+        sil_point_arr = np.vstack(sil_points)
+        sil_target_arr = np.vstack(sil_targets)
+        sil_kind_arr = np.concatenate(sil_kinds)
+    else:
+        sil_point_arr = np.empty((0, 3), dtype=np.float64)
+        sil_target_arr = np.empty((0, 2), dtype=np.float64)
+        sil_kind_arr = np.empty((0,), dtype=np.int8)
+    intersection = int(np.count_nonzero(rendered & frame.target_mask))
+    union = int(np.count_nonzero(rendered | frame.target_mask))
+    metrics = {'frame_idx': int(frame.frame_idx), 'observed_factor_count': int(len(depth_z)), 'depth_factor_weight_summary': {'median': float(np.median(depth_weights)) if len(depth_weights) else None, 'p10': float(np.percentile(depth_weights, 10.0)) if len(depth_weights) else None, 'p90': float(np.percentile(depth_weights, 90.0)) if len(depth_weights) else None, 'min': float(np.min(depth_weights)) if len(depth_weights) else None, 'max': float(np.max(depth_weights)) if len(depth_weights) else None}, 'ownership_quality_weight': float(frame.ownership_quality_weight), 'observed_depth_confidence_median': float(np.median(depth_confidence)) if len(depth_confidence) else None, 'missing_silhouette_factor_count': int(np.count_nonzero(sil_kind_arr == 1)), 'outside_silhouette_factor_count': int(np.count_nonzero(sil_kind_arr == 0)), 'rendered_pixels': int(np.count_nonzero(rendered)), 'target_pixels': int(np.count_nonzero(frame.target_mask)), 'hand_unknown_pixels': int(np.count_nonzero(frame.target_or_unknown & ~frame.target_mask)), 'initial_silhouette_iou': float(intersection / max(1, union)), 'initial_outside_pixels': int(np.count_nonzero(outside)), 'initial_observed_hit_fraction': float(np.mean(hit)) if len(hit) else 0.0, 'observed_hand_unknown_excluded_count': int(np.count_nonzero(~hit & observed_hand_unknown)), 'known_pixels_contract': 'hand-projected pixels are excluded from known-background factors'}
+    return ({'depth_points': depth_points.astype(np.float64), 'depth_z': depth_z.astype(np.float64), 'depth_weight': depth_weights.astype(np.float64), 'silhouette_points': sil_point_arr.astype(np.float64), 'silhouette_target_uv': sil_target_arr.astype(np.float64), 'silhouette_kind': sil_kind_arr.astype(np.int8)}, metrics)
+
+def image_targets_parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--annotations', type=Path, required=True)
+    p.add_argument('--pose-report', type=Path, required=True, help='Original P14 measurement report defining factor frames')
+    p.add_argument('--factor-pose-report', type=Path, default=None, help='Optional current P15 pose report used only to freeze correspondences')
+    p.add_argument('--completed-mesh', type=Path, required=True)
+    p.add_argument('--hand-npz', type=Path, required=True)
+    p.add_argument('--mano-faces-pkl', type=Path, required=True, help='MANO model pickle containing the 778-vertex triangle topology')
+    p.add_argument('--object-id', required=True)
+    p.add_argument('--output-npz', type=Path, required=True)
+    p.add_argument('--output-json', type=Path, required=True)
+    p.add_argument('--frame-start', type=int, default=None)
+    p.add_argument('--frame-end', type=int, default=None)
+    p.add_argument('--raster-size', type=int, default=256)
+    p.add_argument('--source-size', type=int, default=1408)
+    p.add_argument('--min-frames', type=int, default=8)
+    p.add_argument('--min-observed-points', type=int, default=20)
+    p.add_argument('--min-ownership-fraction', type=float, default=0.8)
+    p.add_argument('--hand-unknown-dilation-px', type=int, default=1)
+    p.add_argument('--boundary-downweight-radius-px', type=float, default=1.5)
+    p.add_argument('--boundary-weight', type=float, default=0.65)
+    p.add_argument('--min-depth-factor-weight', type=float, default=0.25)
+    p.add_argument('--max-removed-fraction-for-full-weight', type=float, default=0.1)
+    p.add_argument('--max-observed-factors-per-frame', type=int, default=192)
+    p.add_argument('--max-outside-silhouette-factors-per-frame', type=int, default=128)
+    p.add_argument('--max-missing-silhouette-factors-per-frame', type=int, default=128)
+    p.add_argument('--render-batch-size', type=int, default=16)
+    p.add_argument('--device', default='cuda:0')
+    args = p.parse_args(argv)
+    if not 0.0 < float(args.boundary_weight) <= 1.0:
+        raise RuntimeError('--boundary-weight must be in (0,1]')
+    if not 0.0 < float(args.min_depth_factor_weight) <= 1.0:
+        raise RuntimeError('--min-depth-factor-weight must be in (0,1]')
+    if float(args.max_removed_fraction_for_full_weight) <= 0.0:
+        raise RuntimeError('--max-removed-fraction-for-full-weight must be positive')
+    return args
+
+def build_pose_image_targets(argv=None) -> None:
+    args = image_targets_parse_args()
+    mesh = image_targets_load_mesh(args.completed_mesh)
+    if not args.mano_faces_pkl.is_file():
+        raise RuntimeError(f'MANO topology pickle does not exist: {args.mano_faces_pkl}')
+    (frames, K_raster) = image_targets_load_frames(args)
+    rasterizer = BatchFirstHitRasterizer(np.asarray(mesh.faces, dtype=np.int64), int(args.raster_size), K_raster, str(args.device))
+    frame_idx: list[int] = []
+    T_world_camera_all: list[np.ndarray] = []
+    depth_offsets = [0]
+    silhouette_offsets = [0]
+    depth_points_all: list[np.ndarray] = []
+    depth_z_all: list[np.ndarray] = []
+    depth_weight_all: list[np.ndarray] = []
+    silhouette_points_all: list[np.ndarray] = []
+    silhouette_target_all: list[np.ndarray] = []
+    silhouette_kind_all: list[np.ndarray] = []
+    per_frame_metrics: list[dict[str, Any]] = []
+    for start in range(0, len(frames), int(args.render_batch_size)):
+        chunk = frames[start:start + int(args.render_batch_size)]
+        vertices_camera = [canonical_to_camera(np.asarray(mesh.vertices, dtype=np.float64), frame.rotation_world_object, frame.translation_world_object, frame.T_world_camera) for frame in chunk]
+        (zbuf, rendered) = rasterizer.render(vertices_camera)
+        for (local_i, frame) in enumerate(chunk):
+            (factors, metrics) = build_frame_factors(frame, zbuf[local_i], rendered[local_i], K_raster, args)
+            frame_idx.append(int(frame.frame_idx))
+            T_world_camera_all.append(frame.T_world_camera)
+            depth_points_all.append(factors['depth_points'])
+            depth_z_all.append(factors['depth_z'])
+            depth_weight_all.append(factors['depth_weight'])
+            silhouette_points_all.append(factors['silhouette_points'])
+            silhouette_target_all.append(factors['silhouette_target_uv'])
+            silhouette_kind_all.append(factors['silhouette_kind'])
+            depth_offsets.append(depth_offsets[-1] + len(factors['depth_points']))
+            silhouette_offsets.append(silhouette_offsets[-1] + len(factors['silhouette_points']))
+            per_frame_metrics.append(metrics)
+        print(f'[factors] rendered {min(start + len(chunk), len(frames))}/{len(frames)} frames', flush=True)
+    metadata = {'method': 'build_depth_order_p15_first_hit_silhouette_factors', 'contract_version': 2, 'factor_semantics': 'frozen local first-hit and silhouette correspondences for P15 per-frame SE(3) corrections', 'annotations': str(args.annotations.expanduser().resolve()), 'pose_report': str(args.pose_report.expanduser().resolve()), 'factor_pose_report': str((args.factor_pose_report or args.pose_report).expanduser().resolve()), 'completed_mesh': str(args.completed_mesh.expanduser().resolve()), 'hand_npz': str(args.hand_npz.expanduser().resolve()), 'mano_faces_pkl': str(args.mano_faces_pkl.expanduser().resolve()), 'input_sha256': {'annotations': sha256_file(args.annotations), 'pose_report': sha256_file(args.pose_report), 'factor_pose_report': sha256_file(args.factor_pose_report or args.pose_report), 'completed_mesh': sha256_file(args.completed_mesh), 'hand_npz': sha256_file(args.hand_npz), 'mano_faces_pkl': sha256_file(args.mano_faces_pkl)}, 'object_id': str(args.object_id), 'calibration_size_wh': list(frames[0].calibration_size_wh), 'image_source_size_wh': list(frames[0].image_source_size_wh), 'raster_size_wh': [int(args.raster_size), int(args.raster_size)], 'K_calibration': frames[0].K_calibration.astype(float).tolist(), 'K_image_source': frames[0].K_image_source.astype(float).tolist(), 'K_raster': np.asarray(K_raster, dtype=float).tolist(), 'mask_depth_transform_contract': frames[0].mask_depth_transform_contract, 'mask_sha256_by_frame': {str(frame.frame_idx): sha256_file(Path(frame.mask_path)) for frame in frames}, 'depth_npz_sha256_by_path': {frame.depth_npz_path: sha256_file(Path(frame.depth_npz_path)) for frame in frames}, 'raster_size': int(args.raster_size), 'hand_unknown_dilation_px': int(args.hand_unknown_dilation_px), 'hand_unknown_method': 'projected_mano_triangle_silhouette', 'missing_coverage_hand_unknown_excluded': True, 'boundary_downweight_radius_px': float(args.boundary_downweight_radius_px), 'boundary_weight': float(args.boundary_weight), 'min_depth_factor_weight': float(args.min_depth_factor_weight), 'max_removed_fraction_for_full_weight': float(args.max_removed_fraction_for_full_weight), 'max_observed_factors_per_frame': int(args.max_observed_factors_per_frame), 'max_outside_silhouette_factors_per_frame': int(args.max_outside_silhouette_factors_per_frame), 'max_missing_silhouette_factors_per_frame': int(args.max_missing_silhouette_factors_per_frame), 'generated_faces_consumed': False, 'collision_surface_consumed': False}
+    args.output_npz.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(args.output_npz, metadata=np.asarray([json.dumps(metadata)]), frame_idx=np.asarray(frame_idx, dtype=np.int64), T_world_camera=np.asarray(T_world_camera_all, dtype=np.float64), K_raster=np.asarray(K_raster, dtype=np.float64), depth_offsets=np.asarray(depth_offsets, dtype=np.int64), depth_points_canonical=np.vstack(depth_points_all) if depth_points_all else np.empty((0, 3)), depth_observed_z=np.concatenate(depth_z_all) if depth_z_all else np.empty((0,)), depth_weight=np.concatenate(depth_weight_all) if depth_weight_all else np.empty((0,)), silhouette_offsets=np.asarray(silhouette_offsets, dtype=np.int64), silhouette_points_canonical=np.vstack(silhouette_points_all) if silhouette_points_all else np.empty((0, 3)), silhouette_target_uv=np.vstack(silhouette_target_all) if silhouette_target_all else np.empty((0, 2)), silhouette_kind=np.concatenate(silhouette_kind_all) if silhouette_kind_all else np.empty((0,)))
+    summary = {**metadata, 'frame_count': int(len(frame_idx)), 'depth_factor_count': int(depth_offsets[-1]), 'depth_weight_summary': {'median': float(np.median(np.concatenate(depth_weight_all))) if depth_weight_all else None, 'p10': float(np.percentile(np.concatenate(depth_weight_all), 10.0)) if depth_weight_all else None, 'p90': float(np.percentile(np.concatenate(depth_weight_all), 90.0)) if depth_weight_all else None, 'min': float(np.min(np.concatenate(depth_weight_all))) if depth_weight_all else None, 'max': float(np.max(np.concatenate(depth_weight_all))) if depth_weight_all else None}, 'silhouette_factor_count': int(silhouette_offsets[-1]), 'outside_silhouette_factor_count': int(np.sum([m['outside_silhouette_factor_count'] for m in per_frame_metrics])), 'missing_silhouette_factor_count': int(np.sum([m['missing_silhouette_factor_count'] for m in per_frame_metrics])), 'initial_silhouette_iou_median': float(np.median([m['initial_silhouette_iou'] for m in per_frame_metrics])), 'initial_observed_hit_fraction_median': float(np.median([m['initial_observed_hit_fraction'] for m in per_frame_metrics])), 'frames': per_frame_metrics, 'outputs': {'factor_npz': str(args.output_npz), 'factor_report': str(args.output_json)}}
+    args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    args.output_json.write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    print(json.dumps({k: summary[k] for k in ['frame_count', 'depth_factor_count', 'silhouette_factor_count', 'initial_silhouette_iou_median', 'initial_observed_hit_fraction_median', 'outputs']}, indent=2))

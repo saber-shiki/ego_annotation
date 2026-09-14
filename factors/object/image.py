@@ -42,3 +42,10 @@ def rgb_reprojection_residual(
     scale *= 1.0 / max(float(config.sigma_rgb_reprojection_px), 1.0e-8)
     scale /= math.sqrt(max(1, len(error)))
     return (scale * np.sqrt(np.clip(factor.weights, 0.0, 1.0))[:, None] * error).reshape(-1)
+
+
+def silhouette_endpoint_residual(projected,target,*,sigma,clip,weight):
+    difference=projected-target
+    scale=np.minimum(1.,clip/np.maximum(np.linalg.norm(difference,axis=1),1e-9))
+    residual=difference*scale[:,None]/sigma
+    return np.sqrt(weight)*residual.reshape(-1)/np.sqrt(max(1,len(difference)))

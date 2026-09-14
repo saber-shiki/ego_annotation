@@ -15,3 +15,8 @@ def signed_dense_penetration(moved, normals, depth, uncertainty, weight):
 def visible_surface_depth_order(camera_depth, surface_depth, margin, weight):
     residual=torch.relu(surface_depth-margin-camera_depth)
     return weight*residual.square().sum()/(residual>0).sum().clamp_min(1.)
+
+
+def nonpenetration_translation_target(delta,target,weight,sigma):
+    import numpy as np
+    return np.sqrt(weight)*(delta-target)/sigma

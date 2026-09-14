@@ -26,3 +26,11 @@ def rgb_edge_residual(edge: RGBEdge, pose_by_frame: Mapping[int, tuple[np.ndarra
 
 def object_translation_prior(delta, weight):
     return weight*delta.square().mean()
+
+
+def source_pose_rotation(delta,sigma):
+    return delta/sigma
+
+
+def source_pose_translation(delta,sigma):
+    return delta/sigma

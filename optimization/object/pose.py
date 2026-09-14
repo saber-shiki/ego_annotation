@@ -13,8 +13,11 @@ from scipy.spatial.transform import Rotation
 from observations.object.rgb_tracking import local_rotation_evidence, observed_rotation_authority
 from utils.data import PoseNode, RGBEdge, RGBReprojectionFactor, SolverConfig
 from utils.geometry import valid_rotation, apply_left_correction, pose_correction, inverse_pose
-from factors.object.pose import rgb_edge_residual
-from factors.object.image import rgb_reprojection_residual
+from factors.object.pose import rgb_edge_residual, source_pose_rotation, source_pose_translation
+from factors.object.image import rgb_reprojection_residual, silhouette_endpoint_residual
+from factors.object.geometry import first_hit_depth, observed_point_to_plane, observed_point_to_point
+from factors.motion.temporal import correction_velocity, correction_acceleration
+from factors.interaction.physics import nonpenetration_translation_target
 from optimization.common.correspondences import build_observed_point_factors
 
 
@@ -117,9 +120,9 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
     for i, (n, (dr, dt)) in enumerate(zip(nodes, corrections)):
         # Missing metric/source support is a weak prior, not a fabricated measurement.
         scale = 1 + 9 * n.uncertainty
-        add([i], dr / (cfg.prior_rotation_rad * scale))
+        add([i], source_pose_rotation(dr, cfg.prior_rotation_rad * scale))
         if not rotation_only:
-            add([i], dt / (cfg.prior_translation_m * scale))
+            add([i], source_pose_translation(dt, cfg.prior_translation_m * scale))
     for e in edges:
         dr, dt = rgb_edge_residual(e, poses)
         deps = [positions[e.source_frame_idx], positions[e.target_frame_idx]]
@@ -141,11 +144,8 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
             a, b = nodes[f.source_pos], nodes[f.target_pos]
             delta = (inverse_pose(f.source_world, *conditioned_observed_pose(a, poses, observed_reference, observed_scales))
                      - inverse_pose(f.target_world, *conditioned_observed_pose(b, poses, observed_reference, observed_scales)))
-            weights = np.sqrt(f.weights * cfg.observed_weight / max(1, len(delta)))
-            # Unsigned observed point/plane alignment; normals have no inside/outside authority.
-            plane = np.einsum('ij,ij->i', f.target_normals, delta)
-            add([f.source_pos, f.target_pos], weights * plane / .008)
-            add([f.source_pos, f.target_pos], weights[:, None] * delta / .020)
+            add([f.source_pos, f.target_pos], observed_point_to_plane(delta,f.target_normals,f.weights,cfg.observed_weight))
+            add([f.source_pos, f.target_pos], observed_point_to_point(delta,f.weights,cfg.observed_weight))
     vr, vt = [], []
     gaps = np.diff(times)
     for i, gap in enumerate(gaps):
@@ -1384,46 +1384,36 @@ def image_factor_blocks(obs: PoseObservation, factor: ImageFactorObservation | N
     if len(factor.depth_observed_z) and float(args.image_first_hit_weight) > 0.0:
         world = formal_object_apply_pose(factor.depth_points_canonical, r, t)
         camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
-        depth = np.clip(camera[:, 2] - factor.depth_observed_z, -float(args.max_image_first_hit_residual_m), float(args.max_image_first_hit_residual_m)) / float(args.sigma_image_first_hit_m)
-        depth_scale = math.sqrt(max(float(np.sum(factor.depth_weight)), 1.0))
-        blocks.append(math.sqrt(float(args.image_first_hit_weight)) * np.sqrt(factor.depth_weight) * depth / depth_scale)
+        blocks.append(first_hit_depth(camera[:,2],factor.depth_observed_z,factor.depth_weight,sigma=float(args.sigma_image_first_hit_m),clip=float(args.max_image_first_hit_residual_m),weight=float(args.image_first_hit_weight)))
     if len(factor.silhouette_kind) and float(args.image_silhouette_weight) > 0.0:
         world = formal_object_apply_pose(factor.silhouette_points_canonical, r, t)
         camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
         z = np.maximum(camera[:, 2], 1e-09)
         uv = np.column_stack((factor.K_raster[0, 0] * camera[:, 0] / z + factor.K_raster[0, 2], factor.K_raster[1, 1] * camera[:, 1] / z + factor.K_raster[1, 2]))
-        diff = uv - factor.silhouette_target_uv
-        norms = np.linalg.norm(diff, axis=1)
-        clip_scale = np.minimum(1.0, float(args.max_image_silhouette_residual_px) / np.maximum(norms, 1e-09))
-        silhouette = diff * clip_scale[:, None] / float(args.sigma_image_silhouette_px)
-        blocks.append(math.sqrt(float(args.image_silhouette_weight)) * silhouette.reshape(-1) / math.sqrt(max(1, len(factor.silhouette_kind))))
+        blocks.append(silhouette_endpoint_residual(uv,factor.silhouette_target_uv,
+            sigma=float(args.sigma_image_silhouette_px),clip=float(args.max_image_silhouette_residual_px),weight=float(args.image_silhouette_weight)))
     return blocks
 
 def residual_vector(x: np.ndarray, observations: list[PoseObservation], args: argparse.Namespace, image_factors: dict[int, ImageFactorObservation] | None=None) -> np.ndarray:
     (rot_delta, trans_delta) = unpack(x, len(observations))
     residuals: list[np.ndarray] = []
     for (i, obs) in enumerate(observations):
-        residuals.append(trans_delta[i] / obs.translation_sigma_m)
-        residuals.append(rot_delta[i] / obs.rotation_sigma_rad)
+        residuals.append(source_pose_translation(trans_delta[i],obs.translation_sigma_m))
+        residuals.append(source_pose_rotation(rot_delta[i],obs.rotation_sigma_rad))
         if obs.nonpenetration_target_world_m is not None and obs.nonpenetration_weight > 0.0:
-            residuals.append(math.sqrt(obs.nonpenetration_weight) * (trans_delta[i] - obs.nonpenetration_target_world_m) / float(args.sigma_nonpenetration_target_m))
+            residuals.append(nonpenetration_translation_target(trans_delta[i],obs.nonpenetration_target_world_m,obs.nonpenetration_weight,float(args.sigma_nonpenetration_target_m)))
         if image_factors:
             residuals.extend(image_factor_blocks(obs, image_factors.get(obs.frame_idx), rot_delta[i], trans_delta[i], args))
     for i in range(1, len(observations)):
         gap = max(1, observations[i].frame_idx - observations[i - 1].frame_idx)
         scale = math.sqrt(float(gap))
-        residuals.append((trans_delta[i] - trans_delta[i - 1]) / (float(args.sigma_translation_delta_step_m) * scale))
-        residuals.append((rot_delta[i] - rot_delta[i - 1]) / (float(args.sigma_rotation_delta_step_rad) * scale))
+        residuals.append(correction_velocity(trans_delta[i],trans_delta[i-1],gap,float(args.sigma_translation_delta_step_m)))
+        residuals.append(correction_velocity(rot_delta[i],rot_delta[i-1],gap,float(args.sigma_rotation_delta_step_rad)))
     for i in range(1, len(observations) - 1):
         gap0 = max(1, observations[i].frame_idx - observations[i - 1].frame_idx)
         gap1 = max(1, observations[i + 1].frame_idx - observations[i].frame_idx)
-        prev_v_t = (trans_delta[i] - trans_delta[i - 1]) / float(gap0)
-        next_v_t = (trans_delta[i + 1] - trans_delta[i]) / float(gap1)
-        prev_v_r = (rot_delta[i] - rot_delta[i - 1]) / float(gap0)
-        next_v_r = (rot_delta[i + 1] - rot_delta[i]) / float(gap1)
-        scale = math.sqrt(float(max(gap0, gap1)))
-        residuals.append((next_v_t - prev_v_t) / (float(args.sigma_translation_delta_accel_m) * scale))
-        residuals.append((next_v_r - prev_v_r) / (float(args.sigma_rotation_delta_accel_rad) * scale))
+        residuals.append(correction_acceleration(trans_delta[i-1],trans_delta[i],trans_delta[i+1],gap0,gap1,float(args.sigma_translation_delta_accel_m)))
+        residuals.append(correction_acceleration(rot_delta[i-1],rot_delta[i],rot_delta[i+1],gap0,gap1,float(args.sigma_rotation_delta_accel_rad)))
     return np.concatenate([r.reshape(-1) for r in residuals]).astype(float)
 
 def residual_sparsity(observations: list[PoseObservation], image_factors: dict[int, ImageFactorObservation] | None=None, args: argparse.Namespace | None=None) -> sparse.csr_matrix:
