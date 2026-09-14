@@ -71,6 +71,13 @@ by pretending their loose artifacts are new successful receipts.
 Provisioned interpreter binaries and declared source/model trees are byte-bound;
 installed site-packages are not recursively fingerprinted and must remain frozen.
 
+The cold P13 face-support producer declares `input_hashes.evidence_report` from
+the exact P11 bytes it parses. The unchanged P11/P09 normalization gate validates
+this hash and selected-anchor identity before creating the P14 aliases. A missing
+hash in a historical completion is still rejected; consumer-side restamping is
+not a recovery mechanism. CPU producer-to-gate tests retain object/case/frame,
+surfel, positive-GT, alias and changed-byte rejection, plus render/physical roles.
+
 Real three-case outputs and full formal/shared-tail execution remain runtime
 acceptance obligations outside the CPU/build evidence. Recovery never substitutes
 for the first fresh observation execution of each case. A build, import or empty

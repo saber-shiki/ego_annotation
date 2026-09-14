@@ -28,6 +28,14 @@ annotations. Standalone results explicitly retain `annotation_ready=false` and
 RGB bytes; `mode="geometry_debug"` is explicitly partial and is never used by the
 cold entry.
 
+Raw-to-metric geometry keeps the producer boundary explicit: face-support reads
+and hashes the exact P11 evidence bytes before computation and writes
+`input_hashes.evidence_report`. The normalization gate verifies that declaration
+against the selected P09 frame/surfels before adding P14-compatible aliases; it
+never invents a missing producer hash. Existing completion reports missing that
+field remain invalid. Generated render faces remain excluded from collision/sign
+geometry.
+
 ## Same-run recovery and candidate attempts
 
 The first attempt of each case must still use `annotate` with a new run directory.

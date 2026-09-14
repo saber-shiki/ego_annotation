@@ -830,5 +830,86 @@ class RigidityMotionEvidenceTests(unittest.TestCase):
             with patch('observations.judgments.judge_rigidity.astra_request',side_effect=AssertionError('must reject before API')):
                 with self.assertRaisesRegex(ValueError,'coverage mismatch'):judge(evidence,images[:1])
 
+class CompletionProducerContractTests(unittest.TestCase):
+    def fixture(self, root):
+        import cv2, json, trimesh
+        from utils.state import sha
+        mesh=trimesh.creation.icosphere(subdivisions=1,radius=.02)
+        observed=root/'observed.ply';generated=root/'generated.ply'
+        mesh.export(observed);trimesh.creation.icosphere(subdivisions=1,radius=.035).export(generated)
+        world=np.asarray(mesh.vertices)+[0.,0.,1.];centroid=world.mean(axis=0).tolist()
+        mask=root/'mask.png';rgb=root/'rgb.png'
+        cv2.imwrite(str(mask),np.full((128,128),255,np.uint8))
+        cv2.imwrite(str(rgb),np.full((128,128,3),128,np.uint8))
+        camera={'T_world_camera_metric':np.eye(4).tolist(),'intrinsics_fx_fy_cx_cy':[100.,100.,64.,64.]}
+        geom={'object_id':'item','frame_idx':0,'world_vertices_sample_m':world.tolist(),
+            'centroid_world_m':centroid,'source_width':128,'source_height':128}
+        binding={'selected_frame_idx':0,'visible_geometry_frame_idx':0,'canonical_surface_frame_idx':0,
+            'selected_vs_canonical_centroid_error_m':0.,'validated':True}
+        evidence={'case':'fixture','object_id':'item','selected_frame_idx':0,
+            'selected_anchor_atomic_binding':binding,
+            'selected':{'frame_idx':0,'visible_geometry_candidate':geom,'camera':camera,
+                'raw_frame_path':str(rgb),'mask_path':str(mask)},
+            'partial_metric_geometry_paths':{'fused_point_cloud_path':str(observed),'poisson_mesh_path':str(observed)},
+            'depth_fused_object_row':{'mesh_reconstruction':{'anchor_frame_idx':0,'atomic_anchor_binding':True,
+                'anchor_centroid_world_m':centroid,'voxel_size_m':.006}}}
+        evidence_path=root/'evidence.json';evidence_path.write_text(json.dumps(evidence))
+        bridge=root/'bridge.json';bridge.write_text(json.dumps({'schema':'v19_sam3d_native_sensor_metric_canonical_bridge_v1',
+            'status':'ok_fixture','outputs':{'metric_canonical_render_prior':str(generated)}}))
+        native=root/'native.json';native.write_text(json.dumps({'schema':'v19_metric_canonical_generated_prior_input_v1',
+            'status':'verified_sam3d_native_sensor_metric_canonical_render_prior','mesh':str(generated),
+            'mesh_sha256':sha(generated),'bridge_report':str(bridge),'bridge_report_sha256':sha(bridge),
+            'metric_canonical_input_contract':{key:True for key in ('alignment_must_be_identity',
+                'generated_faces_render_only','native_orientation_preserved','camera_origin_scene_similarity_applied')}}))
+        annotations={'v19_visible_geometry_adapter':{'case':'fixture','object_id':'item','anchor_frame_idx':0},
+            'frames':[{'frame_idx':0,'camera':camera,'objects':[{'object_id':'item','visible_geometry_candidate':copy.deepcopy(geom)}]}]}
+        return evidence_path,native,annotations
+
+    def produce(self, root):
+        import contextlib,io,json
+        from observations.object.shape import build_completion_face_support
+        evidence,native,annotations=self.fixture(root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            build_completion_face_support(['--evidence-report',str(evidence),'--trellis-report',str(native),
+                '--input-mesh-already-metric-canonical','--output-dir',str(root/'output')])
+        return evidence,json.loads((root/'output/v18_compact_rigid_trellis_completion_report.json').read_text()),annotations
+
+    def test_producer_binds_consumed_p11_bytes_and_preserves_geometry_roles(self):
+        import tempfile
+        from utils.state import sha
+        from gates.object.geometry import normalize_completion
+        with tempfile.TemporaryDirectory() as directory:
+            evidence,completion,annotations=self.produce(Path(directory))
+            original=copy.deepcopy(completion);bound=normalize_completion(completion,annotations,'item')
+            self.assertEqual(completion['input_hashes']['evidence_report'],sha(evidence))
+            self.assertEqual(bound['inputs']['candidate_evidence_report_sha256'],sha(evidence))
+            self.assertEqual(completion,original)
+            self.assertEqual(bound['metric_alignment']['mode'],'verified_pre_aligned_metric_canonical_identity')
+            self.assertFalse(bound['geometry_readiness']['signed_geometry_ready'])
+            self.assertEqual(bound['geometry_readiness']['collision_eligible_hidden_face_count'],0)
+            self.assertNotEqual(bound['outputs']['pose_hypothesis_mesh_labeled'],bound['outputs']['collision_eligible_mesh_labeled'])
+            evidence.write_bytes(evidence.read_bytes()+b' ')
+            with self.assertRaisesRegex(ValueError,'producer-declared P11 SHA256'):
+                normalize_completion(completion,annotations,'item')
+
+    def test_completion_gate_keeps_missing_hash_identity_anchor_surfel_and_gt_rejections(self):
+        import tempfile
+        from gates.object.geometry import normalize_completion
+        with tempfile.TemporaryDirectory() as directory:
+            evidence,completion,annotations=self.produce(Path(directory))
+            for field in ('missing_hash','wrong_hash','object','case','anchor','surfels','gt','alias'):
+                value=copy.deepcopy(completion);ann=copy.deepcopy(annotations)
+                if field=='missing_hash':value.pop('input_hashes')
+                elif field=='wrong_hash':value['input_hashes']['evidence_report']='0'*64
+                elif field=='object':value['object_id']='foreign'
+                elif field=='case':ann['v19_visible_geometry_adapter']['case']='foreign'
+                elif field=='anchor':ann['v19_visible_geometry_adapter']['anchor_frame_idx']=1
+                elif field=='surfels':
+                    points=ann['frames'][0]['objects'][0]['visible_geometry_candidate']['world_vertices_sample_m']
+                    points[0],points[1]=points[1],points[0]  # Same centroid is insufficient.
+                elif field=='gt':ann['gt_consumed']=True
+                else:value['inputs']['candidate_evidence_report_sha256']='0'*64
+                with self.subTest(field=field),self.assertRaises(ValueError):normalize_completion(value,ann,'item')
+
 if __name__ == '__main__':
     unittest.main()
