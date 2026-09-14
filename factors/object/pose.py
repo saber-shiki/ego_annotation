@@ -22,3 +22,7 @@ def rgb_edge_residual(edge: RGBEdge, pose_by_frame: Mapping[int, tuple[np.ndarra
         return np.zeros(3), predicted_displacement - measured_displacement
     predicted_t = tt - predicted_R @ ts
     return rotation_error, predicted_t - edge.translation_source_to_target_world_m
+
+
+def object_translation_prior(delta, weight):
+    return weight*delta.square().mean()

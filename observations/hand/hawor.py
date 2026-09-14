@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 import cv2
 import numpy as np
-os.environ.setdefault('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')
 FULL_K_RECTIFIED_MODE = 'explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam'
 LEGACY_CENTER_MODE = 'legacy_square_focal_image_center'
 
@@ -320,6 +319,7 @@ def load_track_support(seq_folder: Path, start_idx: int, end_idx: int, frame_cou
     return (support, report)
 
 def run(args: argparse.Namespace) -> dict:
+    os.environ.setdefault('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')
     args.video_path = str(private_raw_input(args.video_path, args.run_root))
     hawor_root = args.hawor_root.resolve()
     video_path_obj = Path(args.video_path).expanduser()

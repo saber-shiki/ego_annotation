@@ -515,5 +515,15 @@ class DepthOrderAdapterTest(unittest.TestCase):
         self.assertTrue(args[args.index('--sam2-track-json')+1].endswith('depth_order_owned/track/sam2_track.json'))
         self.assertNotIn('--exclude-hand-regions',args)
 
+
+
+class WorkerImportIsolationTests(unittest.TestCase):
+    def test_hawor_import_does_not_mutate_weight_loader_policy(self):
+        import importlib,os
+        import observations.hand.hawor as hawor
+        with patch.dict(os.environ,{},clear=True):
+            importlib.reload(hawor)
+            self.assertNotIn('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD',os.environ)
+
 if __name__ == '__main__':
     unittest.main()

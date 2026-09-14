@@ -246,5 +246,97 @@ class FormalProblemTests(unittest.TestCase):
         self.assertEqual(result['status'],'no_rows');self.assertEqual(states,[])
         self.assertEqual(archive['vertices_world_m'].shape,(0,778,3))
 
+
+
+class FormalFactorConsumerTests(unittest.TestCase):
+    def fixture(self):
+        from dataclasses import fields
+        from types import SimpleNamespace
+        import torch, trimesh
+        from utils.data import FrameHandRow
+        from optimization.hand.fit import formal_interval_arguments
+        from optimization.common.correspondences import make_scene
+        torch.set_num_threads(2)
+        class ArticulatedFixture:
+            def __init__(self):
+                y=torch.linspace(-.03,.03,778)
+                self.vertices=torch.stack([torch.full_like(y,.035),y,torch.linspace(-.02,.02,778)],-1)
+            def __call__(self,global_orient,hand_pose,betas,transl,**kwargs):
+                effect=torch.stack([hand_pose[:,:,2,1].mean(1),hand_pose[:,:,0,2].mean(1),hand_pose[:,:,1,0].mean(1)],-1)*.02
+                vertices=(self.vertices[None]+effect[:,None])@global_orient[:,0].transpose(1,2)+transl[:,None]
+                return SimpleNamespace(vertices=vertices,joints=vertices[:,:21])
+        model=ArticulatedFixture()
+        root_rotation=torch.eye(3).reshape(1,1,3,3)
+        hand_rotation=torch.eye(3).reshape(1,1,3,3).repeat(1,15,1,1)
+        base=model(root_rotation,hand_rotation,torch.zeros((1,10)),torch.tensor([[0.,0.,1.]]))
+        vertices=base.vertices[0].numpy();joints=base.joints[0].numpy()
+        rows=[]
+        for index in range(3):
+            values={}
+            for field in fields(FrameHandRow):
+                kind=str(field.type)
+                if '| None' in kind:values[field.name]=None
+                elif 'np.ndarray' in kind:values[field.name]=np.empty(0)
+                elif kind.startswith('dict'):values[field.name]={}
+                elif kind.startswith('list'):values[field.name]=[]
+                elif kind=='bool':values[field.name]=False
+                elif kind=='int':values[field.name]=0
+                elif kind=='float':values[field.name]=0.
+                elif kind=='Path':values[field.name]=Path('fixture-source.npz')
+                else:values[field.name]='fixture'
+            values.update(frame_idx=index,side='right',
+                frame={'frame_idx':index,'camera':{'T_world_camera_metric':np.eye(4).tolist()},
+                       'hands':[{'hand_side':'right','metric_mano_state':{'current_v18_camera_intrinsics_fx_fy_cx_cy':[100.,100.,32.,32.]}}]},
+                current_vertices_world=vertices.copy(),current_joints_world=joints.copy(),
+                raw_vertices_world=vertices.copy(),raw_joints_world=joints.copy(),
+                root_orient_axis_angle=np.zeros(3),hand_pose_axis_angle=np.zeros(45),betas=np.zeros(10),
+                trans_world_m=np.array([0.,0.,1.]),similarity_scale=1.,similarity_rotation_raw_to_current=np.eye(3),
+                similarity_translation_raw_to_current=np.zeros(3),object_rotation_world_from_object=np.eye(3),
+                object_translation_world_m=np.array([0.,0.,1.]),face_strict_observed_raw=np.ones(12,bool),
+                face_strict_observed=np.ones(12,bool),signed_face_authority_required=True,
+                signed_face_authority_face_count=12,signed_face_authority_eligible_face_count=12,
+                visible_mask_A_mask_from_source=np.eye(3),joint_visibility_weights=np.ones(21),
+                joint_depth_residual_m=np.zeros(21),hand_ray_shift_prior_world_m=np.array([.004,0.,0.]),
+                hand_ray_shift_prior_weight=10.,contact_patch_vertex_indices=np.empty(0,dtype=int),
+                contact_patch_target_world_m=np.empty((0,3)),contact_patch_normal_world=np.empty((0,3)),
+                visible_surface_depth_order_vertex_indices=np.array([0,1,2]),
+                visible_surface_depth_order_depth_m=np.full(3,1.02),
+                visible_surface_depth_order_initial_delta_m=vertices[:3,2]-1.02,
+                visible_surface_translation_support_vertex_indices=np.empty(0,dtype=int))
+            rows.append(FrameHandRow(**values))
+        argv=['--case','fixture','--object-id','object','--annotations','fixture','--pose-report','fixture',
+              '--completed-mesh','fixture','--depth-npz','fixture','--output-dir','fixture',
+              '--wilor-root','fixture','--wilor-mano-left','fixture','--start-frame','0','--end-frame','2','--device','cpu']
+        args=formal_interval_arguments(argv)
+        args.max_optimizer_iterations=4;args.active_set_iterations=1
+        args.signed_object_surface_factor_active=True;args.visible_surface_depth_order_term=True
+        args.optimize_object_translation=True;args.use_hand_ray_shift_prior=True
+        cube=trimesh.creation.box(extents=[.1,.1,.1]);scene=make_scene(cube.vertices,cube.faces)
+        return rows,model,args,torch.device('cpu'),scene
+
+    def test_solver_consumes_named_factors_and_disabling_them_changes_candidate(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        from optimization.hand.fit import optimize_rows
+        import factors.interaction.physics as physics
+        import factors.hand.observation as observation
+        import factors.hand.priors as priors
+        import factors.object.pose as object_factors
+        import factors.common as common
+        inputs=self.fixture()
+        checks=[(physics,'signed_active_penetration'),(physics,'signed_dense_penetration'),
+                (physics,'visible_surface_depth_order'),(observation,'joint_pixel_deadband'),
+                (observation,'joint_depth_deadband'),(priors,'hand_ray_translation_prior'),
+                (object_factors,'object_translation_prior'),(common,'magnitude_hinge')]
+        with ExitStack() as stack:
+            spies=[stack.enter_context(patch.object(module,name,wraps=getattr(module,name))) for module,name in checks]
+            interval,states,archive=optimize_rows(*inputs)
+            self.assertTrue(interval['replay_ok'])
+            for spy in spies:self.assertGreater(spy.call_count,0)
+        def no_geometry(value,*args,**kwargs):return value.sum()*0.
+        with patch.object(physics,'signed_active_penetration',no_geometry),patch.object(physics,'signed_dense_penetration',no_geometry),patch.object(physics,'visible_surface_depth_order',no_geometry):
+            _,_,without=optimize_rows(*inputs)
+        self.assertGreater(np.max(np.abs(archive['vertices_world_m']-without['vertices_world_m'])),1e-4)
+
 if __name__ == '__main__':
     unittest.main()

@@ -29,3 +29,8 @@ def formal_root_orientation(delta, visibility, weight):
 
 def formal_articulation(delta, visibility, weight):
     return weight * (delta.square() * visibility[..., None]).sum() / (3 * visibility.sum()).clamp_min(1.)
+
+
+def hand_ray_translation_prior(delta, target, weights):
+    difference=delta-target
+    return (weights.reshape(-1,1)*difference.square()).sum()/max(1,difference.numel())

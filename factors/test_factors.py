@@ -210,5 +210,49 @@ class FormalNormalizationTests(unittest.TestCase):
         visibility=torch.tensor([1.,.5],dtype=torch.float64)
         self.assertAlmostEqual(formal_root_orientation(delta,visibility,9.).item(),3.)
 
+
+
+class FormalKernelParityTests(unittest.TestCase):
+    def assert_kernel(self, kernel, reference, value):
+        a=torch.tensor(value,dtype=torch.float64,requires_grad=True)
+        b=a.detach().clone().requires_grad_()
+        actual=kernel(a);expected=reference(b)
+        self.assertAlmostEqual(actual.item(),expected.item(),places=12)
+        ga=torch.autograd.grad(actual,a)[0];gb=torch.autograd.grad(expected,b)[0]
+        np.testing.assert_allclose(ga.detach(),gb.detach(),atol=1e-12,rtol=1e-12)
+
+    def test_active_dense_and_depth_order_preserve_distinct_normalizations(self):
+        from factors.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
+        normals=torch.tensor([[0.,0.,1.]]*3,dtype=torch.float64)
+        depth=torch.tensor([.04,.01,-.02],dtype=torch.float64)
+        def residual(moved):return torch.relu(depth-.005-(normals*moved).sum(1))
+        self.assert_kernel(lambda v:signed_active_penetration(v,normals,depth,.005,7.),
+            lambda v:7.*residual(v).square().mean(),np.zeros((3,3)))
+        self.assert_kernel(lambda v:signed_dense_penetration(v,normals,depth,.005,7.),
+            lambda v:7.*residual(v).square().sum()/(residual(v)>0).sum().clamp_min(1.),np.zeros((3,3)))
+        target=torch.tensor([1.02,1.,.95],dtype=torch.float64)
+        def order(v):return torch.relu(target-.01-v)
+        self.assert_kernel(lambda v:visible_surface_depth_order(v,target,.01,9.),
+            lambda v:9.*order(v).square().sum()/(order(v)>0).sum().clamp_min(1.),[.98,1.,1.])
+
+    def test_observation_ray_object_and_magnitude_terms_match_reference_gradients(self):
+        from factors.hand.observation import joint_pixel_deadband,joint_depth_deadband
+        from factors.hand.priors import hand_ray_translation_prior
+        from factors.object.pose import object_translation_prior
+        from factors.common import magnitude_hinge
+        weights=torch.tensor([1.,.2],dtype=torch.float64)
+        base=torch.zeros((2,2),dtype=torch.float64)
+        self.assert_kernel(lambda v:joint_pixel_deadband(v,base,weights,1.,3.),
+            lambda v:3.*(weights*torch.relu(torch.linalg.norm(v,dim=1)-1.).square()).sum()/weights.sum().clamp_min(1.),[[2.,1.],[.1,.2]])
+        target=torch.ones(2,dtype=torch.float64)
+        self.assert_kernel(lambda v:joint_depth_deadband(v,target,weights,.02,3.),
+            lambda v:3.*(weights*torch.relu(torch.abs(v-target)-.02).square()).sum()/weights.sum().clamp_min(1.),[1.05,.99])
+        target=torch.zeros((2,3),dtype=torch.float64)
+        self.assert_kernel(lambda v:hand_ray_translation_prior(v,target,weights),
+            lambda v:(weights[:,None]*(v-target).square()).sum()/v.numel(),[[.01,0,0],[.02,0,0]])
+        self.assert_kernel(lambda v:object_translation_prior(v,5.),lambda v:5.*v.square().mean(),[[.01,.02,0],[0,0,.03]])
+        self.assert_kernel(lambda v:magnitude_hinge(v,.02,6.),
+            lambda v:6.*torch.relu(torch.linalg.norm(v,dim=-1)-.02).square().mean(),[[.03,.04,0],[0,0,.01]])
+
 if __name__ == '__main__':
     unittest.main()

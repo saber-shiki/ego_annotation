@@ -108,6 +108,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     from factors.hand.priors import formal_translation, formal_root_orientation, formal_articulation
     from factors.interaction.contact import contact_state_prior, contact_geometry_likelihood, contact_state_continuity, normal_deadband, normal_scaled_attraction
     from factors.motion.temporal import parameter_velocity, parameter_acceleration
+    from factors.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
+    from factors.hand.observation import joint_pixel_deadband, joint_depth_deadband
+    from factors.object.pose import object_translation_prior
+    from factors.hand.priors import hand_ray_translation_prior
+    from factors.common import magnitude_hinge
     if not rows:
         return ({'status': 'no_rows'}, [], {'frame_idx': np.zeros((0,), dtype=np.int32), 'hand_side': np.asarray([], dtype='<U5'), 'vertices_world_m': np.zeros((0, 778, 3), dtype=np.float32), 'joints_world_m': np.zeros((0, 21, 3), dtype=np.float32)})
     b = len(rows)
@@ -323,58 +328,42 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         loss = loss + temporal_terms(root_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(pose_delta, float(args.smooth_weight))
         if bool(args.optimize_object_translation):
-            loss = loss + float(args.object_translation_prior_weight) * torch.mean(object_trans_delta * object_trans_delta)
+            loss = loss + object_translation_prior(object_trans_delta,float(args.object_translation_prior_weight))
             loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
         hand_ray_shift_prior_active_supported = hand_ray_shift_prior_active & translation_allowed_bool_t
         if torch.any(hand_ray_shift_prior_active_supported):
-            diff = eff_trans_delta[hand_ray_shift_prior_active_supported] - hand_ray_shift_prior_t[hand_ray_shift_prior_active_supported]
-            weights = hand_ray_shift_prior_weight_t[hand_ray_shift_prior_active_supported].reshape(-1, 1)
-            denom = torch.clamp(torch.tensor(float(diff.numel()), dtype=torch.float32, device=device), min=1.0)
-            loss = loss + torch.sum(weights * diff * diff) / denom
-        trans_norm = torch.linalg.norm(eff_trans_delta, dim=1)
-        object_trans_norm = torch.linalg.norm(object_trans_delta, dim=1)
-        root_norm = torch.linalg.norm(root_delta.reshape(b, 3), dim=1)
-        pose_norm = torch.linalg.norm(pose_delta, dim=2)
-        loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(trans_norm - float(args.max_translation_m)) ** 2)
-        loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(object_trans_norm - float(args.max_object_translation_m)) ** 2)
-        loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(root_norm - float(args.max_root_delta_rad)) ** 2)
-        loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(pose_norm - float(args.max_pose_delta_rad)) ** 2)
+            loss = loss + hand_ray_translation_prior(eff_trans_delta[hand_ray_shift_prior_active_supported],
+                hand_ray_shift_prior_t[hand_ray_shift_prior_active_supported],hand_ray_shift_prior_weight_t[hand_ray_shift_prior_active_supported])
+        loss = loss + magnitude_hinge(eff_trans_delta,float(args.max_translation_m),float(args.bound_hinge_weight))
+        loss = loss + magnitude_hinge(object_trans_delta,float(args.max_object_translation_m),float(args.bound_hinge_weight))
+        loss = loss + magnitude_hinge(root_delta,float(args.max_root_delta_rad),float(args.bound_hinge_weight))
+        loss = loss + magnitude_hinge(pose_delta,float(args.max_pose_delta_rad),float(args.bound_hinge_weight))
         for (i, row) in enumerate(rows):
             if len(active_constraint_indices[i]):
                 ids = torch.tensor(active_constraint_indices[i], dtype=torch.long, device=device)
                 normals = torch.tensor(active_constraint_normals[i], dtype=torch.float32, device=device)
                 depths = torch.tensor(active_constraint_depths[i], dtype=torch.float32, device=device)
                 moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
-                residual = torch.relu(depths - float(rows[i].observed_surface_support_uncertainty_m) - torch.sum(normals * moved, dim=1))
-                loss = loss + float(args.observed_penetration_weight) * torch.mean(residual * residual)
+                loss = loss + signed_active_penetration(moved,normals,depths,float(row.observed_surface_support_uncertainty_m),float(args.observed_penetration_weight))
             if len(dense_constraint_indices[i]):
                 ids = torch.tensor(dense_constraint_indices[i], dtype=torch.long, device=device)
                 normals = torch.tensor(dense_constraint_normals[i], dtype=torch.float32, device=device)
                 depths = torch.tensor(dense_constraint_depths[i], dtype=torch.float32, device=device)
                 moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
-                residual = torch.relu(depths - float(rows[i].observed_surface_support_uncertainty_m) - torch.sum(normals * moved, dim=1))
-                active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
-                loss = loss + float(args.dense_observed_penetration_weight) * torch.sum(residual * residual) / active_count
+                loss = loss + signed_dense_penetration(moved,normals,depths,float(row.observed_surface_support_uncertainty_m),float(args.dense_observed_penetration_weight))
             uv = project_torch(hyp_joints[i], i)
             base_uv_i = base_uv[i]
             obs_w = joint_visibility_weights_t[i]
-            obs_den = torch.clamp(torch.sum(obs_w), min=1.0)
             if uv is not None and base_uv_i is not None:
-                shift = torch.linalg.norm(uv - base_uv_i, dim=1)
-                visible_hinge = torch.relu(shift - float(args.visible_shift_limit_px)) ** 2
-                loss = loss + float(args.visible_hinge_weight) * torch.sum(obs_w * visible_hinge) / obs_den
+                loss = loss + joint_pixel_deadband(uv,base_uv_i,obs_w,float(args.visible_shift_limit_px),float(args.visible_hinge_weight))
             cam = torch.matmul(hyp_joints[i] - t_c2w_t[i].reshape(1, 3), r_c2w_t[i])
-            depth_shift = torch.abs(cam[:, 2] - base_depth[i])
-            depth_hinge = torch.relu(depth_shift - float(args.depth_shift_limit_m)) ** 2
-            loss = loss + float(args.depth_hinge_weight) * torch.sum(obs_w * depth_hinge) / obs_den
+            loss = loss + joint_depth_deadband(cam[:,2],base_depth[i],obs_w,float(args.depth_shift_limit_m),float(args.depth_hinge_weight))
             visible_depth_order_enabled = bool(args.visible_surface_depth_order_term) or rows[i].visible_surface_track_factor_state == 'active_visible_surface'
             if visible_depth_order_enabled and len(visible_surface_depth_order_indices_t[i]):
                 ids = visible_surface_depth_order_indices_t[i]
                 surface_depth = visible_surface_depth_order_depth_t[i]
                 cam_v = torch.matmul(hyp_vertices[i, ids] - t_c2w_t[i].reshape(1, 3), r_c2w_t[i])
-                residual = torch.relu(surface_depth - float(args.visible_surface_depth_order_margin_m) - cam_v[:, 2])
-                active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
-                loss = loss + float(args.visible_surface_depth_order_weight) * torch.sum(residual * residual) / active_count
+                loss = loss + visible_surface_depth_order(cam_v[:,2],surface_depth,float(args.visible_surface_depth_order_margin_m),float(args.visible_surface_depth_order_weight))
             if rows[i].contact_patch_factor_state == 'active_contact_patch' and len(contact_patch_indices_t[i]) and (float(rows[i].contact_patch_weight) > 0.0):
                 ids = contact_patch_indices_t[i]
                 targets = contact_patch_targets_t[i] + object_trans_delta[i].reshape(1, 3)
