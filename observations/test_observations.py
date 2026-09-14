@@ -123,5 +123,7 @@ class RotationChainTests(unittest.TestCase):
         self.assertGreater(np.linalg.norm(observed(changed)-observed(poses)),.1)
 
 
-if __name__=='__main__':
+    unittest.main()
+
+if __name__ == '__main__':
     unittest.main()

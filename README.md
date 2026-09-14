@@ -33,7 +33,20 @@ optimization.test_optimization observations.test_observations -v`.
 Set `EGO_MANO_MODELS` to licensed MANO assets to exercise the real two-hand CPU
 optimizer smoke test; model assets are never downloaded by tests.
 
-Raw-video orchestration, remaining model adapters, judgments, formal paths,
+Thirteen independent judgments are available with `python main.py judge NAME
+--evidence EVIDENCE_JSON --image IMAGE --output NEW_JSON`. Each carries its own
+prompt and schema. `EGO_ASTRA_CREDENTIAL_FILE` must identify a user-owned,
+owner-only credential file. Requests and response model/group are locked to
+`gpt-6-astra`; `disable_fallbacks=true` is mandatory. Missing routes or mismatched
+response models fail rather than choosing another model. The transport sends
+actual image bytes and records their hashes. Credential contents are never stored
+in output or configuration.
+
+Main-environment package installation: `pip install --no-deps .`; provision the
+listed core/visual dependencies in the isolated runtime first. Heavy observation
+providers will use their separately declared environments.
+
+Raw-video orchestration, remaining model adapters, formal paths,
 MP4/evaluation and final legacy removal are under migration. The historical documentation below
 is retained only during extraction and does not describe the new CLI.
 

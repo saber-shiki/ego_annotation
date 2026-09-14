@@ -84,7 +84,6 @@ class DemoGeometry(unittest.TestCase):
         self.assertAlmostEqual(float(hit["t_hit"].numpy()[0]), 0.5)
 
 
-if __name__ == "__main__":
     unittest.main()
 
 """Primary pad activation must couple to unsigned full-triangle fitting gradients."""
@@ -211,3 +210,6 @@ class FormalNormalizationTests(unittest.TestCase):
         delta=torch.ones((2,1,3),dtype=torch.float64)
         visibility=torch.tensor([1.,.5],dtype=torch.float64)
         self.assertAlmostEqual(formal_root_orientation(delta,visibility,9.).item(),3.)
+
+if __name__ == '__main__':
+    unittest.main()

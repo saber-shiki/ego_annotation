@@ -13,3 +13,8 @@ third_party/
 checkpoints/
 # Only machine-local/private memory is ignored. Task and project memory are durable.
 .memory/local/
+# Grouped package build products and deployment-only overrides.
+build/
+dist/
+*.egg-info/
+config.local.yaml

@@ -1,0 +1,15 @@
+# Supply model assets and isolated interpreters in an external local JSON manifest.
+# No credentials, absolute deployment paths or alternate agent models belong here.
+problem: standalone_scene
+assets_manifest: null
+agent:
+  provider: dexgem-responses
+  model: gpt-6-astra
+  disable_fallbacks: true
+  credential_environment: EGO_ASTRA_CREDENTIAL_FILE
+scene:
+  outer_iterations: 8
+  inner_evaluations: 80
+visual:
+  iterations: 240
+  device: cpu

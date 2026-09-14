@@ -131,7 +131,6 @@ class GroupedContractTests(unittest.TestCase):
                     if isinstance(node,ast.ImportFrom):
                         self.assertFalse((node.module or '').startswith(('rgb_scene','v19_','v20_')))
 
-if __name__=='__main__':unittest.main()
 
 import copy
 import json
@@ -361,3 +360,46 @@ class RealManoOptimizerTests(unittest.TestCase):
           assert len(report['trace'])==2 and report['annotation_ready'] is False
           assert not report['signed_intrusion_loss_enabled']
           print(json.dumps({'status':'passed','frames':3,'left_vertices':list(state['left_vertices_world'].shape),'iterations':2,'replay_errors':report['zero_state_max_vertex_error_m'],'last_loss':report['trace'][-1],'physical_ready':report['annotation_ready']}))
+
+
+class AstraTransportTests(unittest.TestCase):
+    def test_request_model_and_fallback_lock_and_response_validation(self):
+        import io
+        from unittest.mock import patch
+        from utils.runtime import astra_request, ASTRA_MODEL
+        class Response(io.BytesIO):
+            headers={'x-litellm-model-group':'gpt-6-astra'}
+        schema={'type':'object','properties':{'color':{'type':'string'}},'required':['color']}
+        payload={'model':ASTRA_MODEL,'status':'completed','output':[{'type':'message','role':'assistant',
+                 'content':[{'type':'output_text','text':'{"color":"red"}'}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory);credential=path/'credential';credential.write_text('test-only-secret')
+            credential.chmod(0o600);image=path/'evidence.png';image.write_bytes(b'test-image')
+            def endpoint(request,timeout):
+                sent=json.loads(request.data)
+                self.assertEqual(sent['model'],'gpt-6-astra')
+                self.assertIs(sent['disable_fallbacks'],True)
+                self.assertIs(sent['store'],False)
+                self.assertEqual(sent['input'][0]['content'][-1]['type'],'input_image')
+                return Response(json.dumps(payload).encode())
+            with patch.dict(os.environ,{'EGO_ASTRA_CREDENTIAL_FILE':str(credential)}),patch('urllib.request.urlopen',endpoint):
+                result,receipt=astra_request('color?',schema,{},[image])
+                self.assertEqual(result,{'color':'red'})
+                self.assertEqual(receipt['response_model'],'gpt-6-astra')
+                payload['model']='another-model'
+                with self.assertRaisesRegex(RuntimeError,'mismatch'):astra_request('color?',schema,{},[image])
+                payload['model']=ASTRA_MODEL;Response.headers={'x-litellm-model-group':'another-model'}
+                with self.assertRaisesRegex(RuntimeError,'mismatch'):astra_request('color?',schema,{},[image])
+                Response.headers={};payload['status']='incomplete'
+                with self.assertRaisesRegex(RuntimeError,'did not complete'):astra_request('color?',schema,{},[image])
+
+    def test_thirteen_distinct_judgments_have_independent_prompts_and_schemas(self):
+        paths=sorted((Path(__file__).parent/'observations/judgments').glob('judge_*.py'))
+        self.assertEqual(len(paths),13)
+        modules=[importlib.import_module('observations.judgments.'+p.stem) for p in paths]
+        self.assertEqual(len({m.PROMPT for m in modules}),13)
+        self.assertEqual(len({json.dumps(m.SCHEMA,sort_keys=True) for m in modules}),13)
+        self.assertTrue(all(callable(m.judge) for m in modules))
+
+if __name__ == '__main__':
+    unittest.main()

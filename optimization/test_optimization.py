@@ -118,7 +118,6 @@ class PoseGraphTests(unittest.TestCase):
         source['pose_rows'][0][RKEY]=np.zeros((3,3)).tolist()
         with self.assertRaises(ValueError):build_nodes({'frames':frames},source,'cup')
 
-if __name__=='__main__':unittest.main()
 
 """Accepted numerical review counterexamples; CPU geometry, not video quality."""
 import copy
@@ -216,4 +215,5 @@ class CorrectionTests(unittest.TestCase):
         poses,_=solve(nodes,[0,1,1.3,2],edges,0,cfg)
         for i in (1,2):self.assertLess(Rot.from_matrix(poses[i][0]@truth[i].T).magnitude(),.02)
 
-if __name__=='__main__':unittest.main()
+if __name__ == '__main__':
+    unittest.main()

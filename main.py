@@ -152,7 +152,22 @@ def main(argv=None):
     visual.add_argument('--device',default='cpu')
     visual.add_argument('--iterations',type=int,default=240)
     visual.add_argument('--render-width',type=int)
+    judgment=commands.add_parser('judge',help='run one independent Astra image judgment')
+    judgment.add_argument('name',choices=('object','mask_track','pose_anchor','rigidity','appearance_anchor',
+        'pose_trajectory','contact','contact_pads','occlusion','depth_reliability','visibility',
+        'backend_geometry','final_inspection'))
+    judgment.add_argument('--evidence',type=Path,required=True)
+    judgment.add_argument('--image',type=Path,action='append',required=True)
+    judgment.add_argument('--output',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='judge':
+        import importlib
+        if args.output.exists():raise ValueError('judgment output must be create-only')
+        module=importlib.import_module('observations.judgments.judge_'+args.name)
+        value=module.judge(load(args.evidence),args.image)
+        args.output.parent.mkdir(parents=True,exist_ok=True)
+        with args.output.open('x') as handle:json.dump(value,handle,indent=2,allow_nan=False)
+        return value
     if args.command=='refine-pose':
         return refine(args.annotations,args.source_pose,args.rgb_edges,args.rgb_report,
                       args.object_id,args.anchor,args.output,args.run_root)
