@@ -309,3 +309,14 @@ def observed_front_quality_decision(*, median_fraction: float, p95_fraction: flo
     else:
         mode = 'failed_observed_front_quality'
     return {'quality_passed': bool(strict_passed or conditional_tail_passed), 'acceptance_mode': mode, 'strict_quality_passed': strict_passed, 'conditional_tail_quality_passed': conditional_tail_passed, 'conditional_tail_uncertainty': conditional_tail_passed, 'median_passed': median_passed, 'strict_p95_passed': strict_p95_passed, 'conditional_p95_passed': conditional_p95_passed, 'conditional_projection_passed': conditional_projection_passed, 'strict_maximum_p95_fraction_of_extent_diag': float(strict_maximum_p95_fraction), 'conditional_maximum_p95_fraction_of_extent_diag': float(conditional_maximum_p95_fraction), 'conditional_minimum_native_projection_iou': float(conditional_minimum_projection_iou)}
+
+
+def require_rigid_tracked_whole(judgment):
+    """Retain the selected rigid-workflow gate; do not relabel agent decisions."""
+    if judgment['physical_branch'] != 'rigid':
+        raise ValueError('selected standalone scene requires rigid tracked-whole evidence; saved judgment branch: '+judgment['physical_branch'])
+    if (judgment['relative_component_motion'] != 'not_observed'
+            or any(row['relative_motion_observed'] for row in judgment['motion_evidence'])
+            or any(row['relative_motion'] == 'observed' or row['attachment_state'] == 'separated'
+                   for row in judgment['attached_components'])):
+        raise ValueError('rigid label conflicts with saved component-motion evidence; no annotation published')

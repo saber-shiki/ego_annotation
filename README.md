@@ -222,7 +222,17 @@ WiLoR's optional worker is a raw hand-provider API, not a replacement for HaWoR'
 world-camera trajectory and downstream archive contract.
 
 See [MIGRATION.md](MIGRATION.md) for the callable capability matrix, final symbol
-provenance, and explicit remaining equivalence gaps. In particular, the new raw
-entry is create-only: old automatic resume/rewind and candidate-prefix reuse are
-not implemented by the producer receipt ledger. Do not claim full migration or
-three-case completion from the CPU/build evidence alone.
+provenance, and explicit remaining equivalence gaps. The first raw entry is
+create-only; public same-code resume and candidate rewind are described above.
+Old-version or foreign-run prefix import remains unsupported. Do not claim
+three-case completion from CPU/build evidence alone.
+
+Rigidity review now judges the selected tracked whole, including attached parts,
+using its object plan and paired raw/selected-track/object-owned crops for every
+frame in ten-consecutive-frame sheets. The crop window is fixed within each
+sequence; images are not motion-aligned. The judgment distinguishes observed
+relative component motion from whole-object rotation, perspective and occlusion,
+and preserves attachment/mechanism uncertainty. The standalone rigid gate remains:
+articulated, deformable, rigid-part or unresolved results stop the run with the
+original Astra answer saved. A rigid label that contradicts observed component
+motion also stops. Richer evidence never licenses rewriting a previous answer.

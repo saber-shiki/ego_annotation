@@ -546,8 +546,14 @@ def annotate(args):
             record('surface',[(ann,'observations'),(visible/'v19_visible_geometry_adapter_report.json','surface_report')])
             return ann
         ann = _stage_surface
-        rigidity=ask('rigidity',{},images,root/'state/rigidity.json')
-        if rigidity['physical_branch']!='rigid':raise ValueError('selected standalone scene requires rigid object evidence')
+        @stage('rigidity_evidence')
+        def _stage_rigidity_evidence():
+            return surface.build_rigidity_motion_evidence(root,object_id,plan_path,manifest,track_path,
+                owned/'sam2_track.json',root/'state/rigidity_evidence')
+        rigidity_evidence,rigidity_images=_stage_rigidity_evidence
+        rigidity=ask('rigidity',rigidity_evidence,rigidity_images,root/'state/rigidity.json')
+        from gates.object.geometry import require_rigid_tracked_whole
+        require_rigid_tracked_whole(rigidity)
         @stage('metric_inputs')
         def _stage_metric_inputs():
             evidence_root=root/'measurements/geometry_completion/rigid_evidence'

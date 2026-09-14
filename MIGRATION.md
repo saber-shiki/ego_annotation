@@ -92,3 +92,15 @@ actual `main prepare image-targets` process and produce a nonempty depth-factor
 NPZ/report. Set `EGO_IMAGE_TARGET_PYTHON` to the provisioned PyTorch3D interpreter
 when running `observations.test_observations.PrepareCLITests`; no rasterizer is
 mocked in that fixture.
+
+### Tracked-whole rigidity evidence
+
+The rigidity judge now receives the selected object plan, same-run raw/owned
+track receipts and all raw frames as contiguous ten-frame crop sheets (raw above,
+mask contours below). Its schema preserves attachment-state uncertainty and
+explicit component-versus-body motion evidence. The rigid gate is retained and
+rejects contradictory rigid labels; nonrigid/unresolved answers remain saved
+failures. A live Astra diagnostic rereview of frozen cold03 used 150 frames in15
+sheets and returned rigid/no observed relative cap motion while preserving cap
+mechanism uncertainty; request/response/group were all gpt-6-astra. This is richer
+evidence for a new run, not a modification of cold03 or a completed annotation.

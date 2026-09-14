@@ -2856,3 +2856,79 @@ def build_pose_image_targets(argv=None) -> None:
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(json.dumps({k: summary[k] for k in ['frame_count', 'depth_factor_count', 'silhouette_factor_count', 'initial_silhouette_iou_median', 'initial_observed_hit_fraction_median', 'outputs']}, indent=2))
+
+
+def build_rigidity_motion_evidence(run_root, object_id, plan_path, raw_manifest, track_path, owned_track_path, output_dir):
+    """Contiguous raw/object-owned crop pairs for the selected tracked whole.
+
+    Crops have one fixed image-plane window per ten-frame sequence. We do not
+    align, warp or infer component motion from silhouettes; the judge sees RGB.
+    """
+    from utils.state import require_run_artifact, in_run, sha
+    root=Path(run_root).resolve();output=Path(output_dir)
+    manifest=read_json(raw_manifest);frames=manifest['frames'];ids=[int(row['frame_idx']) for row in frames]
+    if ids != list(range(len(ids))):raise ValueError('rigidity evidence requires contiguous complete raw timeline')
+    receipts={}
+    for path,role,selected in [(raw_manifest,'raw_manifest',None),(plan_path,'judgment',None),
+            (track_path,'object_masks',object_id),(owned_track_path,'owned_masks',object_id)]:
+        receipts[str(path)]=require_run_artifact(path,root,role,object_id=selected,frame_ids=ids)
+    objects=[obj for obj in read_json(plan_path)['objects'] if obj['object_id']==object_id]
+    if len(objects)!=1:raise ValueError('rigidity requires exactly the selected object plan')
+    track=read_json(track_path);owned=read_json(owned_track_path)
+    output.mkdir(parents=True,exist_ok=False)
+    batches=[];images=[]
+    for start in range(0,len(frames),10):
+        chunk=frames[start:start+10];samples=[];boxes=[]
+        for row in chunk:
+            frame=int(row['frame_idx']);path=in_run(row['raw_frame_path'],root)
+            if sha(path)!=row['raw_frame_sha256']:raise ValueError('rigidity RGB differs from decoded source receipt')
+            rgb=cv2.imread(str(path))
+            if rgb is None:raise ValueError('rigidity raw frame is undecodable')
+            masks=[];mask_sources=[]
+            for label,source in [('selected_track',track),('object_owned',owned)]:
+                mask_name=source.get(str(frame),{}).get('mask_path')
+                if mask_name:
+                    mask_path=in_run(mask_name,root);mask=cv2.imread(str(mask_path),0)
+                    if mask is None:raise ValueError('rigidity declared mask is undecodable')
+                    mask_sources.append({'role':label,'path':str(mask_path),'sha256':sha(mask_path),'size_wh':[mask.shape[1],mask.shape[0]]})
+                    mask=cv2.resize(mask,(rgb.shape[1],rgb.shape[0]),interpolation=cv2.INTER_NEAREST)>0
+                else:
+                    mask=np.zeros(rgb.shape[:2],dtype=bool)
+                    mask_sources.append({'role':label,'status':'no_visible_mask'})
+                masks.append(mask)
+            yy,xx=np.nonzero(masks[0]|masks[1])
+            if len(xx):boxes.append((int(xx.min()),int(yy.min()),int(xx.max())+1,int(yy.max())+1))
+            samples.append((row,rgb,masks,mask_sources))
+        height,width=samples[0][1].shape[:2]
+        if boxes:
+            x0,y0=min(b[0] for b in boxes),min(b[1] for b in boxes)
+            x1,y1=max(b[2] for b in boxes),max(b[3] for b in boxes)
+            pad=max(24,int(.2*max(x1-x0,y1-y0)))
+            x0,y0,x1,y1=max(0,x0-pad),max(0,y0-pad),min(width,x1+pad),min(height,y1+pad)
+        else:x0,y0,x1,y1=0,0,width,height
+        sheet=np.full((2*552,5*272,3),245,dtype=np.uint8);evidence_rows=[]
+        for index,(row,rgb,masks,mask_sources) in enumerate(samples):
+            outlined=rgb.copy()
+            for mask,color in zip(masks,[(255,160,0),(0,255,0)]):
+                contours,_=cv2.findContours(mask.astype('uint8'),cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(outlined,contours,-1,color,2)
+            left,top=(index%5)*272,(index//5)*552
+            for offset,image,label in [(0,rgb,'RAW'),(272,outlined,'TRACK blue / OWNED green')]:
+                crop=image[y0:y1,x0:x1];scale=min(256/crop.shape[1],244/crop.shape[0])
+                tile=cv2.resize(crop,(max(1,round(crop.shape[1]*scale)),max(1,round(crop.shape[0]*scale))))
+                sheet[top+offset+24:top+offset+24+tile.shape[0],left:left+tile.shape[1]]=tile
+                cv2.putText(sheet,f"{int(row['frame_idx'])} {label}",(left+2,top+offset+17),cv2.FONT_HERSHEY_SIMPLEX,.43,(0,0,0),1)
+            evidence_rows.append({'frame_idx':int(row['frame_idx']),'raw_frame_sha256':row['raw_frame_sha256'],
+                'mask_sources':mask_sources})
+        path=output/f'motion_{start:06d}_{int(chunk[-1]["frame_idx"]):06d}.jpg'
+        if not cv2.imwrite(str(path),sheet):raise RuntimeError('rigidity motion sheet write failed')
+        images.append(path);batches.append({'frame_ids':[int(row['frame_idx']) for row in chunk],
+            'crop_xyxy_manifest_pixels':[x0,y0,x1,y1],'sheet':str(path),'sha256':sha(path),'frames':evidence_rows})
+    evidence={'schema':'tracked_whole_rigidity_motion_evidence_v1','object_id':object_id,'frame_ids':ids,
+        'selected_object':objects[0],'source_run_id':read_json(root/'input/runtime_input_contract.json')['run_id'],
+        'input_video_sha256':manifest['input_video_sha256'],'producer_receipts':receipts,
+        'image_layout':'Each ten-consecutive-frame sheet is read left-to-right, then next row block. Each frame has raw RGB above, track/owned contours below. One fixed crop window and scale per sheet; no motion alignment.',
+        'mask_semantics':'Masks identify the selected tracked whole and its visible first surface. They are not evidence that attached components moved relative to the body.',
+        'coverage':'all raw frames, without temporal subsampling','motion_sequences':batches}
+    (output/'evidence.json').write_text(json.dumps(evidence,indent=2,allow_nan=False))
+    return evidence,images

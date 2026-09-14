@@ -762,5 +762,73 @@ class PrepareCLITests(unittest.TestCase):
             self.assertNotIn('unrecognized arguments',result.stderr)
             self.assertIn('image_targets_load_mesh',result.stderr)
 
+
+class RigidityMotionEvidenceTests(unittest.TestCase):
+    def fixture(self,root):
+        import cv2
+        from utils.state import RunState,sha
+        (root/'input').mkdir();raw=root/'input/raw.mp4';raw.write_bytes(b'synthetic fixture')
+        (root/'input/runtime_input_contract.json').write_text(json.dumps({'run_id':'fixture','run_root':str(root),
+            'input_video':str(raw),'input_video_sha256':sha(raw)}))
+        frames=[];track={}
+        for frame in range(11):
+            image=np.full((48,64,3),30,dtype=np.uint8);image[10:36,20:40]=[30,70,180]
+            rgb=root/f'rgb{frame}.png';cv2.imwrite(str(rgb),image)
+            mask=root/f'mask{frame}.png';pixels=np.zeros((48,64),np.uint8);pixels[10:36,20:40]=255;cv2.imwrite(str(mask),pixels)
+            frames.append({'frame_idx':frame,'raw_frame_path':str(rgb),'raw_frame_sha256':sha(rgb)})
+            track[str(frame)]={'mask_path':str(mask),'visible':True}
+        manifest=root/'manifest.json';manifest.write_text(json.dumps({'frames':frames,'input_video_sha256':sha(raw)}))
+        plan=root/'plan.json';plan.write_text(json.dumps({'objects':[{'object_id':'bottle','track_id':'track',
+            'description':'selected whole bottle including attached cap'}]}))
+        tracks=root/'tracks.json';tracks.write_text(json.dumps(track));owned=root/'owned.json';owned.write_text(json.dumps(track))
+        ledger=RunState(root)
+        for path,role,obj in [(manifest,'raw_manifest',None),(plan,'judgment',None),(tracks,'object_masks','bottle'),(owned,'owned_masks','bottle')]:
+            ledger.record(role,[(path,role)],object_id=obj,frame_ids=list(range(11)))
+        return plan,manifest,tracks,owned
+
+    def test_full_contiguous_crops_bind_selected_plan_masks_and_raw_bytes(self):
+        from observations.object.surface import build_rigidity_motion_evidence
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();paths=self.fixture(root)
+            evidence,images=build_rigidity_motion_evidence(root,'bottle',*paths,root/'review')
+            self.assertEqual(evidence['selected_object']['track_id'],'track')
+            self.assertEqual([i for sequence in evidence['motion_sequences'] for i in sequence['frame_ids']],list(range(11)))
+            self.assertEqual(len(images),2)
+            self.assertEqual(len(evidence['motion_sequences'][0]['frames'][0]['mask_sources']),2)
+            self.assertTrue(all(image.is_file() for image in images))
+            (root/'rgb0.png').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError,'RGB differs'):
+                build_rigidity_motion_evidence(root,'bottle',*paths,root/'bad_review')
+
+    def test_articulated_answer_is_preserved_and_rigid_gate_does_not_coerce_it(self):
+        from unittest.mock import patch
+        from observations.object.surface import build_rigidity_motion_evidence
+        from observations.judgments.judge_rigidity import judge,SCHEMA
+        from gates.object.geometry import require_rigid_tracked_whole
+        import jsonschema
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();paths=self.fixture(root)
+            evidence,images=build_rigidity_motion_evidence(root,'bottle',*paths,root/'review')
+            answer={'object_id':'bottle','physical_branch':'articulated','evidence_frames':[0,1],
+                'rationale':'observed relative opening','uncertainties':['hinge mechanism unclear'],
+                'relative_component_motion':'observed','attached_components':[{'component':'cap','attachment_state':'uncertain',
+                    'relative_motion':'observed','evidence_frames':[0,1],'rationale':'opening is visible'}],
+                'motion_evidence':[{'frame_start':0,'frame_end':1,'component':'cap','reference_body':'body',
+                    'relative_motion_observed':True,'observation':'cap opens while neck remains fixed'}]}
+            jsonschema.validate(answer,SCHEMA)
+            with patch('observations.judgments.judge_rigidity.astra_request',return_value=(answer,{'response_model':'gpt-6-astra'})):
+                result=judge(evidence,images)
+            self.assertEqual(result['physical_branch'],'articulated')
+            self.assertEqual(result['attached_components'][0]['attachment_state'],'uncertain')
+            with self.assertRaisesRegex(ValueError,'saved judgment branch: articulated'):require_rigid_tracked_whole(result)
+            rigid={**result,'physical_branch':'rigid','relative_component_motion':'not_observed',
+                'attached_components':[{'component':'cap','attachment_state':'attached','relative_motion':'not_observed',
+                    'evidence_frames':[0,1],'rationale':'co-moving, exact mechanism uncertain'}],
+                'motion_evidence':[{**answer['motion_evidence'][0],'relative_motion_observed':False}]}
+            require_rigid_tracked_whole(rigid)
+            with self.assertRaisesRegex(ValueError,'conflicts'):require_rigid_tracked_whole({**rigid,'motion_evidence':answer['motion_evidence']})
+            with patch('observations.judgments.judge_rigidity.astra_request',side_effect=AssertionError('must reject before API')):
+                with self.assertRaisesRegex(ValueError,'coverage mismatch'):judge(evidence,images[:1])
+
 if __name__ == '__main__':
     unittest.main()
