@@ -1178,7 +1178,7 @@ def render_formal_video(package_path, source_video, output_dir, width=640, expec
                     (shaded, mask, geometry_ids) = (np.zeros_like(rgb), np.zeros(rgb.shape[:2], bool), np.full(rgb.shape[:2], -1))
                 overlay = rgb.copy()
                 overlay[mask] = (0.25 * rgb[mask] + 0.75 * shaded[mask]).astype(np.uint8)
-                panels.append(header(overlay, 'Metric prediction (estimated)' if name == 'prediction' else 'Generated display (shared physical state)'))
+                panels.append(header(overlay, 'Metric prediction (estimated)' if name == 'prediction' else 'Generated display (shared physical state)' if name.startswith('display_') else 'Demo visual (fitted hypothesis)'))
                 row['layers'][name] = {'object_valid': bool(state['object_valid'][index]), 'left_valid': bool(state['left_valid'][index]), 'right_valid': bool(state['right_valid'][index]), 'pixels_by_object_left_right': [int(np.count_nonzero(mask & (geometry_ids == k))) for k in range(3)], 'triangle_count': sum((len(f) for f in faces)), 'faces_removed': 0}
             image = np.concatenate(panels, axis=1)
             writer.stdin.write(np.ascontiguousarray(image).tobytes())
@@ -1246,7 +1246,7 @@ def render_dual_backend(package_path,source_video,geometries,output):
         results.append({'backend':geometry['backend'],'geometry':geometry,'rrd_sha256':sha256(directory/'world.rrd'),
                         'video_sha256':sha256(video),'shared_state_sha256':shared_digest.hexdigest()})
     manifest={'schema':'dual_backend_shared_state_display_v1','package_sha256':sha256(package_path),
-              'shared_state_sha256':shared_digest.hexdigest(),'physical_optimization_count':1,
+              'shared_state_sha256':shared_digest.hexdigest(),'shared_physics_recomputed':False,
               'generated_geometry_authority':'display_only','branches':results,
               'physical_acceptance':package['metric_prediction'].get('full_mano_acceptance',{'accepted':False})}
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False))

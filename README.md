@@ -82,75 +82,6 @@ translation-support gates. Optional compositions are named, and numeric tuning
 cannot switch Boolean factor families. This candidate still requires the formal
 full-MANO acceptance stage before physical publication.
 
-Formal object/shared-tail acceptance, optional WiLoR, evaluation consolidation,
-remaining owner deduplication and final legacy removal are still under migration. The historical documentation below
-is retained only during extraction and does not describe the new CLI.
-
----
-
-# Ego Annotation — visual-contact demo branch
-
-This branch preserves the V19/V20 research pipeline and adds a **demo-only
-hand–object visual fitting and rendering path**. The delivered example is a
-150-frame milk-carton clip. It is not a claim of measured physical contact,
-annotation readiness, or arbitrary-video support.
-
-- **[Standalone RGB scene v7 baseline](docs/STANDALONE_RGB_SCENE_V7_BASELINE.md)**: frozen research baseline, external artifacts and create-only launch preparation.
-- [Developer-only v7 publication evidence](docs/STANDALONE_RGB_SCENE_V7_RECORD.md): exact frozen identities, prerequisites, actual validation and known limits.
-- **[Demo replay and refitting](docs/V20_VISUAL_CONTACT_DEMO_REPRODUCE.md)**:
-  required inputs, verified case limits, environment notes, commands and outputs.
-- [Demo design](docs/V20_VISUAL_CONTACT_DEMO_DESIGN.md) and
-  [visual/numerical results](docs/V20_VISUAL_CONTACT_DEMO_RESULTS.md).
-- **[V19 fresh-run reproducibility plan](docs/V19_FRESH_TO_DEMO_VALIDATION.md)**:
-  distinguishes raw-video prediction, cached demo refitting, render replay and
-  cross-video transfer.
-
-The independent delivered artifacts are stored outside Git:
-
-```text
-/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/demos/milk_visual_contact_20260908/
-  milk_hand_object_demo.mp4
-  milk_contact_detail.mp4
-  milk_hand_object_demo.rrd
-  contact_keyframes.jpg
-  contact_before_after_120.jpg
-  state/demo_state.npz
-  SHA256SUMS
-```
-
-Both videos are 1920×960, 30 FPS, 150 frames / 5 seconds. The detail video's
-reconstruction is explicitly a +20° inspection view, not a second observed
-camera. The original V16 archive and formal annotation state remain unchanged.
-Raw videos, predictions, licensed MANO models, model weights and MP4/RRD files
-are **not distributed through this branch**.
-
-## Code entry points
-
-```text
-scripts/run_v20_visual_contact_demo.py     # explicit replay or fit-render launcher
-scripts/fit_v20_visual_contact_demo.py     # actual MANO/object fitting
-scripts/render_v20_visual_contact_demo.py  # combined triangle-depth rendering + RRD
-scripts/v20_demo_geometry.py               # camera, MANO and triangle utilities
-```
-
-The launcher is **not** a replacement for the V19 phase graph. It never
-installs environments or starts an inference agent. Fitting must run on an
-explicitly selected server/GPU in managed tmux; use a fresh output directory.
-
-## Focused tests
-
-Run with the preflighted demo Python environment:
-
-```bash
-python -m unittest discover -s tests -p 'test_v20_visual_contact_demo.py' -v
-python -m unittest discover -s tests -p 'test_v20_demo_runner.py' -v
-```
-
-The first suite checks geometry/projection/occlusion and Torch–NumPy transform
-parity. The second checks launcher arguments, fresh-output protection, dry-run
-behavior and subprocess failure reporting. Tests are necessary but do not
-replace inspection of full videos and contact close-ups.
-
 ## Prepared formal/shared physical tail and evaluation
 
 `python main.py formal-tail --spec INPUTS_JSON` consumes prepared prediction
@@ -175,3 +106,33 @@ source surfaces remain separately stored. `render.render_dual_backend` branches
 only complete SAM3D/TRELLIS display geometry after that shared solve and records an
 identical shared-state hash for both outputs. Geometry records must bind the
 shared package hash, mesh hash, canonical frame and `generated_display_only` role.
+
+
+## Source organization and historical scope
+
+The active package has four business directories (`observations`, `gates`,
+`factors`, `optimization`) and five utility modules. Historical version chains,
+runpy dispatchers, old batch scripts, copied runtime prompts, and experimental
+standalone CLIs have been retired from the active checkout; baseline `12aede8`
+remains available in Git and the original worktree. `migration-map.json` records
+relative source symbols used during extraction; subsequent moves are in Git.
+
+Default prediction remains HaWoR/UniDepth/OWLv2/SAM2/SAM3D with observed/RGB pose
+optimization and unsigned visual fitting. Optional WiLoR and TRELLIS workers,
+formal object/MANO profiles, observed-derived signed geometry, surface/visibility
+inputs, full-MANO acceptance, complete layered exports and independent evaluation
+are retained. Historical alternative depth/SLAM/hand/shape providers, articulated
+part/deformable/variable-camera solvers, global/keyframe/late-window experimental
+CLIs and GT benchmark suites are outside this version; their code remains in Git.
+
+Use `main.py prepare --help` for optional observation builders and
+`main.py preflight --assets-manifest ENVIRONMENTS_JSON` to validate actual
+provider-package imports before allocating a run. No worker installs missing
+assets or silently replaces a failed producer with empty observations.
+
+Validation distinguishes CPU mechanism tests from actual model runs. The suite
+includes full-RGB producer binding, OpenCV PnP and source/target Jacobians, observed
+first-surface eligibility, exact K/radius rays, formal contact-state gradients,
+active/dense normalization, real MANO replay when assets are supplied, shared
+accepted-state export, full triangle RRD and MP4 rendering primitives. A passing
+CPU suite does not establish cold-video accuracy or three completed annotations.

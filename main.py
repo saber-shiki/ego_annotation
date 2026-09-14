@@ -177,7 +177,20 @@ def main(argv=None):
     tail.add_argument('--spec',type=Path,required=True)
     preflight=commands.add_parser('preflight',help='validate actual isolated provider imports and asset roots')
     preflight.add_argument('--assets-manifest',type=Path,required=True)
+    prepare=commands.add_parser('prepare',help='build a retained optional observation or geometry input')
+    prepare.add_argument('kind',choices=('image-targets','visible-surface-track','surface-eligibility','hand-visibility','signed-proxy','multiview-support'))
+    prepare.add_argument('arguments',nargs=argparse.REMAINDER)
     args=parser.parse_args(argv)
+    if args.command=='prepare':
+        from observations.object import surface, signed_geometry
+        from observations.interaction import evidence
+        builders={'visible-surface-track':(surface.build_visible_surface_track,surface.visible_track_parse_args),
+            'surface-eligibility':(surface.build_face_eligibility,surface.face_eligibility_parse_args),
+            'hand-visibility':(evidence.build_hand_visibility,evidence.hand_visibility_parse_args),
+            'signed-proxy':(signed_geometry.signed_proxy_build,signed_geometry.signed_proxy_parse_args)}
+        if args.kind=='image-targets':return surface.build_pose_image_targets(args.arguments)
+        if args.kind=='multiview-support':return signed_geometry.filter_multiview_cli(args.arguments)
+        build,parse=builders[args.kind];return build(parse(args.arguments))
     if args.command=='preflight':
         from utils.config import preflight_providers
         result=preflight_providers(load(args.assets_manifest));print(json.dumps(result,indent=2));return result
@@ -270,6 +283,8 @@ def annotate(args):
     from gates.object.geometry import normalize_completion
     from optimization.problems import ObservedObjectPose, StandaloneShape
     from render import render_video, export_scene
+    from utils.config import preflight_providers
+    preflight_providers(load(args.assets_manifest))
     root=args.run_root.resolve();root.mkdir(parents=True,exist_ok=False)
     (root/'input').mkdir();(root/'logs').mkdir()
     raw=root/'input/raw.mp4'

@@ -1,0 +1,2731 @@
+{
+  "baseline": "12aede8eaa2a945150b3de9bd3d0f81461d408b4",
+  "symbol_moves": {
+    "v19_camera_contract": {
+      "SCHEMA": [
+        "gates.camera.calibration",
+        "SCHEMA"
+      ],
+      "load_contract": [
+        "gates.camera.calibration",
+        "load_contract"
+      ],
+      "plane_intrinsics": [
+        "gates.camera.calibration",
+        "plane_intrinsics"
+      ],
+      "sha256_file": [
+        "gates.camera.calibration",
+        "sha256_file"
+      ],
+      "summarize_contract": [
+        "gates.camera.calibration",
+        "summarize_contract"
+      ],
+      "resize_affine": [
+        "gates.camera.calibration",
+        "resize_affine"
+      ],
+      "validate_contract": [
+        "gates.camera.calibration",
+        "validate_contract"
+      ],
+      "load_json": [
+        "gates.camera.calibration",
+        "load_json"
+      ],
+      "finite_intrinsics": [
+        "gates.camera.calibration",
+        "finite_intrinsics"
+      ],
+      "finite_affine": [
+        "gates.camera.calibration",
+        "finite_affine"
+      ],
+      "size_wh": [
+        "gates.camera.calibration",
+        "size_wh"
+      ],
+      "K_from_intrinsics": [
+        "gates.camera.calibration",
+        "K_from_intrinsics"
+      ],
+      "intrinsics_from_K": [
+        "gates.camera.calibration",
+        "intrinsics_from_K"
+      ],
+      "transform_intrinsics": [
+        "gates.camera.calibration",
+        "transform_intrinsics"
+      ],
+      "fov_degrees": [
+        "gates.camera.calibration",
+        "fov_degrees"
+      ],
+      "normalize_authority": [
+        "gates.camera.calibration",
+        "normalize_authority"
+      ],
+      "plane_record": [
+        "gates.camera.calibration",
+        "plane_record"
+      ]
+    },
+    "v20_prediction_contracts": {
+      "append_prediction_stage": [
+        "utils.state",
+        "append_prediction_stage"
+      ],
+      "assert_prediction_only": [
+        "utils.state",
+        "assert_prediction_only"
+      ],
+      "find_positive_gt_flags": [
+        "utils.state",
+        "find_positive_gt_flags"
+      ]
+    },
+    "rgb_scene_pose_io": {
+      "time_keyframes": [
+        "utils.data",
+        "time_keyframes"
+      ],
+      "time_source_pairs": [
+        "utils.data",
+        "time_source_pairs"
+      ],
+      "indexed": [
+        "utils.data",
+        "indexed"
+      ],
+      "RKEY": [
+        "utils.data",
+        "RKEY"
+      ],
+      "TKEY": [
+        "utils.data",
+        "TKEY"
+      ],
+      "pose_from_values": [
+        "observations.common",
+        "pose_from_values"
+      ],
+      "p09_geometry_validation": [
+        "gates.object.observation",
+        "p09_geometry_validation"
+      ]
+    },
+    "build_v19_calibration_contract": {
+      "load_json": [
+        "observations.camera.calibration",
+        "load_json"
+      ],
+      "raw_frames": [
+        "observations.camera.calibration",
+        "raw_frames"
+      ],
+      "load_unidepth_intrinsics": [
+        "observations.camera.calibration",
+        "load_unidepth_intrinsics"
+      ],
+      "summarize": [
+        "observations.camera.calibration",
+        "summarize"
+      ],
+      "select_rows": [
+        "observations.camera.calibration",
+        "select_rows"
+      ],
+      "aggregate_intrinsics": [
+        "observations.camera.calibration",
+        "aggregate_intrinsics"
+      ]
+    },
+    "resolve_v19_camera_contract": {
+      "write_json": [
+        "observations.camera.calibration",
+        "camera_write_json"
+      ],
+      "parse_affine": [
+        "observations.camera.calibration",
+        "parse_affine"
+      ],
+      "manifest_sizes": [
+        "observations.camera.calibration",
+        "manifest_sizes"
+      ],
+      "validate_sensor_timeline_and_source": [
+        "observations.camera.calibration",
+        "validate_sensor_timeline_and_source"
+      ],
+      "source_intrinsics": [
+        "observations.camera.calibration",
+        "source_intrinsics"
+      ],
+      "source_calibration_size": [
+        "observations.camera.calibration",
+        "source_calibration_size"
+      ],
+      "infer_source_affine": [
+        "observations.camera.calibration",
+        "infer_source_affine"
+      ],
+      "build_planes": [
+        "observations.camera.calibration",
+        "build_planes"
+      ],
+      "save_intrinsics_npz": [
+        "observations.camera.calibration",
+        "save_intrinsics_npz"
+      ],
+      "sensor_contract": [
+        "observations.camera.calibration",
+        "sensor_contract"
+      ],
+      "fallback_contract": [
+        "observations.camera.calibration",
+        "fallback_contract"
+      ],
+      "resolve": [
+        "observations.camera.calibration",
+        "resolve_camera"
+      ],
+      "parse_args": [
+        "observations.camera.calibration",
+        "camera_parse_args"
+      ]
+    },
+    "adapt_v19_depth_to_camera_contract": {
+      "write_json": [
+        "observations.camera.calibration",
+        "depth_write_json"
+      ],
+      "array_sha256": [
+        "observations.camera.calibration",
+        "array_sha256"
+      ],
+      "scalar_text": [
+        "observations.camera.calibration",
+        "scalar_text"
+      ],
+      "adapt": [
+        "observations.camera.calibration",
+        "bind_depth_contract"
+      ],
+      "parse_args": [
+        "observations.camera.calibration",
+        "depth_parse_args"
+      ]
+    },
+    "build_v19_base_annotations": {
+      "FULL_K_RECTIFIED_MODE": [
+        "observations.common",
+        "FULL_K_RECTIFIED_MODE"
+      ],
+      "sha256_file": [
+        "observations.common",
+        "sha256_file"
+      ],
+      "aggregate_file_sha256": [
+        "observations.common",
+        "aggregate_file_sha256"
+      ],
+      "K_from_intrinsics": [
+        "observations.common",
+        "K_from_intrinsics"
+      ],
+      "validate_hawor_camera_image_plane_contract": [
+        "observations.common",
+        "validate_hawor_camera_image_plane_contract"
+      ],
+      "load_json": [
+        "observations.common",
+        "load_json"
+      ],
+      "write_json": [
+        "observations.common",
+        "write_json"
+      ],
+      "as_list": [
+        "observations.common",
+        "as_list"
+      ],
+      "finite_matrix4": [
+        "observations.common",
+        "finite_matrix4"
+      ],
+      "load_raw_manifest": [
+        "observations.common",
+        "load_raw_manifest"
+      ],
+      "load_camera_npz": [
+        "observations.common",
+        "load_camera_npz"
+      ],
+      "load_depth_intrinsics": [
+        "observations.common",
+        "load_depth_intrinsics"
+      ],
+      "load_calibration_contract": [
+        "observations.common",
+        "load_calibration_contract"
+      ],
+      "load_hawor_npz": [
+        "observations.common",
+        "load_hawor_npz"
+      ],
+      "camera_from_hawor": [
+        "observations.common",
+        "camera_from_hawor"
+      ],
+      "source_hawor_intrinsics": [
+        "observations.common",
+        "source_hawor_intrinsics"
+      ],
+      "hawor_active_camera_contract_alignment": [
+        "observations.common",
+        "hawor_active_camera_contract_alignment"
+      ],
+      "default_intrinsics_from_raw": [
+        "observations.common",
+        "default_intrinsics_from_raw"
+      ],
+      "world_to_camera": [
+        "observations.common",
+        "world_to_camera"
+      ],
+      "sample_vertices": [
+        "observations.common",
+        "sample_vertices"
+      ],
+      "save_hawor_bridge": [
+        "observations.common",
+        "save_hawor_bridge"
+      ],
+      "parse_sam2_track_arg": [
+        "observations.common",
+        "parse_sam2_track_arg"
+      ],
+      "load_sam2_tracks": [
+        "observations.common",
+        "load_sam2_tracks"
+      ],
+      "load_object_plan": [
+        "observations.common",
+        "load_object_plan"
+      ],
+      "interval_active": [
+        "observations.common",
+        "interval_active"
+      ],
+      "localize_path": [
+        "observations.common",
+        "localize_path"
+      ],
+      "object_row": [
+        "observations.common",
+        "object_row"
+      ],
+      "build_hand_row": [
+        "observations.common",
+        "build_hand_row"
+      ],
+      "build": [
+        "observations.common",
+        "build_base_annotations"
+      ],
+      "parse_args": [
+        "observations.common",
+        "base_parse_args"
+      ]
+    },
+    "rgb_scene_metric_eligibility": {
+      "SCHEMA": [
+        "observations.object.surface",
+        "SCHEMA"
+      ],
+      "RASTER_SCHEMA": [
+        "observations.object.surface",
+        "RASTER_SCHEMA"
+      ],
+      "CLASS_CODES": [
+        "observations.object.surface",
+        "CLASS_CODES"
+      ],
+      "sha256": [
+        "observations.object.surface",
+        "sha256"
+      ],
+      "array_sha256": [
+        "observations.object.surface",
+        "array_sha256"
+      ],
+      "file_record": [
+        "observations.object.surface",
+        "file_record"
+      ],
+      "conservative_mask_on_depth": [
+        "observations.object.surface",
+        "conservative_mask_on_depth"
+      ],
+      "classify_native_depth": [
+        "observations.object.surface",
+        "classify_native_depth"
+      ],
+      "MetricEligibility": [
+        "observations.object.surface",
+        "MetricEligibility"
+      ]
+    },
+    "build_v19_visible_geometry_from_sam2_depth": {
+      "load_json": [
+        "observations.object.surface",
+        "load_json"
+      ],
+      "write_json": [
+        "observations.object.surface",
+        "write_json"
+      ],
+      "safe_name": [
+        "observations.object.surface",
+        "safe_name"
+      ],
+      "as_list": [
+        "observations.object.surface",
+        "as_list"
+      ],
+      "export_anchor_visible_surface_mesh": [
+        "observations.object.surface",
+        "export_anchor_visible_surface_mesh"
+      ],
+      "raw_frame_map": [
+        "observations.object.surface",
+        "raw_frame_map"
+      ],
+      "scalar_text": [
+        "observations.object.surface",
+        "scalar_text"
+      ],
+      "load_depth_npz": [
+        "observations.object.surface",
+        "load_depth_npz"
+      ],
+      "load_calibration_contract": [
+        "observations.object.surface",
+        "load_calibration_contract"
+      ],
+      "validate_depth_camera_contract_binding": [
+        "observations.object.surface",
+        "validate_depth_camera_contract_binding"
+      ],
+      "load_camera_npz": [
+        "observations.object.surface",
+        "load_camera_npz"
+      ],
+      "load_base_annotations": [
+        "observations.object.surface",
+        "load_base_annotations"
+      ],
+      "load_object_plan_record": [
+        "observations.object.surface",
+        "load_object_plan_record"
+      ],
+      "load_sam2_track": [
+        "observations.object.surface",
+        "load_sam2_track"
+      ],
+      "frame_range": [
+        "observations.object.surface",
+        "frame_range"
+      ],
+      "base_camera_pose": [
+        "observations.object.surface",
+        "base_camera_pose"
+      ],
+      "base_camera_intrinsics": [
+        "observations.object.surface",
+        "base_camera_intrinsics"
+      ],
+      "resolve_camera_pose": [
+        "observations.object.surface",
+        "resolve_camera_pose"
+      ],
+      "localize_path": [
+        "observations.object.surface",
+        "localize_path"
+      ],
+      "read_mask": [
+        "observations.object.surface",
+        "read_mask"
+      ],
+      "bbox_xyxy_from_mask": [
+        "observations.object.surface",
+        "bbox_xyxy_from_mask"
+      ],
+      "scaled_intrinsics_for_depth": [
+        "observations.object.surface",
+        "scaled_intrinsics_for_depth"
+      ],
+      "load_npz_array_cached": [
+        "observations.object.surface",
+        "load_npz_array_cached"
+      ],
+      "projected_mano_hand_silhouette": [
+        "observations.object.surface",
+        "projected_mano_hand_silhouette"
+      ],
+      "subtract_hand_owned_bbox_regions": [
+        "observations.object.surface",
+        "subtract_hand_owned_bbox_regions"
+      ],
+      "robust_first_surface_depth_ownership": [
+        "observations.object.surface",
+        "robust_first_surface_depth_ownership"
+      ],
+      "numeric_summary": [
+        "observations.object.surface",
+        "numeric_summary"
+      ],
+      "backprojected_extent": [
+        "observations.object.surface",
+        "backprojected_extent"
+      ],
+      "choose_visible_points": [
+        "observations.object.surface",
+        "choose_visible_points"
+      ],
+      "normalize01": [
+        "observations.object.surface",
+        "normalize01"
+      ],
+      "raw_image_path_from_row": [
+        "observations.object.surface",
+        "raw_image_path_from_row"
+      ],
+      "candidate_mask_summary": [
+        "observations.object.surface",
+        "candidate_mask_summary"
+      ],
+      "anchor_conditioning_coherence": [
+        "observations.object.surface",
+        "anchor_conditioning_coherence"
+      ],
+      "build_anchor_candidate_proposals": [
+        "observations.object.surface",
+        "build_anchor_candidate_proposals"
+      ],
+      "render_anchor_candidate_review": [
+        "observations.object.surface",
+        "render_anchor_candidate_review"
+      ],
+      "object_row_not_visible": [
+        "observations.object.surface",
+        "object_row_not_visible"
+      ],
+      "remove_existing_object": [
+        "observations.object.surface",
+        "remove_existing_object"
+      ],
+      "build": [
+        "observations.object.surface",
+        "build_visible_geometry"
+      ],
+      "parse_args": [
+        "observations.object.surface",
+        "surface_parse_args"
+      ]
+    },
+    "rgb_scene_depth_order": {
+      "SCHEMA": [
+        "observations.object.surface",
+        "depth_order_SCHEMA"
+      ],
+      "sha256": [
+        "observations.object.surface",
+        "depth_order_sha256"
+      ],
+      "record": [
+        "observations.object.surface",
+        "record"
+      ],
+      "load_object": [
+        "observations.object.surface",
+        "load_object"
+      ],
+      "indexed_frames": [
+        "observations.object.surface",
+        "indexed_frames"
+      ],
+      "indexed_track": [
+        "observations.object.surface",
+        "indexed_track"
+      ],
+      "first_hit_z": [
+        "observations.object.surface",
+        "first_hit_z"
+      ],
+      "nearest_hand_first_hits": [
+        "observations.object.surface",
+        "nearest_hand_first_hits"
+      ],
+      "front_only": [
+        "observations.object.surface",
+        "front_only"
+      ],
+      "sample_depth_at_mask_pixels": [
+        "observations.object.surface",
+        "sample_depth_at_mask_pixels"
+      ],
+      "mask_geometry": [
+        "observations.object.surface",
+        "mask_geometry"
+      ],
+      "hand_geometry": [
+        "observations.object.surface",
+        "hand_geometry"
+      ],
+      "build": [
+        "observations.object.surface",
+        "build_depth_order"
+      ],
+      "parse_args": [
+        "observations.object.surface",
+        "depth_order_parse_args"
+      ]
+    },
+    "fit_v18_compact_rigid_object_pose": {
+      "METHOD": [
+        "optimization.object.pose",
+        "METHOD"
+      ],
+      "load_json": [
+        "optimization.object.pose",
+        "load_json"
+      ],
+      "sha256_file": [
+        "optimization.object.pose",
+        "sha256_file"
+      ],
+      "load_mesh": [
+        "optimization.object.pose",
+        "load_mesh"
+      ],
+      "deterministic_sample_mesh": [
+        "optimization.object.pose",
+        "deterministic_sample_mesh"
+      ],
+      "rigid_umeyama": [
+        "optimization.object.pose",
+        "rigid_umeyama"
+      ],
+      "apply_pose": [
+        "optimization.object.pose",
+        "apply_pose"
+      ],
+      "rotation_angle_deg": [
+        "optimization.object.pose",
+        "rotation_angle_deg"
+      ],
+      "numeric_summary": [
+        "optimization.object.pose",
+        "numeric_summary"
+      ],
+      "nearest_summary": [
+        "optimization.object.pose",
+        "nearest_summary"
+      ],
+      "rotation_observability_summary": [
+        "optimization.object.pose",
+        "rotation_observability_summary"
+      ],
+      "rigid_pose_observation_eligibility": [
+        "optimization.object.pose",
+        "rigid_pose_observation_eligibility"
+      ],
+      "correspondence_state": [
+        "optimization.object.pose",
+        "correspondence_state"
+      ],
+      "register_adjacent_observed_surfaces": [
+        "optimization.object.pose",
+        "register_adjacent_observed_surfaces"
+      ],
+      "refine_translation_from_observed_anchor": [
+        "optimization.object.pose",
+        "refine_translation_from_observed_anchor"
+      ],
+      "refine_pose_from_observed_anchor": [
+        "optimization.object.pose",
+        "refine_pose_from_observed_anchor"
+      ],
+      "frame_object": [
+        "optimization.object.pose",
+        "frame_object"
+      ],
+      "read_gray": [
+        "optimization.object.pose",
+        "read_gray"
+      ],
+      "read_mask_at_size": [
+        "optimization.object.pose",
+        "read_mask_at_size"
+      ],
+      "frame_camera_for_raster": [
+        "optimization.object.pose",
+        "frame_camera_for_raster"
+      ],
+      "select_flow_seed_points": [
+        "optimization.object.pose",
+        "select_flow_seed_points"
+      ],
+      "estimate_optical_flow_pnp_bridge": [
+        "optimization.object.pose",
+        "estimate_optical_flow_pnp_bridge"
+      ],
+      "bridge_positions_for_gap": [
+        "optimization.object.pose",
+        "bridge_positions_for_gap"
+      ],
+      "complete_translation_measurements": [
+        "optimization.object.pose",
+        "complete_translation_measurements"
+      ],
+      "regularize_translation_timeline": [
+        "optimization.object.pose",
+        "regularize_translation_timeline"
+      ],
+      "main": [
+        "optimization.object.pose",
+        "fit_observed_pose"
+      ]
+    },
+    "v19_runtime_contracts": {
+      "sha": [
+        "utils.state",
+        "sha"
+      ]
+    },
+    "rgb_scene_offline": {
+      "bind_offline_weights": [
+        "utils.runtime",
+        "bind_offline_weights"
+      ]
+    },
+    "build_v19_demo_visual_inputs": {
+      "SAFE_ID": [
+        "observations.object.shape",
+        "SAFE_ID"
+      ],
+      "sha256": [
+        "observations.object.shape",
+        "sha256"
+      ],
+      "load": [
+        "observations.object.shape",
+        "appearance_load"
+      ],
+      "in_run_file": [
+        "observations.object.shape",
+        "in_run_file"
+      ],
+      "indexed_rows": [
+        "observations.object.shape",
+        "indexed_rows"
+      ],
+      "track_rows": [
+        "observations.object.shape",
+        "track_rows"
+      ],
+      "rgb_path": [
+        "observations.object.shape",
+        "rgb_path"
+      ],
+      "metric_object": [
+        "observations.object.shape",
+        "metric_object"
+      ],
+      "metric_alignment": [
+        "observations.object.shape",
+        "metric_alignment"
+      ],
+      "score_mask": [
+        "observations.object.shape",
+        "score_mask"
+      ]
+    },
+    "rgb_scene_depth_order_appearance": {
+      "SCHEMA": [
+        "observations.object.shape",
+        "SCHEMA"
+      ],
+      "OWNERSHIP_SCHEMA": [
+        "observations.object.shape",
+        "OWNERSHIP_SCHEMA"
+      ],
+      "require_ref": [
+        "observations.object.shape",
+        "require_ref"
+      ],
+      "validate_binding": [
+        "observations.object.shape",
+        "validate_binding"
+      ],
+      "build": [
+        "observations.object.shape",
+        "build_appearance"
+      ],
+      "parse_args": [
+        "observations.object.shape",
+        "appearance_order_parse_args"
+      ]
+    },
+    "build_rgb_scene_edges": {
+      "sha256_file": [
+        "observations.object.rgb_tracking",
+        "sha256_file"
+      ],
+      "load_json": [
+        "observations.object.rgb_tracking",
+        "load_json"
+      ],
+      "resize_intrinsics": [
+        "observations.object.rgb_tracking",
+        "resize_intrinsics"
+      ],
+      "validate_depth_contract": [
+        "observations.object.rgb_tracking",
+        "validate_depth_contract"
+      ],
+      "find_case_root": [
+        "observations.object.rgb_tracking",
+        "find_case_root"
+      ],
+      "resolve_raw_frame_manifest": [
+        "observations.object.rgb_tracking",
+        "resolve_raw_frame_manifest"
+      ],
+      "object_for_frame": [
+        "observations.object.rgb_tracking",
+        "object_for_frame"
+      ],
+      "lift_source_world": [
+        "observations.object.rgb_tracking",
+        "lift_source_world"
+      ],
+      "valid_initial_poses": [
+        "observations.object.rgb_tracking",
+        "valid_initial_poses"
+      ],
+      "rgb_source_eligibility": [
+        "observations.object.rgb_tracking",
+        "rgb_source_eligibility"
+      ],
+      "load_p09_metric_eligibility": [
+        "observations.object.rgb_tracking",
+        "load_p09_metric_eligibility"
+      ],
+      "reproduce_source_depth_support": [
+        "observations.object.rgb_tracking",
+        "reproduce_source_depth_support"
+      ],
+      "plan_source_edge_pairs": [
+        "observations.object.rgb_tracking",
+        "plan_source_edge_pairs"
+      ],
+      "preflight_manifest_images": [
+        "observations.object.rgb_tracking",
+        "preflight_manifest_images"
+      ],
+      "feature_pair": [
+        "observations.object.rgb_tracking",
+        "feature_pair"
+      ],
+      "build_edge_pairs": [
+        "observations.object.rgb_tracking",
+        "build_edge_pairs"
+      ],
+      "diagnostic_motion_chain": [
+        "observations.object.rgb_tracking",
+        "diagnostic_motion_chain"
+      ],
+      "main": [
+        "observations.object.rgb_tracking",
+        "build_rgb_edges"
+      ]
+    },
+    "remote_run_sam3d_objects_mesh_v7": {
+      "apply_native_pose": [
+        "utils.geometry",
+        "apply_native_pose"
+      ]
+    },
+    "build_v18_compact_rigid_evidence_bundle": {
+      "load_json": [
+        "observations.object.surface",
+        "anchor_load_json"
+      ],
+      "safe_id": [
+        "observations.object.surface",
+        "safe_id"
+      ],
+      "mask_bool": [
+        "observations.object.surface",
+        "mask_bool"
+      ],
+      "bbox_from_mask": [
+        "observations.object.surface",
+        "bbox_from_mask"
+      ],
+      "square_pad_bbox": [
+        "observations.object.surface",
+        "square_pad_bbox"
+      ],
+      "make_rgba_crop": [
+        "observations.object.surface",
+        "make_rgba_crop"
+      ],
+      "find_depth_fused_object": [
+        "observations.object.surface",
+        "find_depth_fused_object"
+      ],
+      "build_selected_anchor_mesh_reconstruction": [
+        "observations.object.surface",
+        "build_selected_anchor_mesh_reconstruction"
+      ],
+      "validate_selected_anchor_binding": [
+        "observations.object.surface",
+        "validate_selected_anchor_binding"
+      ],
+      "main": [
+        "observations.object.surface",
+        "build_anchor_evidence"
+      ]
+    },
+    "experiments/sam3d_p11_p12_branch/build_p11_dual_geometry_inputs.py": {
+      "SCHEMA": [
+        "observations.object.shape",
+        "conditioning_SCHEMA"
+      ],
+      "load_json": [
+        "observations.object.shape",
+        "load_json"
+      ],
+      "sha256_file": [
+        "observations.object.shape",
+        "sha256_file"
+      ],
+      "require_file": [
+        "observations.object.shape",
+        "require_file"
+      ],
+      "prepare_new_output_dir": [
+        "observations.object.shape",
+        "prepare_new_output_dir"
+      ],
+      "load_mask": [
+        "observations.object.shape",
+        "load_mask"
+      ],
+      "mask_bbox": [
+        "observations.object.shape",
+        "mask_bbox"
+      ],
+      "copy_byte_identical": [
+        "observations.object.shape",
+        "copy_byte_identical"
+      ],
+      "compare_masks": [
+        "observations.object.shape",
+        "compare_masks"
+      ],
+      "make_mask_review": [
+        "observations.object.shape",
+        "make_mask_review"
+      ],
+      "run": [
+        "observations.object.shape",
+        "build_completion_inputs"
+      ],
+      "parse_args": [
+        "observations.object.shape",
+        "conditioning_parse_args"
+      ]
+    },
+    "experiments/sam3d_p11_p12_branch/run_p12_parallel_geometry_priors.py": {
+      "P11_SCHEMA": [
+        "observations.object.shape",
+        "P11_SCHEMA"
+      ],
+      "P12_SCHEMA": [
+        "observations.object.shape",
+        "P12_SCHEMA"
+      ],
+      "load_json": [
+        "observations.object.shape",
+        "completion_load_json"
+      ],
+      "require_file": [
+        "observations.object.shape",
+        "completion_require_file"
+      ],
+      "sha256_file": [
+        "observations.object.shape",
+        "completion_sha256_file"
+      ],
+      "file_record": [
+        "observations.object.shape",
+        "file_record"
+      ],
+      "safe_id": [
+        "observations.object.shape",
+        "safe_id"
+      ],
+      "resolve_case_report": [
+        "observations.object.shape",
+        "resolve_case_report"
+      ],
+      "validate_input_binding": [
+        "observations.object.shape",
+        "validate_input_binding"
+      ],
+      "sam3d_candidate_record": [
+        "observations.object.shape",
+        "sam3d_candidate_record"
+      ],
+      "trellis_candidate_record": [
+        "observations.object.shape",
+        "trellis_candidate_record"
+      ]
+    },
+    "experiments/sam3d_p11_p12_branch/build_p13_sam3d_native_metric_bridge.py": {
+      "SCHEMA": [
+        "observations.object.shape",
+        "native_bridge_SCHEMA"
+      ],
+      "COMPATIBILITY_SCHEMA": [
+        "observations.object.shape",
+        "COMPATIBILITY_SCHEMA"
+      ],
+      "load_json": [
+        "observations.object.shape",
+        "native_bridge_load_json"
+      ],
+      "write_json": [
+        "observations.object.shape",
+        "write_json"
+      ],
+      "require_file": [
+        "observations.object.shape",
+        "native_bridge_require_file"
+      ],
+      "sha256_file": [
+        "observations.object.shape",
+        "native_bridge_sha256_file"
+      ],
+      "finite_vector": [
+        "observations.object.shape",
+        "native_bridge_finite_vector"
+      ],
+      "robust_point_stats": [
+        "observations.object.shape",
+        "robust_point_stats"
+      ],
+      "deterministic_sample_mesh": [
+        "observations.object.shape",
+        "deterministic_sample_mesh"
+      ],
+      "nearest_surface_summary": [
+        "observations.object.shape",
+        "nearest_surface_summary"
+      ],
+      "observed_front_quality_decision": [
+        "observations.object.shape",
+        "observed_front_quality_decision"
+      ],
+      "mesh_from_path": [
+        "observations.object.shape",
+        "mesh_from_path"
+      ],
+      "resolve_sam3d_candidate": [
+        "observations.object.shape",
+        "resolve_sam3d_candidate"
+      ],
+      "resolve_anchor_centroid_world": [
+        "observations.object.shape",
+        "resolve_anchor_centroid_world"
+      ],
+      "resolve_mask_intrinsics": [
+        "observations.object.shape",
+        "resolve_mask_intrinsics"
+      ],
+      "convex_projection_and_front_depth": [
+        "observations.object.shape",
+        "native_bridge_convex_projection_and_front_depth"
+      ],
+      "run": [
+        "observations.object.shape",
+        "bind_sam3d_metric"
+      ],
+      "parse_args": [
+        "observations.object.shape",
+        "native_bridge_parse_args"
+      ]
+    },
+    "build_v18_compact_rigid_trellis_completion": {
+      "load_json": [
+        "observations.object.shape",
+        "completion_support_load_json"
+      ],
+      "sha256_file": [
+        "observations.object.shape",
+        "completion_support_sha256_file"
+      ],
+      "safe_id": [
+        "observations.object.shape",
+        "completion_support_safe_id"
+      ],
+      "load_vertices": [
+        "observations.object.shape",
+        "load_vertices"
+      ],
+      "load_mesh": [
+        "observations.object.shape",
+        "load_mesh"
+      ],
+      "pca_basis": [
+        "observations.object.shape",
+        "pca_basis"
+      ],
+      "rotation_candidates": [
+        "observations.object.shape",
+        "rotation_candidates"
+      ],
+      "nearest_stats": [
+        "observations.object.shape",
+        "nearest_stats"
+      ],
+      "umeyama_similarity": [
+        "observations.object.shape",
+        "umeyama_similarity"
+      ],
+      "deterministic_sample_mesh": [
+        "observations.object.shape",
+        "completion_support_deterministic_sample_mesh"
+      ],
+      "align_trellis_to_observed": [
+        "observations.object.shape",
+        "align_trellis_to_observed"
+      ],
+      "identity_metric_canonical_alignment": [
+        "observations.object.shape",
+        "identity_metric_canonical_alignment"
+      ],
+      "transform_mesh": [
+        "observations.object.shape",
+        "transform_mesh"
+      ],
+      "face_center_labels": [
+        "observations.object.shape",
+        "face_center_labels"
+      ],
+      "export_label_sidecar": [
+        "observations.object.shape",
+        "export_label_sidecar"
+      ],
+      "color_for_labels": [
+        "observations.object.shape",
+        "color_for_labels"
+      ],
+      "resolve_anchor_centroid_world": [
+        "observations.object.shape",
+        "completion_support_resolve_anchor_centroid_world"
+      ],
+      "world_points_to_camera": [
+        "observations.object.shape",
+        "world_points_to_camera"
+      ],
+      "estimate_projection_source_size": [
+        "observations.object.shape",
+        "estimate_projection_source_size"
+      ],
+      "trellis_planar_slab_keep_mask": [
+        "observations.object.shape",
+        "trellis_planar_slab_keep_mask"
+      ],
+      "trellis_silhouette_keep_mask": [
+        "observations.object.shape",
+        "trellis_silhouette_keep_mask"
+      ],
+      "main": [
+        "observations.object.shape",
+        "build_completion_face_support"
+      ]
+    },
+    "bind_v19_completion_anchor": {
+      "sha256_bytes": [
+        "gates.object.geometry",
+        "sha256_bytes"
+      ],
+      "read_report": [
+        "gates.object.geometry",
+        "read_report"
+      ],
+      "require_equal": [
+        "gates.object.geometry",
+        "require_equal"
+      ],
+      "centroid": [
+        "gates.object.geometry",
+        "centroid"
+      ],
+      "require_centroid": [
+        "gates.object.geometry",
+        "require_centroid"
+      ],
+      "surfels": [
+        "gates.object.geometry",
+        "surfels"
+      ],
+      "normalize_completion": [
+        "gates.object.geometry",
+        "normalize_completion"
+      ],
+      "bind_report": [
+        "gates.object.geometry",
+        "bind_completion_anchor"
+      ]
+    },
+    "solve_v19_rigid_object_pose_graph": {
+      "POSE_MEASUREMENT_STATUSES": [
+        "optimization.object.pose",
+        "POSE_MEASUREMENT_STATUSES"
+      ],
+      "CORRECTED_POSE_STATUS": [
+        "optimization.object.pose",
+        "CORRECTED_POSE_STATUS"
+      ],
+      "COMPLETED_POSE_STATUS": [
+        "optimization.object.pose",
+        "COMPLETED_POSE_STATUS"
+      ],
+      "STRICT_ROTATION_STEP_DEG": [
+        "optimization.object.pose",
+        "STRICT_ROTATION_STEP_DEG"
+      ],
+      "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS": [
+        "optimization.object.pose",
+        "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS"
+      ],
+      "PoseObservation": [
+        "optimization.object.pose",
+        "PoseObservation"
+      ],
+      "ImageFactorObservation": [
+        "optimization.object.pose",
+        "ImageFactorObservation"
+      ],
+      "load_json": [
+        "optimization.object.pose",
+        "formal_object_load_json"
+      ],
+      "write_json": [
+        "optimization.object.pose",
+        "write_json"
+      ],
+      "sha256_file": [
+        "optimization.object.pose",
+        "formal_object_sha256_file"
+      ],
+      "validate_camera_transform": [
+        "optimization.object.pose",
+        "validate_camera_transform"
+      ],
+      "as_array": [
+        "optimization.object.pose",
+        "as_array"
+      ],
+      "resize_intrinsics_xy": [
+        "optimization.object.pose",
+        "resize_intrinsics_xy"
+      ],
+      "load_mesh": [
+        "optimization.object.pose",
+        "formal_object_load_mesh"
+      ],
+      "deterministic_sample_mesh": [
+        "optimization.object.pose",
+        "formal_object_deterministic_sample_mesh"
+      ],
+      "nearest_summary": [
+        "optimization.object.pose",
+        "formal_object_nearest_summary"
+      ],
+      "numeric_summary": [
+        "optimization.object.pose",
+        "formal_object_numeric_summary"
+      ],
+      "apply_pose": [
+        "optimization.object.pose",
+        "formal_object_apply_pose"
+      ],
+      "corrected_pose": [
+        "optimization.object.pose",
+        "corrected_pose"
+      ],
+      "pose_row_sigma": [
+        "optimization.object.pose",
+        "pose_row_sigma"
+      ],
+      "annotation_object": [
+        "optimization.object.pose",
+        "annotation_object"
+      ],
+      "constraint_targets": [
+        "optimization.object.pose",
+        "constraint_targets"
+      ],
+      "load_image_factor_observations": [
+        "optimization.object.pose",
+        "load_image_factor_observations"
+      ],
+      "build_observations": [
+        "optimization.object.pose",
+        "build_observations"
+      ],
+      "unpack": [
+        "optimization.object.pose",
+        "unpack"
+      ],
+      "image_factors_active": [
+        "optimization.object.pose",
+        "image_factors_active"
+      ],
+      "image_factor_blocks": [
+        "optimization.object.pose",
+        "image_factor_blocks"
+      ],
+      "residual_vector": [
+        "optimization.object.pose",
+        "residual_vector"
+      ],
+      "residual_sparsity": [
+        "optimization.object.pose",
+        "residual_sparsity"
+      ],
+      "image_factor_metrics": [
+        "optimization.object.pose",
+        "image_factor_metrics"
+      ],
+      "target_residual_summary": [
+        "optimization.object.pose",
+        "target_residual_summary"
+      ],
+      "correction_summary": [
+        "optimization.object.pose",
+        "correction_summary"
+      ],
+      "rotation_observability_summary": [
+        "optimization.object.pose",
+        "formal_object_rotation_observability_summary"
+      ],
+      "sparse_conditional_rotation_tail_decision": [
+        "optimization.object.pose",
+        "sparse_conditional_rotation_tail_decision"
+      ],
+      "temporal_readiness_diagnostics": [
+        "optimization.object.pose",
+        "temporal_readiness_diagnostics"
+      ],
+      "surface_metrics": [
+        "optimization.object.pose",
+        "surface_metrics"
+      ],
+      "build_pose_rows": [
+        "optimization.object.pose",
+        "build_pose_rows"
+      ],
+      "run": [
+        "optimization.object.pose",
+        "fit_formal_object"
+      ],
+      "parse_args": [
+        "optimization.object.pose",
+        "formal_object_parse_args"
+      ]
+    },
+    "build_v19_mano_surface_hypothesis_state": {
+      "load_json": [
+        "gates.hand.acceptance",
+        "load_json"
+      ],
+      "sha256_file": [
+        "gates.hand.acceptance",
+        "sha256_file"
+      ],
+      "write_json": [
+        "gates.hand.acceptance",
+        "write_json"
+      ],
+      "parse_args": [
+        "gates.hand.acceptance",
+        "mano_acceptance_parse_args"
+      ],
+      "annotation_joint_map": [
+        "gates.hand.acceptance",
+        "annotation_joint_map"
+      ],
+      "hawor_joint_map": [
+        "gates.hand.acceptance",
+        "hawor_joint_map"
+      ],
+      "zero_summary": [
+        "gates.hand.acceptance",
+        "zero_summary"
+      ],
+      "numeric_summary": [
+        "gates.hand.acceptance",
+        "numeric_summary"
+      ],
+      "row_contact_median": [
+        "gates.hand.acceptance",
+        "row_contact_median"
+      ],
+      "signed_full_mano_acceptance": [
+        "gates.hand.acceptance",
+        "signed_full_mano_acceptance"
+      ],
+      "main": [
+        "gates.hand.acceptance",
+        "accept_mano_surface"
+      ]
+    },
+    "evaluate_v19_hot3d_hawor_boxes": {
+      "load_json": [
+        "evaluate",
+        "load_json"
+      ],
+      "write_json": [
+        "evaluate",
+        "write_json"
+      ],
+      "iou_xyxy": [
+        "evaluate",
+        "iou_xyxy"
+      ],
+      "center_distance_px": [
+        "evaluate",
+        "center_distance_px"
+      ],
+      "summarize": [
+        "evaluate",
+        "summarize"
+      ],
+      "gt_box": [
+        "evaluate",
+        "gt_box"
+      ],
+      "pred_box": [
+        "evaluate",
+        "pred_box"
+      ],
+      "evaluate": [
+        "evaluate",
+        "evaluate_boxes"
+      ],
+      "parse_args": [
+        "evaluate",
+        "boxes_parse_args"
+      ]
+    },
+    "evaluate_v19_hot3d_hawor_mano3d": {
+      "MANO_FINGERTIP_VERT_INDICES": [
+        "evaluate",
+        "MANO_FINGERTIP_VERT_INDICES"
+      ],
+      "HAWOR_MANO_TO_OPENPOSE_MAPPING": [
+        "evaluate",
+        "HAWOR_MANO_TO_OPENPOSE_MAPPING"
+      ],
+      "patch_legacy_numpy": [
+        "evaluate",
+        "patch_legacy_numpy"
+      ],
+      "load_json": [
+        "evaluate",
+        "mano_eval_load_json"
+      ],
+      "write_json": [
+        "evaluate",
+        "mano_eval_write_json"
+      ],
+      "quat_wxyz_to_matrix": [
+        "evaluate",
+        "quat_wxyz_to_matrix"
+      ],
+      "se3_from_hot3d_dict": [
+        "evaluate",
+        "se3_from_hot3d_dict"
+      ],
+      "world_to_camera": [
+        "evaluate",
+        "world_to_camera"
+      ],
+      "load_hand_shape": [
+        "evaluate",
+        "load_hand_shape"
+      ],
+      "load_smplx_mano": [
+        "evaluate",
+        "load_smplx_mano"
+      ],
+      "replay_hot3d_mano": [
+        "evaluate",
+        "replay_hot3d_mano"
+      ],
+      "summarize": [
+        "evaluate",
+        "mano_eval_summarize"
+      ],
+      "project_pinhole": [
+        "evaluate",
+        "project_pinhole"
+      ],
+      "get_k_for_frame": [
+        "evaluate",
+        "get_k_for_frame"
+      ],
+      "per_joint_errors": [
+        "evaluate",
+        "per_joint_errors"
+      ],
+      "draw_points": [
+        "evaluate",
+        "draw_points"
+      ],
+      "localize_prediction_path": [
+        "evaluate",
+        "localize_prediction_path"
+      ],
+      "load_hawor_prediction": [
+        "evaluate",
+        "load_hawor_prediction"
+      ],
+      "camera_trajectory_from_annotations": [
+        "evaluate",
+        "camera_trajectory_from_annotations"
+      ],
+      "load_interval_state_prediction": [
+        "evaluate",
+        "load_interval_state_prediction"
+      ],
+      "load_prediction": [
+        "evaluate",
+        "load_prediction"
+      ],
+      "row_metric_values": [
+        "evaluate",
+        "row_metric_values"
+      ],
+      "render_review": [
+        "evaluate",
+        "render_review"
+      ],
+      "evaluate": [
+        "evaluate",
+        "evaluate_mano"
+      ],
+      "parse_args": [
+        "evaluate",
+        "mano_eval_parse_args"
+      ]
+    },
+    "evaluate_v19_hot3d_object_trajectory_alignment": {
+      "_as_np4": [
+        "evaluate",
+        "_as_np4"
+      ],
+      "quat_wxyz_to_R": [
+        "evaluate",
+        "quat_wxyz_to_R"
+      ],
+      "R_to_quat_wxyz": [
+        "evaluate",
+        "R_to_quat_wxyz"
+      ],
+      "quat_average_wxyz": [
+        "evaluate",
+        "quat_average_wxyz"
+      ],
+      "make_T": [
+        "evaluate",
+        "make_T"
+      ],
+      "transform_from_hot3d": [
+        "evaluate",
+        "transform_from_hot3d"
+      ],
+      "transform_angle_rad": [
+        "evaluate",
+        "transform_angle_rad"
+      ],
+      "summarize": [
+        "evaluate",
+        "object_eval_summarize"
+      ],
+      "load_v19_rows": [
+        "evaluate",
+        "load_v19_rows"
+      ],
+      "v19_T_world_obj": [
+        "evaluate",
+        "v19_T_world_obj"
+      ],
+      "load_v19_cameras": [
+        "evaluate",
+        "load_v19_cameras"
+      ],
+      "load_hot3d_camera_object": [
+        "evaluate",
+        "load_hot3d_camera_object"
+      ],
+      "main": [
+        "evaluate",
+        "evaluate_object_trajectory"
+      ]
+    },
+    "aggregate_v19_hot3d_box_evals": {
+      "load_json": [
+        "evaluate",
+        "box_summary_load_json"
+      ],
+      "write_json": [
+        "evaluate",
+        "box_summary_write_json"
+      ],
+      "summarize": [
+        "evaluate",
+        "box_summary_summarize"
+      ],
+      "aggregate": [
+        "evaluate",
+        "aggregate_boxes"
+      ],
+      "parse_args": [
+        "evaluate",
+        "box_summary_parse_args"
+      ]
+    },
+    "aggregate_v19_hot3d_mano3d_evals": {
+      "METRIC_KEYS": [
+        "evaluate",
+        "METRIC_KEYS"
+      ],
+      "load_json": [
+        "evaluate",
+        "mano_summary_load_json"
+      ],
+      "write_json": [
+        "evaluate",
+        "mano_summary_write_json"
+      ],
+      "summarize": [
+        "evaluate",
+        "mano_summary_summarize"
+      ],
+      "aggregate": [
+        "evaluate",
+        "aggregate_mano"
+      ],
+      "parse_args": [
+        "evaluate",
+        "mano_summary_parse_args"
+      ]
+    },
+    "v19_video_timing": {
+      "read_cfr_video_timing": [
+        "utils.data",
+        "read_cfr_video_timing"
+      ],
+      "validate_package_cfr_times": [
+        "utils.data",
+        "validate_package_cfr_times"
+      ]
+    },
+    "v20_demo_geometry": {
+      "camera": [
+        "utils.geometry",
+        "camera"
+      ],
+      "resized_K": [
+        "utils.geometry",
+        "resized_K"
+      ],
+      "project": [
+        "utils.geometry",
+        "project"
+      ],
+      "sha": [
+        "utils.state",
+        "sha"
+      ]
+    },
+    "build_v18_temporal_mano_translation_interval_state": {
+      "as_list": [
+        "utils.data",
+        "as_list"
+      ],
+      "load_json": [
+        "utils.data",
+        "load_json"
+      ],
+      "load_mesh": [
+        "utils.data",
+        "load_mesh"
+      ],
+      "numeric_summary": [
+        "utils.data",
+        "numeric_summary"
+      ],
+      "pose_map": [
+        "utils.data",
+        "pose_map"
+      ],
+      "write_json": [
+        "utils.data",
+        "write_json"
+      ],
+      "frame_camera_pose": [
+        "utils.geometry",
+        "frame_camera_pose"
+      ]
+    },
+    "build_hot3d_shared_signed_geometry": {
+      "SCHEMA": [
+        "observations.object.signed_geometry",
+        "SCHEMA"
+      ],
+      "DIRECT_POSE_STATUSES": [
+        "observations.object.signed_geometry",
+        "DIRECT_POSE_STATUSES"
+      ],
+      "D15_POSE_STATUSES": [
+        "observations.object.signed_geometry",
+        "D15_POSE_STATUSES"
+      ],
+      "require_file": [
+        "observations.object.signed_geometry",
+        "require_file"
+      ],
+      "load_json": [
+        "observations.object.signed_geometry",
+        "load_json"
+      ],
+      "write_json": [
+        "observations.object.signed_geometry",
+        "write_json"
+      ],
+      "sha256_file": [
+        "observations.object.signed_geometry",
+        "sha256_file"
+      ],
+      "value_sha256": [
+        "observations.object.signed_geometry",
+        "value_sha256"
+      ],
+      "same_path": [
+        "observations.object.signed_geometry",
+        "same_path"
+      ],
+      "load_mesh": [
+        "observations.object.signed_geometry",
+        "load_mesh"
+      ],
+      "mesh_topology": [
+        "observations.object.signed_geometry",
+        "mesh_topology"
+      ],
+      "object_row": [
+        "observations.object.signed_geometry",
+        "object_row"
+      ],
+      "finite_pose": [
+        "observations.object.signed_geometry",
+        "finite_pose"
+      ],
+      "direct_frame_ids": [
+        "observations.object.signed_geometry",
+        "direct_frame_ids"
+      ],
+      "d15_pose_rows": [
+        "observations.object.signed_geometry",
+        "d15_pose_rows"
+      ],
+      "camera_pose": [
+        "observations.object.signed_geometry",
+        "camera_pose"
+      ],
+      "load_depth_archive": [
+        "observations.object.signed_geometry",
+        "load_depth_archive"
+      ],
+      "mask_affine": [
+        "observations.object.signed_geometry",
+        "mask_affine"
+      ],
+      "transform_uv": [
+        "observations.object.signed_geometry",
+        "transform_uv"
+      ],
+      "hand_unknown_mask": [
+        "observations.object.signed_geometry",
+        "hand_unknown_mask"
+      ],
+      "canonical_observed_points": [
+        "observations.object.signed_geometry",
+        "canonical_observed_points"
+      ],
+      "canonical_full_mano_rows": [
+        "observations.object.signed_geometry",
+        "canonical_full_mano_rows"
+      ],
+      "viewpoint_coverage": [
+        "observations.object.signed_geometry",
+        "viewpoint_coverage"
+      ],
+      "select_evidence_frames": [
+        "observations.object.signed_geometry",
+        "select_evidence_frames"
+      ],
+      "select_heldout_validation_frames": [
+        "observations.object.signed_geometry",
+        "select_heldout_validation_frames"
+      ],
+      "build_grid": [
+        "observations.object.signed_geometry",
+        "build_grid"
+      ],
+      "project_canonical": [
+        "observations.object.signed_geometry",
+        "project_canonical"
+      ],
+      "accepted_first_surface_depth_in_mask_plane": [
+        "observations.object.signed_geometry",
+        "accepted_first_surface_depth_in_mask_plane"
+      ],
+      "frame_evidence": [
+        "observations.object.signed_geometry",
+        "frame_evidence"
+      ],
+      "accumulate_volume_evidence": [
+        "observations.object.signed_geometry",
+        "accumulate_volume_evidence"
+      ],
+      "retain_supported_component": [
+        "observations.object.signed_geometry",
+        "retain_supported_component"
+      ],
+      "occupancy_mesh": [
+        "observations.object.signed_geometry",
+        "occupancy_mesh"
+      ],
+      "face_sample_points": [
+        "observations.object.signed_geometry",
+        "face_sample_points"
+      ],
+      "validate_proxy": [
+        "observations.object.signed_geometry",
+        "validate_proxy"
+      ],
+      "render_qc": [
+        "observations.object.signed_geometry",
+        "render_qc"
+      ],
+      "build": [
+        "observations.object.signed_geometry",
+        "signed_proxy_build"
+      ],
+      "parse_args": [
+        "observations.object.signed_geometry",
+        "signed_proxy_parse_args"
+      ]
+    },
+    "filter_v19_rigid_completion_multiview_support": {
+      "OBSERVED_LABEL": [
+        "observations.object.signed_geometry",
+        "OBSERVED_LABEL"
+      ],
+      "HIDDEN_LABEL": [
+        "observations.object.signed_geometry",
+        "HIDDEN_LABEL"
+      ],
+      "SUPPORTED_HIDDEN_LABEL": [
+        "observations.object.signed_geometry",
+        "SUPPORTED_HIDDEN_LABEL"
+      ],
+      "STATE_OBSERVED": [
+        "observations.object.signed_geometry",
+        "STATE_OBSERVED"
+      ],
+      "STATE_SUPPORTED_CANDIDATE": [
+        "observations.object.signed_geometry",
+        "STATE_SUPPORTED_CANDIDATE"
+      ],
+      "STATE_FREE_SPACE_CONTRADICTED": [
+        "observations.object.signed_geometry",
+        "STATE_FREE_SPACE_CONTRADICTED"
+      ],
+      "STATE_UNSUPPORTED": [
+        "observations.object.signed_geometry",
+        "STATE_UNSUPPORTED"
+      ],
+      "STATE_REPEATED_SAME_VIEW_SUPPORT": [
+        "observations.object.signed_geometry",
+        "STATE_REPEATED_SAME_VIEW_SUPPORT"
+      ],
+      "STATE_CONFLICTING_SUPPORT_AND_FREE_SPACE": [
+        "observations.object.signed_geometry",
+        "STATE_CONFLICTING_SUPPORT_AND_FREE_SPACE"
+      ],
+      "load_json": [
+        "observations.object.signed_geometry",
+        "multiview_load_json"
+      ],
+      "write_json": [
+        "observations.object.signed_geometry",
+        "multiview_write_json"
+      ],
+      "sha256_file": [
+        "observations.object.signed_geometry",
+        "multiview_sha256_file"
+      ],
+      "same_file_path": [
+        "observations.object.signed_geometry",
+        "same_file_path"
+      ],
+      "load_mesh": [
+        "observations.object.signed_geometry",
+        "multiview_load_mesh"
+      ],
+      "load_face_labels": [
+        "observations.object.signed_geometry",
+        "load_face_labels"
+      ],
+      "object_row": [
+        "observations.object.signed_geometry",
+        "multiview_object_row"
+      ],
+      "trusted_pose_rows": [
+        "observations.object.signed_geometry",
+        "trusted_pose_rows"
+      ],
+      "load_depth_sources": [
+        "observations.object.signed_geometry",
+        "load_depth_sources"
+      ],
+      "camera_contract": [
+        "observations.object.signed_geometry",
+        "camera_contract"
+      ],
+      "face_sample_points": [
+        "observations.object.signed_geometry",
+        "multiview_face_sample_points"
+      ],
+      "temporal_coverage": [
+        "observations.object.signed_geometry",
+        "temporal_coverage"
+      ],
+      "viewpoint_diversity": [
+        "observations.object.signed_geometry",
+        "viewpoint_diversity"
+      ],
+      "faces_with_separated_view_support": [
+        "observations.object.signed_geometry",
+        "faces_with_separated_view_support"
+      ],
+      "colors_for_states": [
+        "observations.object.signed_geometry",
+        "colors_for_states"
+      ],
+      "render_support_qc": [
+        "observations.object.signed_geometry",
+        "render_support_qc"
+      ],
+      "label_counts": [
+        "observations.object.signed_geometry",
+        "label_counts"
+      ],
+      "parse_args": [
+        "observations.object.signed_geometry",
+        "multiview_parse_args"
+      ],
+      "main": [
+        "observations.object.signed_geometry",
+        "filter_multiview_cli"
+      ]
+    },
+    "build_v18_compact_rigid_hidden_volume_depth_validation": {
+      "load_depth_sources": [
+        "observations.object.surface",
+        "load_depth_sources"
+      ],
+      "project_points": [
+        "observations.object.surface",
+        "project_points"
+      ]
+    },
+    "build_v19_visible_contact_ownership_factor": {
+      "HAND_EDGES": [
+        "observations.interaction.evidence",
+        "HAND_EDGES"
+      ],
+      "CONTACT_STATES": [
+        "observations.interaction.evidence",
+        "CONTACT_STATES"
+      ],
+      "OCCLUSION_RELATIONS": [
+        "observations.interaction.evidence",
+        "OCCLUSION_RELATIONS"
+      ],
+      "DEPTH_RELIABILITY_STATES": [
+        "observations.interaction.evidence",
+        "DEPTH_RELIABILITY_STATES"
+      ],
+      "NO_QUARANTINE_OCCLUSIONS": [
+        "observations.interaction.evidence",
+        "NO_QUARANTINE_OCCLUSIONS"
+      ],
+      "HAND_FRONT_OCCLUSIONS": [
+        "observations.interaction.evidence",
+        "HAND_FRONT_OCCLUSIONS"
+      ],
+      "load_json": [
+        "observations.interaction.evidence",
+        "load_json"
+      ],
+      "write_json": [
+        "observations.interaction.evidence",
+        "write_json"
+      ],
+      "sha256_file": [
+        "observations.interaction.evidence",
+        "sha256_file"
+      ],
+      "as_list": [
+        "observations.interaction.evidence",
+        "as_list"
+      ],
+      "parse_args": [
+        "observations.interaction.evidence",
+        "interaction_parse_args"
+      ],
+      "target_object": [
+        "observations.interaction.evidence",
+        "target_object"
+      ],
+      "target_matches": [
+        "observations.interaction.evidence",
+        "target_matches"
+      ],
+      "finite_float": [
+        "observations.interaction.evidence",
+        "finite_float"
+      ],
+      "load_agent_interaction_judgments": [
+        "observations.interaction.evidence",
+        "load_agent_interaction_judgments"
+      ],
+      "ownership_quarantine_mode": [
+        "observations.interaction.evidence",
+        "ownership_quarantine_mode"
+      ],
+      "contact_row_state_from_judgment": [
+        "observations.interaction.evidence",
+        "contact_row_state_from_judgment"
+      ],
+      "combine_contact_prior": [
+        "observations.interaction.evidence",
+        "combine_contact_prior"
+      ],
+      "agent_judgment_provenance": [
+        "observations.interaction.evidence",
+        "agent_judgment_provenance"
+      ],
+      "load_mask": [
+        "observations.interaction.evidence",
+        "load_mask"
+      ],
+      "finite_intrinsics": [
+        "observations.interaction.evidence",
+        "finite_intrinsics"
+      ],
+      "finite_affine": [
+        "observations.interaction.evidence",
+        "finite_affine"
+      ],
+      "mask_plane_contract": [
+        "observations.interaction.evidence",
+        "mask_plane_contract"
+      ],
+      "active_camera_mano_intrinsics": [
+        "observations.interaction.evidence",
+        "active_camera_mano_intrinsics"
+      ],
+      "transform_source_pixels": [
+        "observations.interaction.evidence",
+        "transform_source_pixels"
+      ],
+      "project_camera_to_mask": [
+        "observations.interaction.evidence",
+        "project_camera_to_mask"
+      ],
+      "accepted_first_surface_query_raster": [
+        "observations.interaction.evidence",
+        "accepted_first_surface_query_raster"
+      ],
+      "draw_hand_mask": [
+        "observations.interaction.evidence",
+        "draw_hand_mask"
+      ],
+      "dilate": [
+        "observations.interaction.evidence",
+        "dilate"
+      ],
+      "proximity_stats": [
+        "observations.interaction.evidence",
+        "proximity_stats"
+      ],
+      "save_bool_mask": [
+        "observations.interaction.evidence",
+        "save_bool_mask"
+      ],
+      "make_review": [
+        "observations.interaction.evidence",
+        "make_review"
+      ],
+      "build": [
+        "observations.interaction.evidence",
+        "interaction_build"
+      ],
+      "main": [
+        "observations.interaction.evidence",
+        "interaction_factors_cli"
+      ]
+    },
+    "build_v19_rigid_render_state": {
+      "ACCEPTED_RIGID_POSE_STATUSES": [
+        "render",
+        "ACCEPTED_RIGID_POSE_STATUSES"
+      ],
+      "parse_args": [
+        "render",
+        "formal_state_parse_args"
+      ],
+      "load_json": [
+        "render",
+        "load_json"
+      ],
+      "write_json": [
+        "render",
+        "write_json"
+      ],
+      "parse_rewrites": [
+        "render",
+        "parse_rewrites"
+      ],
+      "rewrite_path": [
+        "render",
+        "rewrite_path"
+      ],
+      "completion_report_completed_mesh": [
+        "render",
+        "completion_report_completed_mesh"
+      ],
+      "same_existing_file": [
+        "render",
+        "same_existing_file"
+      ],
+      "validate_completed_mesh": [
+        "render",
+        "validate_completed_mesh"
+      ],
+      "accepted_pose_rows": [
+        "render",
+        "accepted_pose_rows"
+      ],
+      "frame_ids_from_annotations": [
+        "render",
+        "frame_ids_from_annotations"
+      ],
+      "load_optional_json": [
+        "render",
+        "load_optional_json"
+      ],
+      "build": [
+        "render",
+        "build_formal_render_state"
+      ],
+      "main": [
+        "render",
+        "formal_state_cli"
+      ]
+    },
+    "v19_annotation_layers": {
+      "SCHEMA": [
+        "render",
+        "SCHEMA"
+      ],
+      "SIDES": [
+        "render",
+        "SIDES"
+      ],
+      "sha256": [
+        "render",
+        "sha256"
+      ],
+      "require": [
+        "render",
+        "require"
+      ],
+      "load_json": [
+        "render",
+        "layers_load_json"
+      ],
+      "load_npz": [
+        "render",
+        "load_npz"
+      ],
+      "array": [
+        "render",
+        "array"
+      ],
+      "rigid": [
+        "render",
+        "rigid"
+      ],
+      "same": [
+        "render",
+        "same"
+      ],
+      "mesh": [
+        "render",
+        "layers_mesh"
+      ],
+      "load_geometry_mesh": [
+        "render",
+        "load_geometry_mesh"
+      ],
+      "object_alias": [
+        "render",
+        "object_alias"
+      ],
+      "resolve_object": [
+        "render",
+        "resolve_object"
+      ],
+      "object_target_matches": [
+        "render",
+        "object_target_matches"
+      ],
+      "annotation_hawor_references": [
+        "render",
+        "annotation_hawor_references"
+      ],
+      "validate_hawor_bindings": [
+        "render",
+        "validate_hawor_bindings"
+      ],
+      "hand_arrays": [
+        "render",
+        "hand_arrays"
+      ],
+      "Snapshot": [
+        "render",
+        "Snapshot"
+      ],
+      "core_arrays": [
+        "render",
+        "core_arrays"
+      ],
+      "demo_mesh_contract": [
+        "render",
+        "demo_mesh_contract"
+      ],
+      "demo_arrays": [
+        "render",
+        "demo_arrays"
+      ],
+      "package_asset": [
+        "render",
+        "package_asset"
+      ],
+      "load_package": [
+        "render",
+        "load_package"
+      ],
+      "compare_arrays": [
+        "render",
+        "compare_arrays"
+      ]
+    },
+    "assemble_v19_annotation_layers": {
+      "assemble": [
+        "render",
+        "assemble_formal_layers"
+      ],
+      "main": [
+        "render",
+        "formal_layers_cli"
+      ]
+    },
+    "render_v20_visual_contact_demo": {
+      "shade": [
+        "render",
+        "shade"
+      ],
+      "encode_process": [
+        "render",
+        "encode_process"
+      ]
+    },
+    "render_v19_annotation_layers_rrd": {
+      "render": [
+        "render",
+        "render_formal_rrd"
+      ],
+      "main": [
+        "render",
+        "formal_rrd_cli"
+      ]
+    },
+    "render_v19_annotation_layers_video": {
+      "scene_for_layer": [
+        "render",
+        "scene_for_layer"
+      ],
+      "header": [
+        "render",
+        "header"
+      ],
+      "render": [
+        "render",
+        "render_formal_video"
+      ],
+      "main": [
+        "render",
+        "formal_video_cli"
+      ]
+    },
+    "build_v19_rgb_pose_initializer": {
+      "initialize": [
+        "observations.object.rgb_tracking",
+        "initialize"
+      ]
+    },
+    "v19_signed_face_authority": {
+      "load_signed_face_authority": [
+        "gates.object.geometry",
+        "load_signed_face_authority"
+      ],
+      "LOCAL_AUTHORITY_POLICY": [
+        "gates.object.geometry",
+        "LOCAL_AUTHORITY_POLICY"
+      ]
+    },
+    "build_v18_mano_object_constraint_state": {
+      "load_json": [
+        "observations.interaction.evidence",
+        "geometry_constraints_load_json"
+      ],
+      "pose_graph_readiness": [
+        "observations.interaction.evidence",
+        "pose_graph_readiness"
+      ],
+      "load_mesh": [
+        "observations.interaction.evidence",
+        "load_mesh"
+      ],
+      "nearest_summary": [
+        "observations.interaction.evidence",
+        "nearest_summary"
+      ],
+      "project": [
+        "observations.interaction.evidence",
+        "project"
+      ],
+      "detector_bbox_in_intrinsics_grid": [
+        "observations.interaction.evidence",
+        "detector_bbox_in_intrinsics_grid"
+      ],
+      "bbox_inside_fraction": [
+        "observations.interaction.evidence",
+        "bbox_inside_fraction"
+      ],
+      "visible_2d_consistency": [
+        "observations.interaction.evidence",
+        "visible_2d_consistency"
+      ],
+      "least_norm_halfspace_escape": [
+        "observations.interaction.evidence",
+        "least_norm_halfspace_escape"
+      ],
+      "inverse_object": [
+        "observations.interaction.evidence",
+        "inverse_object"
+      ],
+      "forward_object_vec": [
+        "observations.interaction.evidence",
+        "forward_object_vec"
+      ],
+      "hand_arrays": [
+        "observations.interaction.evidence",
+        "hand_arrays"
+      ],
+      "frame_intrinsics": [
+        "observations.interaction.evidence",
+        "frame_intrinsics"
+      ],
+      "frame_camera_pose": [
+        "observations.interaction.evidence",
+        "frame_camera_pose"
+      ],
+      "completion_surface_contract": [
+        "observations.interaction.evidence",
+        "completion_surface_contract"
+      ],
+      "same_mesh_path": [
+        "observations.interaction.evidence",
+        "same_mesh_path"
+      ],
+      "signed_geometry_source_readiness": [
+        "observations.interaction.evidence",
+        "signed_geometry_source_readiness"
+      ],
+      "main": [
+        "observations.interaction.evidence",
+        "build_geometric_constraints"
+      ]
+    },
+    "build_v18_part_visible_surfaces": {
+      "STATUS": [
+        "observations.object.surface",
+        "STATUS"
+      ],
+      "CLAIM": [
+        "observations.object.surface",
+        "CLAIM"
+      ],
+      "resize_bool_mask": [
+        "observations.object.surface",
+        "resize_bool_mask"
+      ]
+    },
+    "build_v18_visible_surface_track_factor": {
+      "DEFAULT_OUTPUT": [
+        "observations.object.surface",
+        "DEFAULT_OUTPUT"
+      ],
+      "STATE_ACTIVE": [
+        "observations.object.surface",
+        "STATE_ACTIVE"
+      ],
+      "STATE_NO_MASK": [
+        "observations.object.surface",
+        "STATE_NO_MASK"
+      ],
+      "STATE_EMPTY_MASK": [
+        "observations.object.surface",
+        "STATE_EMPTY_MASK"
+      ],
+      "STATE_MISSING_DEPTH": [
+        "observations.object.surface",
+        "STATE_MISSING_DEPTH"
+      ],
+      "STATE_NO_DEPTH_SUPPORT": [
+        "observations.object.surface",
+        "STATE_NO_DEPTH_SUPPORT"
+      ],
+      "coherent_first_surface_mask": [
+        "observations.object.surface",
+        "coherent_first_surface_mask"
+      ],
+      "write_mask": [
+        "observations.object.surface",
+        "write_mask"
+      ],
+      "parse_spans": [
+        "observations.object.surface",
+        "parse_spans"
+      ],
+      "frame_ids_from_spans": [
+        "observations.object.surface",
+        "frame_ids_from_spans"
+      ],
+      "load_frames": [
+        "observations.object.surface",
+        "load_frames"
+      ],
+      "entity_tokens": [
+        "observations.object.surface",
+        "entity_tokens"
+      ],
+      "row_matches_target": [
+        "observations.object.surface",
+        "row_matches_target"
+      ],
+      "load_mask_rows": [
+        "observations.object.surface",
+        "load_mask_rows"
+      ],
+      "load_mask": [
+        "observations.object.surface",
+        "load_mask"
+      ],
+      "load_ownership_rows": [
+        "observations.object.surface",
+        "load_ownership_rows"
+      ],
+      "lift_mask_depth_samples": [
+        "observations.object.surface",
+        "lift_mask_depth_samples"
+      ],
+      "render_review": [
+        "observations.object.surface",
+        "render_review"
+      ],
+      "build": [
+        "observations.object.surface",
+        "build_visible_surface_track"
+      ],
+      "parse_args": [
+        "observations.object.surface",
+        "visible_track_parse_args"
+      ]
+    },
+    "build_v18_surface_eligibility_factor": {
+      "DEFAULT_OUTPUT": [
+        "observations.object.surface",
+        "face_eligibility_DEFAULT_OUTPUT"
+      ],
+      "STATE_OBSERVED": [
+        "observations.object.surface",
+        "STATE_OBSERVED"
+      ],
+      "STATE_HAND_QUARANTINED": [
+        "observations.object.surface",
+        "STATE_HAND_QUARANTINED"
+      ],
+      "STATE_FREE": [
+        "observations.object.surface",
+        "STATE_FREE"
+      ],
+      "STATE_HIDDEN": [
+        "observations.object.surface",
+        "STATE_HIDDEN"
+      ],
+      "STATE_OUTSIDE": [
+        "observations.object.surface",
+        "STATE_OUTSIDE"
+      ],
+      "STATE_UNRESOLVED": [
+        "observations.object.surface",
+        "STATE_UNRESOLVED"
+      ],
+      "parse_spans": [
+        "observations.object.surface",
+        "face_eligibility_parse_spans"
+      ],
+      "frame_ids_from_spans": [
+        "observations.object.surface",
+        "face_eligibility_frame_ids_from_spans"
+      ],
+      "load_frames": [
+        "observations.object.surface",
+        "face_eligibility_load_frames"
+      ],
+      "face_support_samples": [
+        "observations.object.surface",
+        "face_support_samples"
+      ],
+      "classify_faces_against_depth": [
+        "observations.object.surface",
+        "classify_faces_against_depth"
+      ],
+      "nested_get": [
+        "observations.object.surface",
+        "nested_get"
+      ],
+      "load_pose_support_uncertainty": [
+        "observations.object.surface",
+        "load_pose_support_uncertainty"
+      ],
+      "load_visible_ownership_rows": [
+        "observations.object.surface",
+        "load_visible_ownership_rows"
+      ],
+      "load_bool_mask": [
+        "observations.object.surface",
+        "load_bool_mask"
+      ],
+      "mask_membership": [
+        "observations.object.surface",
+        "mask_membership"
+      ],
+      "ownership_face_quarantine": [
+        "observations.object.surface",
+        "ownership_face_quarantine"
+      ],
+      "write_face_masks": [
+        "observations.object.surface",
+        "write_face_masks"
+      ],
+      "build": [
+        "observations.object.surface",
+        "build_face_eligibility"
+      ],
+      "parse_args": [
+        "observations.object.surface",
+        "face_eligibility_parse_args"
+      ]
+    },
+    "build_v18_hand_observation_visibility_factor": {
+      "load_json": [
+        "observations.interaction.evidence",
+        "hand_visibility_load_json"
+      ],
+      "write_json": [
+        "observations.interaction.evidence",
+        "hand_visibility_write_json"
+      ],
+      "as_list": [
+        "observations.interaction.evidence",
+        "hand_visibility_as_list"
+      ],
+      "normalize_zero_observation_interval": [
+        "observations.interaction.evidence",
+        "normalize_zero_observation_interval"
+      ],
+      "parse_zero_observation_interval": [
+        "observations.interaction.evidence",
+        "parse_zero_observation_interval"
+      ],
+      "load_zero_observation_interval_files": [
+        "observations.interaction.evidence",
+        "load_zero_observation_interval_files"
+      ],
+      "load_remeasurement_cache": [
+        "observations.interaction.evidence",
+        "load_remeasurement_cache"
+      ],
+      "transition_metric_evidence": [
+        "observations.interaction.evidence",
+        "transition_metric_evidence"
+      ],
+      "parse_args": [
+        "observations.interaction.evidence",
+        "hand_visibility_parse_args"
+      ],
+      "build": [
+        "observations.interaction.evidence",
+        "build_hand_visibility"
+      ]
+    },
+    "experiments/sam3d_native_ghost_lite_20260826/build_p15_first_hit_silhouette_factors.py": {
+      "POSE_MEASUREMENT_STATUSES": [
+        "observations.object.surface",
+        "POSE_MEASUREMENT_STATUSES"
+      ],
+      "FactorBuildFrame": [
+        "observations.object.surface",
+        "FactorBuildFrame"
+      ],
+      "sha256_file": [
+        "observations.object.surface",
+        "sha256_file"
+      ],
+      "load_mano_faces": [
+        "observations.object.surface",
+        "load_mano_faces"
+      ],
+      "load_json": [
+        "observations.object.surface",
+        "image_targets_load_json"
+      ],
+      "load_mesh": [
+        "observations.object.surface",
+        "image_targets_load_mesh"
+      ],
+      "world_to_camera": [
+        "observations.object.surface",
+        "world_to_camera"
+      ],
+      "camera_to_world": [
+        "observations.object.surface",
+        "camera_to_world"
+      ],
+      "canonical_to_camera": [
+        "observations.object.surface",
+        "canonical_to_camera"
+      ],
+      "resize_intrinsics_xy": [
+        "observations.object.surface",
+        "resize_intrinsics_xy"
+      ],
+      "resize_intrinsics": [
+        "observations.object.surface",
+        "resize_intrinsics"
+      ],
+      "resize_mask": [
+        "observations.object.surface",
+        "resize_mask"
+      ],
+      "project_camera": [
+        "observations.object.surface",
+        "project_camera"
+      ],
+      "deterministic_indices": [
+        "observations.object.surface",
+        "deterministic_indices"
+      ],
+      "validate_camera_transform": [
+        "observations.object.surface",
+        "validate_camera_transform"
+      ],
+      "BatchFirstHitRasterizer": [
+        "observations.object.surface",
+        "BatchFirstHitRasterizer"
+      ],
+      "annotation_object": [
+        "observations.object.surface",
+        "annotation_object"
+      ],
+      "build_hand_unknown_mask": [
+        "observations.object.surface",
+        "build_hand_unknown_mask"
+      ],
+      "load_frames": [
+        "observations.object.surface",
+        "image_targets_load_frames"
+      ],
+      "canonical_point_map": [
+        "observations.object.surface",
+        "canonical_point_map"
+      ],
+      "build_frame_factors": [
+        "observations.object.surface",
+        "build_frame_factors"
+      ],
+      "parse_args": [
+        "observations.object.surface",
+        "image_targets_parse_args"
+      ],
+      "main": [
+        "observations.object.surface",
+        "build_pose_image_targets"
+      ]
+    }
+  },
+  "notes": [
+    "Initial symbol moves precede subsequent grouped-owner consolidation; use git history/references for final owner.",
+    "Historical standalone experimental CLIs are retired; only their retained mathematical helper closure was extracted."
+  ]
+}
