@@ -17,7 +17,7 @@ visual = ["torch>=2", "smplx==0.1.28", "open3d==0.19.0", "rerun-sdk==0.37.2", "c
 test = ["pytest>=8"]
 
 [project.scripts]
-ego-annotate = "main:main"
+ego-annotate = "main:cli"
 
 [tool.setuptools]
 py-modules = ["main", "render", "evaluate"]

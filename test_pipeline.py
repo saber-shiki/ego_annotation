@@ -10,6 +10,12 @@ from optimization.solve import solve
 from utils.data import PoseNode
 
 class GroupedContractTests(unittest.TestCase):
+    def test_console_entry_does_not_return_artifact_as_failure_exit_code(self):
+        import main
+        from unittest.mock import patch
+        with patch.object(main,'main',return_value={'artifact':'candidate.json'}):
+            self.assertIsNone(main.cli())
+
     def test_all_grouped_modules_import_without_scripts(self):
         root=Path(__file__).parent
         for directory in ('utils','observations','gates','factors','optimization'):

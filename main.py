@@ -689,5 +689,10 @@ def formal_tail(spec):
     (out/'result.json').write_text(json.dumps(result,indent=2));return result
 
 
-if __name__=='__main__':
+def cli():
+    """Console script success is an exit status, not the returned artifact mapping."""
     main()
+
+
+if __name__=='__main__':
+    cli()
