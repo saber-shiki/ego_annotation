@@ -273,7 +273,7 @@ def detector_prompt_contract(obj,images,assets,directory):
         report=load(report_path);history.append({'token_report_sha256':sha(report_path),'report':report})
         if report['valid']:
             result={'object_id':obj['object_id'],'original_prompts':obj['detector_text_prompts'],
-                'effective_prompts':prompts,'truncated':False,'shortening_history':history}
+                'effective_prompts':[row['effective_prompt'] for row in report['prompts']],'truncated':False,'shortening_history':history}
             (directory/'contract.json').write_text(json.dumps(result,indent=2,allow_nan=False))
             return result
         if attempt==2:raise ValueError('Astra detector phrases still exceed real OWLv2 tokenizer budget after two shortening judgments')

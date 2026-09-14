@@ -641,7 +641,7 @@ class Owlv2TokenBudgetTests(unittest.TestCase):
         self.assertEqual(report['max_position_embeddings'],config.text_config.max_position_embeddings)
         self.assertEqual(report['special_token_count'],2)
         for prompt,row in zip(prompts,report['prompts']):
-            plain=processor.tokenizer(prompt,add_special_tokens=False)['input_ids']
+            plain=processor.tokenizer(row['effective_prompt'],add_special_tokens=False)['input_ids']
             self.assertEqual(row['token_count_including_special'],len(plain)+2)
             self.assertFalse(row['truncated'])
         accepted=[row['original_prompt'] for row in report['prompts'] if row['within_budget']]
@@ -652,6 +652,29 @@ class Owlv2TokenBudgetTests(unittest.TestCase):
         invalid=text_budget_report(processor,config,[overflow,'cup'])
         self.assertFalse(invalid['valid']);self.assertGreater(invalid['prompts'][0]['token_count_including_special'],16)
         with self.assertRaisesRegex(ValueError,'shorten with Astra'):encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),[overflow,'cup'])
+
+    @unittest.skipUnless(__import__('os').environ.get('EGO_OWLV2_MODEL'),'requires real local tokenizer')
+    def test_normalized_boundary_matches_actual_cli_and_consumer(self):
+        import os, subprocess, sys
+        from transformers import Owlv2Processor, Owlv2Config
+        from PIL import Image
+        from observations.object.owlv2 import encode_detector_inputs, text_budget_report
+        model=os.environ['EGO_OWLV2_MODEL']
+        processor=Owlv2Processor.from_pretrained(model,local_files_only=True)
+        config=Owlv2Config.from_pretrained(model,local_files_only=True)
+        prompts=['  BOTTLE  ', ' '.join(['bottle']*13), ' '.join(['bottle']*14)]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/'prompts.json').write_text(json.dumps({'prompts':prompts}))
+            subprocess.run([sys.executable,'-m','observations.object.owlv2','text-contract','--model',model,
+                '--prompts',str(root/'prompts.json'),'--output',str(root/'report.json')],check=True)
+            report=json.loads((root/'report.json').read_text())
+        self.assertEqual(report,text_budget_report(processor,config,prompts))
+        self.assertEqual([r['token_count_including_special'] for r in report['prompts']],[4,16,17])
+        self.assertFalse(report['valid'])
+        inputs,valid=encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),prompts[:2])
+        for i,row in enumerate(valid['prompts']):
+            self.assertEqual(inputs['input_ids'][i][inputs['attention_mask'][i].bool()].tolist(),row['token_ids'])
+        with self.assertRaises(ValueError):encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),prompts)
 
 
 class OptionalFactorProducerTests(unittest.TestCase):
@@ -666,13 +689,42 @@ class OptionalFactorProducerTests(unittest.TestCase):
                 'target_entity_id':'object:item','counts':{'candidate_non_object_owned_px':10,'non_object_owned_px':0}}]}))
             args=hand_visibility_parse_args(['--case','case','--ownership-factor-report',str(source),
                 '--target-entity-id','object:item','--output-root',str(root),'--joint-observation-weight-multiplier','.12'])
-            result=build_hand_visibility(args);path=root/'visibility.json';path.write_text(json.dumps(result))
+            result=build_hand_visibility(args);path=Path(result['output_report'])
+            self.assertEqual(json.loads(Path(result['producer_receipt']).read_text())['output_sha256'],__import__('utils.state',fromlist=['sha']).sha(path))
             loaded=load_generic_factor_reports([path],target_entity_id='object:item')
             row=loaded['hand_observation_visibility'][7,'left']
             effective=hand_observation_visibility_for_row(row,SimpleNamespace(occluded_joint_observation_weight=.5))
             self.assertEqual(effective['state'],'active_hand_observation_visibility')
             self.assertEqual(effective['weight_multiplier'],.12)
             with self.assertRaises(ValueError):load_generic_factor_reports([path],target_entity_id='object:other')
+
+
+class PrepareCLITests(unittest.TestCase):
+    def test_visibility_cli_publishes_loadable_report(self):
+        import subprocess,sys
+        from gates.interaction.contact import load_generic_factor_reports
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'ownership.json'
+            source.write_text(json.dumps({'ownership_rows':[{'frame_idx':7,'hand_side':'left',
+                'target_entity_id':'object:item','counts':{'candidate_non_object_owned_px':10}}]}))
+            subprocess.run([sys.executable,'-m','main','prepare','hand-visibility','--case','case',
+                '--ownership-factor-report',str(source),'--target-entity-id','object:item','--output-root',str(root/'out')],check=True)
+            path=root/'out/case/hand_observation_visibility_factor_report.json'
+            self.assertIn((7,'left'),load_generic_factor_reports([path],target_entity_id='object:item')['hand_observation_visibility'])
+            self.assertTrue(path.with_suffix('.receipt.json').is_file())
+
+    def test_image_target_cli_forwards_real_argv_to_producer(self):
+        import subprocess,sys
+        # Deliberately missing mesh: the real producer, not argparse, must reject it.
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            argv=[sys.executable,'-m','main','prepare','image-targets']
+            for key in ('annotations','pose-report','completed-mesh','hand-npz','mano-faces-pkl','output-npz','output-json'):
+                argv.extend(['--'+key,str(root/key)])
+            result=subprocess.run([*argv,'--object-id','item'],capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertNotIn('unrecognized arguments',result.stderr)
+            self.assertIn('image_targets_load_mesh',result.stderr)
 
 if __name__ == '__main__':
     unittest.main()

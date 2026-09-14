@@ -2814,7 +2814,7 @@ def image_targets_parse_args(argv=None) -> argparse.Namespace:
     return args
 
 def build_pose_image_targets(argv=None) -> None:
-    args = image_targets_parse_args()
+    args = image_targets_parse_args(argv)
     mesh = image_targets_load_mesh(args.completed_mesh)
     if not args.mano_faces_pkl.is_file():
         raise RuntimeError(f'MANO topology pickle does not exist: {args.mano_faces_pkl}')

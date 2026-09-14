@@ -52,18 +52,9 @@ def manifest_rows(manifest: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return out
 
 def prompt_texts(raw: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    for item in raw:
-        text = item.strip().lower()
-        if not text:
-            continue
-        if not text.endswith('.'):
-            text += '.'
-        if text not in cleaned:
-            cleaned.append(text)
-    if not cleaned:
-        raise RuntimeError('at least one text prompt is required')
-    return cleaned
+    if not raw or any(not isinstance(item, str) or not item.strip() for item in raw):
+        raise ValueError('at least one nonempty text prompt is required')
+    return [item.strip().lower() if item.strip().endswith('.') else item.strip().lower() + '.' for item in raw]
 
 def resolve_model_path(path: Path) -> Path:
     if not path.exists():
@@ -94,9 +85,10 @@ def finite_box(box: list[float], width: int, height: int) -> list[float] | None:
 def text_budget_report(processor, config, prompts):
     """Count real CLIP tokens, including BOS/EOS, against encoder positions."""
     budget = int(config.text_config.max_position_embeddings)
-    encoded = processor.tokenizer(prompts, add_special_tokens=True, padding=False, truncation=False)
+    effective = prompt_texts(prompts)
+    encoded = processor.tokenizer(effective, add_special_tokens=True, padding=False, truncation=False)
     token_ids = encoded['input_ids']
-    rows = [{'original_prompt': text, 'effective_prompt': text, 'token_ids': list(map(int, ids)), 'token_count_including_special': len(ids), 'truncated': False, 'within_budget': len(ids) <= budget} for (text, ids) in zip(prompts, token_ids)]
+    rows = [{'original_prompt': text, 'effective_prompt': effective_text, 'token_ids': list(map(int, ids)), 'token_count_including_special': len(ids), 'truncated': False, 'within_budget': len(ids) <= budget} for (text, effective_text, ids) in zip(prompts, effective, token_ids)]
     return {'schema': 'owlv2_text_budget_v1', 'max_position_embeddings': budget, 'special_token_count': processor.tokenizer.num_special_tokens_to_add(pair=False), 'padding': 'max_length', 'truncation': False, 'valid': all((r['within_budget'] for r in rows)), 'prompts': rows}
 
 def encode_detector_inputs(processor, model_config, image, prompts):
@@ -104,7 +96,7 @@ def encode_detector_inputs(processor, model_config, image, prompts):
     if not report['valid']:
         raise ValueError('OWLv2 query exceeds real tokenizer/model position budget; shorten with Astra before inference: ' + json.dumps(report))
     inputs = processor(images=image, return_tensors='pt')
-    text_inputs = processor.tokenizer(prompts, return_tensors='pt', padding='max_length', max_length=report['max_position_embeddings'], truncation=False, add_special_tokens=True)
+    text_inputs = processor.tokenizer([row['effective_prompt'] for row in report['prompts']], return_tensors='pt', padding='max_length', max_length=report['max_position_embeddings'], truncation=False, add_special_tokens=True)
     inputs.update(text_inputs)
     if inputs['input_ids'].shape[-1] != report['max_position_embeddings']:
         raise ValueError('OWLv2 processor violated padded model-position budget')
@@ -172,7 +164,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest = require_dict(read_json(args.raw_frame_manifest), 'raw frame manifest')
     rows_by_idx = manifest_rows(manifest)
     frames = parse_int_list(args.prompt_frames)
-    prompts = prompt_texts(args.text_prompt)
+    prompts = list(args.text_prompt)
     model_path = resolve_model_path(args.owlv2_model)
     device = torch.device(args.device if args.device else 'cuda' if torch.cuda.is_available() else 'cpu')
     if device.type == 'cuda' and (not torch.cuda.is_available()):
@@ -181,6 +173,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     budget = text_budget_report(processor, Owlv2Config.from_pretrained(str(model_path), local_files_only=True), prompts)
     if not budget['valid']:
         raise ValueError('OWLv2 queries exceed tokenizer position budget; regenerate short detector noun phrases before model inference: ' + json.dumps(budget))
+    prompts = [row['effective_prompt'] for row in budget['prompts']]
     model = Owlv2ForObjectDetection.from_pretrained(str(model_path), local_files_only=True).to(device)
     model.eval()
     prompt_rows: list[dict[str, Any]] = []

@@ -62,3 +62,13 @@ problems, and independent global/keyframe/periodic/late-window experiments remai
 in baseline Git history. Their actual shared numerical helpers were extracted
 when used by a retained path; their old CLIs and rejected experimental modes were
 not copied into the active package.
+
+### Producer CLI contracts
+
+OWLv2 precheck and inference share lowercase/strip/terminal-period normalization;
+reports retain original/effective text and exact unpadded token IDs, including
+special tokens. No text is truncated. Hand visibility writes
+`OUTPUT_ROOT/CASE/hand_observation_visibility_factor_report.json` and its
+`.receipt.json` with source/output hashes; this report is directly consumable by
+formal factor loaders. Image-target preparation forwards its own CLI arguments to
+the retained raster producer (no raster mathematics changed).
