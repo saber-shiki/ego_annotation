@@ -713,6 +713,42 @@ class PrepareCLITests(unittest.TestCase):
             self.assertIn((7,'left'),load_generic_factor_reports([path],target_entity_id='object:item')['hand_observation_visibility'])
             self.assertTrue(path.with_suffix('.receipt.json').is_file())
 
+    @unittest.skipUnless(__import__('os').environ.get('EGO_IMAGE_TARGET_PYTHON'),'requires provisioned PyTorch3D CPU interpreter')
+    def test_real_image_target_cli_writes_nonempty_factors(self):
+        import cv2,os,pickle,subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);mesh=root/'mesh.obj'
+            mesh.write_text('v -0.25 -0.25 0\nv 0.25 -0.25 0\nv 0 0.25 0\nf 1 2 3\n')
+            raw=root/'raw.png';mask=root/'mask.png'
+            cv2.imwrite(str(raw),np.zeros((32,32,3),dtype=np.uint8))
+            pixels=np.zeros((32,32),dtype=np.uint8);cv2.fillPoly(pixels,[np.array([[8,8],[24,8],[16,24]])],255)
+            cv2.imwrite(str(mask),pixels)
+            rows,cols=np.nonzero(pixels)
+            observed=np.column_stack(((cols-16)/32.,(rows-16)/32.,np.ones(len(rows))))
+            depth=root/'depth.npz';np.savez(depth,frame_idx=[0],confidence=np.ones((1,32,32)))
+            hands=root/'hands.npz';np.savez(hands,frame_idx=np.array([],dtype=np.int64))
+            faces=root/'mano.pkl';faces.write_bytes(pickle.dumps({'f':np.array([[0,1,2]])}))
+            pose=root/'pose.json';pose.write_text(json.dumps({'pose_rows':[{'frame_idx':0,
+                'status':'fit_to_visible_depth_samples','rotation_world_from_completed_canonical_matrix':np.eye(3).tolist(),
+                'translation_world_m':[0,0,1]}]}))
+            annotations=root/'annotations.json';annotations.write_text(json.dumps({'frames':[{'frame_idx':0,
+                'raw_frame_path':str(raw),'source_width':32,'source_height':32,'camera':{'T_world_camera_metric':np.eye(4).tolist()},
+                'objects':[{'object_id':'item','visible_geometry_candidate':{'first_surface_depth_ownership':{
+                    'enabled':True,'retained_fraction':1.},'mask_path':str(mask),'intrinsics_fx_fy_cx_cy':[32,32,16,16],
+                    'camera_vertices_sample_m':observed.tolist(),'depth_npz':str(depth)}}]}]}))
+            result=subprocess.run([os.environ['EGO_IMAGE_TARGET_PYTHON'],'-m','main','prepare','image-targets',
+                '--annotations',str(annotations),'--pose-report',str(pose),'--completed-mesh',str(mesh),
+                '--hand-npz',str(hands),'--mano-faces-pkl',str(faces),'--object-id','item',
+                '--output-npz',str(root/'factors.npz'),'--output-json',str(root/'factors.json'),
+                '--device','cpu','--raster-size','32','--source-size','32','--min-frames','1',
+                '--min-observed-points','1'],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            report=json.loads((root/'factors.json').read_text())
+            self.assertEqual(report['frame_count'],1)
+            self.assertGreater(report['depth_factor_count'],0)
+            with np.load(root/'factors.npz',allow_pickle=False) as factors:
+                self.assertEqual(factors['frame_idx'].tolist(),[0])
+
     def test_image_target_cli_forwards_real_argv_to_producer(self):
         import subprocess,sys
         # Deliberately missing mesh: the real producer, not argparse, must reject it.

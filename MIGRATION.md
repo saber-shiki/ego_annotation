@@ -85,3 +85,10 @@ special tokens. No text is truncated. Hand visibility writes
 `.receipt.json` with source/output hashes; this report is directly consumable by
 formal factor loaders. Image-target preparation forwards its own CLI arguments to
 the retained raster producer (no raster mathematics changed).
+
+The image-target CLI additionally has a real one-frame PyTorch3D CPU fixture:
+triangle mesh + owned mask + observed depth + empty-hand archive traverse the
+actual `main prepare image-targets` process and produce a nonempty depth-factor
+NPZ/report. Set `EGO_IMAGE_TARGET_PYTHON` to the provisioned PyTorch3D interpreter
+when running `observations.test_observations.PrepareCLITests`; no rasterizer is
+mocked in that fixture.
