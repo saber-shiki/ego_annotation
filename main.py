@@ -4,21 +4,33 @@ import argparse, copy, json, math
 from pathlib import Path
 import numpy as np
 from utils.data import RGBEdge, RGBReprojectionFactor, indexed, RKEY, TKEY, load
-from utils.state import sha, in_run, assert_prediction_only
+from utils.state import sha, in_run, assert_prediction_only, require_run_artifact
 from observations.common import build_nodes, pose_from_values
 from optimization.problems import StandaloneScene
 from optimization.solve import solve
 
 
 def load_edges(npz_path, report_path, source_path, annotations_path, nodes, root):
+    ids=[n.frame_idx for n in nodes]
+    # Both serializations must originate in the same producer execution.
+    source=load(source_path);object_id=source['object_id']
+    npz_receipt=require_run_artifact(npz_path,root,'rgb_edges',object_id=object_id,frame_ids=ids)
+    json_receipt=require_run_artifact(report_path,root,'rgb_edge_report',object_id=object_id,frame_ids=ids)
+    if npz_receipt['producer_id']!=json_receipt['producer_id']:
+        raise ValueError('NPZ/report producer pairing mismatch')
     report = load(report_path)
     with np.load(npz_path, allow_pickle=False) as z: data = dict(z)
     meta = json.loads(str(data['metadata'].reshape(-1)[0]))
+    if meta.get('object_id')!=object_id:
+        raise ValueError('RGB object identity mismatch')
+    if any(report.get(key)!=value for key,value in meta.items()):
+        raise ValueError('RGB NPZ/report metadata pairing mismatch')
     for key, path in [('initial_pose_report', source_path), ('annotations', annotations_path)]:
         if meta['input_sha256'][key] != sha(path) or Path(meta[key]).resolve() != Path(path).resolve():
             raise ValueError('current RGB source hash/identity mismatch')
     for key in ('depth_npz',):
         path = in_run(meta[key], root)
+        require_run_artifact(path,root,'depth',frame_ids=ids)
         if sha(path) != meta['input_sha256'][key]: raise ValueError('RGB metric source mutated')
     positions = {n.frame_idx: i for i,n in enumerate(nodes)}
     source_rows = indexed(load(source_path)['pose_rows'])
@@ -27,6 +39,10 @@ def load_edges(npz_path, report_path, source_path, annotations_path, nodes, root
     if len(offsets) != len(data['source_frame_idx'])+1 or offsets[0] != 0 or offsets[-1] != len(data['reprojection_canonical_points']) or np.any(np.diff(offsets)<0):
         raise ValueError('invalid RGB evidence offsets')
     rows = {(r['source_frame_idx'],r['target_frame_idx']):r for r in report['rows']}
+    if len(rows)!=len(report['rows']):raise ValueError('duplicate RGB report edge')
+    for a,b in zip(data['source_frame_idx'],data['target_frame_idx']):
+        if int(a) not in positions or int(b) not in positions or (int(a),int(b)) not in rows:
+            raise ValueError('RGB edge outside source timeline or report')
     for k, (a,b) in enumerate(zip(data['source_frame_idx'],data['target_frame_idx'])):
         a,b=int(a),int(b)
         if not data['accepted'][k]: continue
@@ -51,12 +67,18 @@ def load_edges(npz_path, report_path, source_path, annotations_path, nodes, root
 
 
 def refine(annotations_path, source_path, edge_path, edge_report, object_id, anchor, output, root):
+    root=Path(root).resolve()
+    for path in (annotations_path,source_path,edge_path,edge_report):in_run(path,root)
+    in_run(output,root,must_exist=False)
     if output.exists(): raise ValueError('create-only posterior required')
     before=sha(source_path)
     source=load(source_path); annotations=load(annotations_path)
     assert_prediction_only(source, label='scene source prior', object_id=object_id)
     assert_prediction_only(annotations, label='scene observed geometry', object_id=object_id)
     nodes,times=build_nodes(annotations,source,object_id)
+    ids=[n.frame_idx for n in nodes]
+    require_run_artifact(annotations_path,root,'observations',object_id=object_id,frame_ids=ids)
+    require_run_artifact(source_path,root,'source_pose',object_id=object_id,frame_ids=ids)
     if not any(n.frame_idx==anchor and n.metric_observation for n in nodes):
         raise ValueError('gauge anchor must have current retained metric support')
     edges,reprojections=load_edges(edge_path,edge_report,source_path,annotations_path,nodes,root)

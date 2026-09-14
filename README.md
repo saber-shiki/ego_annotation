@@ -11,7 +11,11 @@ separate from candidate estimates.
 --run-root RUN --output POSTERIOR` consumes hash-bound, same-run metric/RGB
 observations and runs local RGB seeding, robust SO(3), and refreshed full SE(3).
 The posterior is create-only and explicitly lacks physical/contact authority.
-Source arrays and their provenance remain unchanged. Inputs are prepared
+Source arrays and their provenance remain unchanged. Fresh inputs require the raw identity
+contract `input/runtime_input_contract.json` and role-bound producer receipts in
+`state/producer_receipts.json`; RGB NPZ/report must come from one producer and
+carry identical metadata. Foreign-run files are rejected even if byte-identical.
+Inputs are prepared
 prediction observations, not raw video or ground truth.
 
 CPU regression: `python -m unittest test_pipeline optimization.test_optimization

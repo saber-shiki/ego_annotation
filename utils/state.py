@@ -234,3 +234,35 @@ def input_identity(contract_path, run_root, bundle_manifest, recovery=None):
                          contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'],
                          sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False),
                          contract.get('target_description'), recovery_json)
+
+
+def require_run_artifact(path, root, role, *, object_id=None, frame_ids=None):
+    """Bind a prediction artifact to this raw input and its registered producer.
+
+    Asset references are not recursively classified as predictions: this check
+    applies to explicit prediction roles, leaving licensed/model assets external.
+    """
+    root=Path(root).resolve();path=in_run(path,root)
+    contract=load(root/'input/runtime_input_contract.json')
+    if contract.get('run_root')!=str(root):
+        raise ValueError('input contract belongs to another run')
+    raw=in_run(contract['input_video'],root)
+    if sha(raw)!=contract['input_video_sha256']:
+        raise ValueError('raw video identity changed')
+    registry=load(root/'state/producer_receipts.json')
+    if (registry.get('run_id')!=contract['run_id'] or
+            registry.get('input_video_sha256')!=contract['input_video_sha256']):
+        raise ValueError('producer registry raw/run identity mismatch')
+    matches=[r for r in registry['records'] if r['path']==str(path)]
+    if len(matches)!=1:
+        raise ValueError('prediction requires exactly one same-run producer receipt')
+    receipt=matches[0]
+    if receipt.get('role')!=role or receipt.get('sha256')!=sha(path):
+        raise ValueError('prediction role/content differs from producer receipt')
+    if object_id is not None and receipt.get('object_id')!=object_id:
+        raise ValueError('prediction selected object differs from producer receipt')
+    if frame_ids is not None and receipt.get('frame_ids')!=list(map(int,frame_ids)):
+        raise ValueError('prediction full timeline differs from producer receipt')
+    if not receipt.get('producer_id'):
+        raise ValueError('missing producer identity')
+    return receipt

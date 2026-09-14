@@ -36,7 +36,7 @@ class GroupedContractTests(unittest.TestCase):
         import main
         from utils.state import sha
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
+            root=Path(directory).resolve()
             source=root/'source.json'; annotations=root/'annotations.json'
             depth=root/'depth.npz'; edge=root/'edges.npz'; report=root/'edges.json'
             output=root/'posterior.json'
@@ -51,14 +51,32 @@ class GroupedContractTests(unittest.TestCase):
                  'rigid_pose_observation_eligible':True,'visible_geometry_candidate':geometry}]}
                  for i in range(3)]}))
             np.savez(depth,depth=np.ones((3,2,2)))
-            metadata={'initial_pose_report':str(source),'annotations':str(annotations),
+            metadata={'object_id':'tool','initial_pose_report':str(source),'annotations':str(annotations),
                       'depth_npz':str(depth),'input_sha256':{'initial_pose_report':sha(source),
                       'annotations':sha(annotations),'depth_npz':sha(depth)}}
+            edge_rows=[{'source_frame_idx':0,'target_frame_idx':1,'inlier_fraction':1.,
+                        'reprojection_median_px':0.,'source_3d_conditioning':.02,
+                        'topological_role':'adjacent','status':'accepted'}]
             np.savez(edge,metadata=np.array([json.dumps(metadata)]),
-                     source_frame_idx=np.array([],int), target_frame_idx=np.array([],int),
-                     reprojection_evidence_offsets=np.array([0]),
-                     reprojection_canonical_points=np.empty((0,3)))
-            report.write_text(json.dumps({'rows':[]})); before=sha(source)
+                     source_frame_idx=np.array([0]), target_frame_idx=np.array([1]),
+                     accepted=np.array([True]), rotation_source_to_target_world=np.eye(3)[None],
+                     translation_source_to_target_world_m=np.zeros((1,3)),
+                     reprojection_evidence_offsets=np.array([0,4]),
+                     reprojection_canonical_points=surface-[0,0,1.],
+                     reprojection_target_camera=np.eye(4)[None],
+                     reprojection_target_intrinsics=np.array([[100.,100.,0.,0.]]),
+                     reprojection_target_uv=surface[:,:2]*100.,reprojection_weights=np.ones(4))
+            report.write_text(json.dumps({**metadata,'rows':edge_rows})); before=sha(source)
+            (root/'input').mkdir();(root/'state').mkdir()
+            raw=root/'input/raw.mp4';raw.write_bytes(b'prepared raw fixture')
+            contract={'run_id':'test-run','run_root':str(root),'input_video':str(raw),'input_video_sha256':sha(raw)}
+            (root/'input/runtime_input_contract.json').write_text(json.dumps(contract))
+            records=[{'path':str(path),'sha256':sha(path),'role':role,'object_id':'tool',
+                      'frame_ids':[0,1,2],'producer_id':producer}
+                     for path,role,producer in [(source,'source_pose','pose'),(annotations,'observations','observations'),
+                     (depth,'depth','depth'),(edge,'rgb_edges','rgb'),(report,'rgb_edge_report','rgb')]]
+            registry={**contract,'records':records}
+            (root/'state/producer_receipts.json').write_text(json.dumps(registry))
             main.main(['refine-pose','--annotations',str(annotations),'--source-pose',str(source),
                 '--rgb-edges',str(edge),'--rgb-report',str(report),'--object-id','tool',
                 '--anchor','0','--output',str(output),'--run-root',str(root)])
@@ -69,6 +87,38 @@ class GroupedContractTests(unittest.TestCase):
             self.assertEqual(sha(source),before)
             with self.assertRaises(ValueError):
                 main.refine(annotations,source,edge,report,'tool',0,output,root)
+            nodes,_=main.build_nodes(json.loads(annotations.read_text()),json.loads(source.read_text()),'tool')
+            edges,pixels=main.load_edges(edge,report,source,annotations,nodes,root)
+            self.assertEqual(len(edges),1);self.assertEqual(len(pixels),1)
+            from factors.object.image import rgb_reprojection_residual
+            from utils.data import SolverConfig
+            poses={n.frame_idx:(n.initial_rotation.copy(),n.initial_translation.copy()) for n in nodes}
+            baseline=rgb_reprojection_residual(pixels[0],poses,nodes,SolverConfig(rgb_reprojection_weight_scale=1.))
+            for endpoint in (0,1):
+                changed={k:(r.copy(),t.copy()) for k,(r,t) in poses.items()}
+                changed[endpoint][1][0]+=.001
+                self.assertGreater(np.linalg.norm(rgb_reprojection_residual(pixels[0],changed,nodes,
+                    SolverConfig(rgb_reprojection_weight_scale=1.))-baseline),0)
+            # Byte-identical foreign data and symlinks are still another run.
+            with tempfile.TemporaryDirectory() as other:
+                for original in (annotations,source,edge,report):
+                    foreign=Path(other)/original.name;foreign.write_bytes(original.read_bytes())
+                    replacements={annotations:annotations,source:source,edge:edge,report:report}
+                    replacements[original]=foreign
+                    with self.assertRaisesRegex(ValueError,'escapes run root'):
+                        main.refine(replacements[annotations],replacements[source],replacements[edge],
+                            replacements[report],'tool',0,root/'new.json',root)
+            registry['records'][-1]['producer_id']='different-rgb-producer'
+            (root/'state/producer_receipts.json').write_text(json.dumps(registry))
+            with self.assertRaisesRegex(ValueError,'producer pairing'):
+                main.load_edges(edge,report,source,annotations,nodes,root)
+            registry['records'][-1]['producer_id']='rgb'
+            mismatched=json.loads(report.read_text());mismatched['object_id']='other'
+            report.write_text(json.dumps(mismatched));registry['records'][-1]['sha256']=sha(report)
+            (root/'state/producer_receipts.json').write_text(json.dumps(registry))
+            with self.assertRaisesRegex(ValueError,'metadata pairing'):
+                main.load_edges(edge,report,source,annotations,nodes,root)
+
 
     def test_entry_help_and_no_legacy_imports(self):
         import main
