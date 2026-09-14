@@ -49,10 +49,17 @@ class CandidateIdentityTests(unittest.TestCase):
         self.assertGreater(box_iou(data['frame148_box'], selected['bbox_xyxy']), .4)
         report = {'case_id': 'fixture', 'object_id': 'object_1', 'track_id': 'track_1', 'detections': [
             {'frame_idx': 149, 'image_width': 960, 'image_height': 960, 'selected_detection': selected, 'association': diag}]}
-        wrong = {'149': {'visible': True, 'bbox_xyxy': data['frame149_wrong_mask_box']}}
-        self.assertEqual(check_candidate_mask_identity(report, wrong, [960, 960])['status'], 'failed')
-        correct = {'149': {'visible': True, 'bbox_xyxy': selected['bbox_xyxy']}}
-        self.assertEqual(check_candidate_mask_identity(report, correct, [960, 960])['status'], 'ok')
+        import tempfile
+        import numpy as np
+        import cv2
+        with tempfile.TemporaryDirectory() as folder:
+            for box, expected in [(data['frame149_wrong_mask_box'], 'failed'), (selected['bbox_xyxy'], 'ok')]:
+                mask = np.zeros((960,960), np.uint8)
+                x0,y0,x1,y1=map(round,box);mask[y0:y1,x0:x1]=255
+                path=Path(folder)/'mask.png';cv2.imwrite(str(path),mask)
+                track={'149':{'visible':True,'mask_path':str(path),'bbox_xyxy':selected['bbox_xyxy']}}
+                # A lying cached bbox must not hide a switch in the actual mask.
+                self.assertEqual(check_candidate_mask_identity(report,track,[960,960])['status'],expected)
 
     def test_occlusion_cannot_reseed_other_instance_and_ambiguity_fails(self):
         from observations.object.owlv2 import CandidateIdentity
@@ -67,3 +74,41 @@ class CandidateIdentityTests(unittest.TestCase):
         ambiguous = CandidateIdentity()
         self.assertIsNone(ambiguous.select(0, [target, {**other, 'score': .8}])[0])
         self.assertTrue(ambiguous.failed)
+
+class CompactTrajectoryTests(unittest.TestCase):
+    def test_full_timeline_unknown_tail_and_request_byte_audit(self):
+        import tempfile, hashlib, os
+        import numpy as np
+        from PIL import Image
+        from unittest.mock import patch
+        from utils.data import RKEY, TKEY
+        from utils.runtime import encode_astra_request, astra_request
+        from observations.judgments.judge_pose_trajectory import compact_trajectory_evidence, validate_compact
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); posterior = root/'posterior.json'
+            rows = [{'frame_idx': i, 'time_s': i/30, RKEY: np.eye(3).tolist(), TKEY: [0, 0, 1+i*.01],
+                     'metric_observation': i < 8, 'uncertainty': .2 if i < 8 else 1.,
+                     'relative_evidence_connected': i < 8, 'depth_feasibility_uncertain': i >= 8} for i in range(10)]
+            sources = [{**r, 'status': 'direct', 'rotation_observability': {'observable': True, 'score': .2}} for r in rows[:8]]
+            sources += [{'frame_idx': i, 'status': 'missing_accepted_metric_surface'} for i in (8, 9)]
+            posterior.write_text(json.dumps({'object_id': 'o', 'pose_rows': rows, 'source_pose_rows': sources, 'solver': {'trace': 'unused'*10000}}))
+            evidence = compact_trajectory_evidence(posterior)
+            self.assertEqual(evidence['frame_ids'], list(range(10)))
+            self.assertIn(9, evidence['review_frame_ids'])
+            self.assertIsNone(evidence['timeline'][-1][11]); self.assertIsNone(evidence['timeline'][-1][-1])
+            self.assertEqual(evidence['source_posterior']['sha256'], hashlib.sha256(posterior.read_bytes()).hexdigest())
+            broken = copy.deepcopy(evidence); broken['timeline'].pop()
+            with self.assertRaises(ValueError): validate_compact(broken)
+            image = root/'raw.png'; Image.new('RGB', (32,32)).save(image)
+            payload, receipt = encode_astra_request('prompt', {'type':'object'}, evidence, [image])
+            self.assertEqual(receipt['effective_payload_sha256'], hashlib.sha256(payload).hexdigest())
+            self.assertEqual(receipt['ordered_images'][0]['sha256'], hashlib.sha256(image.read_bytes()).hexdigest())
+            self.assertTrue(json.loads(payload)['disable_fallbacks'])
+            credential=root/'credential'; credential.write_text('test-only'); credential.chmod(0o600)
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=TimeoutError('test')) as call:
+                audit=root/'request'
+                with self.assertRaises(TimeoutError): astra_request('prompt', {'type':'object'}, evidence, [image], audit_dir=audit)
+                call.assert_called_once()
+                self.assertEqual(call.call_args.args[0].data, (audit/'effective_payload.json').read_bytes())
+                self.assertEqual(call.call_args.args[0].data, payload)
+                self.assertFalse(json.loads((audit/'transport_failure.json').read_text())['retry'])

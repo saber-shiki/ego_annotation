@@ -75,13 +75,12 @@ def compact_trajectory_evidence(posterior_path):
         observable = source.get('rotation_observability') or {}
         step = 0. if previous is None else float(np.linalg.norm(translation - previous[1]))
         rotation_step = 0. if previous is None else angle(previous[0], rotation)
-        source_translation = np.asarray(source.get(TKEY, translation), float); source_rotation = np.asarray(source.get(RKEY, rotation), float)
         source_has_pose = source.get(TKEY) is not None and source.get(RKEY) is not None
         timeline.append([row['frame_idx'], row['time_s'], translation.tolist(), rotation.tolist(), source.get('status'),
             source.get('direct_pose_observation_source'), row.get('metric_observation'), source.get('rigid_pose_observation_eligible'),
             row.get('depth_feasibility_uncertain'), row.get('uncertainty'), row.get('relative_evidence_connected'),
             observable.get('observable'), observable.get('score'), step, rotation_step,
-            float(np.linalg.norm(translation - source_translation)) if source_has_pose else None, angle(source_rotation, rotation) if source_has_pose else None])
+            float(np.linalg.norm(translation - np.asarray(source[TKEY], float))) if source_has_pose else None, angle(np.asarray(source[RKEY], float), rotation) if source_has_pose else None])
         previous = rotation, translation
     # Every unreliable interval contributes its boundaries and midpoint; tails
     # cannot disappear behind an image quota. Largest jumps include both sides.
@@ -98,11 +97,17 @@ def compact_trajectory_evidence(posterior_path):
     for column in (13, 14):
         for i in sorted(range(1, len(ids)), key=lambda i: (-(timeline[i][column] if timeline[i][column] is not None else -1.), ids[i]))[:3]:
             review.update([ids[i-1], ids[i]])
+    metric_gaps = []
+    for row in timeline:
+        if row[6] is not True:
+            if metric_gaps and metric_gaps[-1]['frame_end'] == row[0]-1:
+                metric_gaps[-1]['frame_end'] = row[0]; metric_gaps[-1]['frame_count'] += 1
+            else: metric_gaps.append({'frame_start':row[0],'frame_end':row[0],'frame_count':1})
     summary = {'claim_scope': 'posterior-derived estimates for visual review, not ground truth or physical acceptance',
         'uncertainty_kind': 'heuristic_support_uncertainty_not_marginal_covariance',
         'frame_count': len(ids), 'metric_frame_count': sum(r[6] is True for r in timeline),
         'direct_source_counts': {str(k): sum(r[5] == k for r in timeline) for k in sorted(set(r[5] for r in timeline), key=str)},
-        'unreliable_intervals': intervals, 'max_translation_step_m': max(r[13] for r in timeline),
+        'unreliable_intervals': intervals, 'missing_metric_support_intervals': metric_gaps, 'max_translation_step_m': max(r[13] for r in timeline),
         'max_rotation_step_deg': max(r[14] for r in timeline),
         'missing_timeline_frame_ids': sorted(set(range(ids[0], ids[-1]+1)) - set(ids)),
         'rotation_unobservable_frame_ids': [r[0] for r in timeline if r[11] is not True],
@@ -138,15 +143,15 @@ def trajectory_review_sheets(evidence, raw_by_id, overlay_paths, output):
     sheets = []; source_images = []
     for offset in range(0, len(ids), 3):
         group = ids[offset:offset+3]
-        canvas = Image.new('RGB', (960, len(group)*510), 'black')
+        canvas = Image.new('RGB', (768, len(group)*414), 'black')
         draw = ImageDraw.Draw(canvas)
         for n, idx in enumerate(group):
             for col, path in enumerate((Path(raw_by_id[idx]['raw_frame_path']), Path(overlay_paths[offset+n]))):
                 raw = path.read_bytes()
                 source_images.append({'frame_idx': idx, 'role': 'raw' if col == 0 else 'posterior_mesh_overlay', 'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest()})
-                image = Image.open(path).convert('RGB'); image.thumbnail((480, 480))
-                canvas.paste(image, (col*480, n*510+30))
-                draw.text((col*480+8, n*510+8), f'frame {idx} | '+('RAW' if col == 0 else 'CANDIDATE OVERLAY'), fill='white')
+                image = Image.open(path).convert('RGB'); image.thumbnail((384, 384))
+                canvas.paste(image, (col*384, n*414+30))
+                draw.text((col*384+8, n*414+8), f'frame {idx} | '+('RAW' if col == 0 else 'CANDIDATE OVERLAY'), fill='white')
         path = output/f'review_{offset//3:03d}.jpg'
         canvas.save(path, quality=85)
         sheets.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'frame_ids': group})
@@ -178,4 +183,4 @@ def judge(evidence, images, *, audit_dir=None):
 
 
 if __name__ == '__main__':
-    judgment_cli(judge)
+    judgment_cli(judge, audit_requests=True)

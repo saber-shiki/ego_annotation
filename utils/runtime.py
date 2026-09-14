@@ -119,7 +119,7 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
         'request_id':request_id,**{k:v for k,v in request_provenance.items() if k!='gateway_model_group'}}
 
 
-def judgment_cli(judge):
+def judgment_cli(judge, *, audit_requests=False):
     parser=argparse.ArgumentParser(description=judge.__doc__)
     parser.add_argument('--evidence',type=Path,required=True)
     parser.add_argument('--image',type=Path,action='append',required=True)
@@ -128,7 +128,7 @@ def judgment_cli(judge):
     if args.output.exists():
         raise ValueError('judgment output must be create-only')
     evidence=json.loads(args.evidence.read_text())
-    value=judge(evidence,args.image)
+    value=judge(evidence,args.image,audit_dir=args.output.with_suffix('.request')) if audit_requests else judge(evidence,args.image)
     args.output.parent.mkdir(parents=True,exist_ok=True)
     with args.output.open('x') as handle:
         json.dump(value,handle,indent=2,allow_nan=False)

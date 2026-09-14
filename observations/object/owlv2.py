@@ -11,6 +11,7 @@ from utils.data import read_json
 import argparse
 import json
 import math
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
@@ -207,12 +208,20 @@ def check_candidate_mask_identity(report, track, source_size_wh):
         if selected is None:
             continue  # absence is explicit, not a fabricated box during occlusion
         mask_row = track.get(str(row['frame_idx']), {})
-        box = mask_row.get('bbox_xyxy')
-        iou = 0.
-        if mask_row.get('visible') is True and box is not None:
-            scale = np.array([row['image_width'] / source_size_wh[0], row['image_height'] / source_size_wh[1]] * 2)
-            iou = box_iou(np.asarray(box) * scale, selected['bbox_xyxy'])
+        mask_path = mask_row.get('mask_path')
+        iou = 0.; mask_hash = None
+        if mask_row.get('visible') is True and mask_path:
+            raw_mask = Path(mask_path).read_bytes()
+            mask_hash = hashlib.sha256(raw_mask).hexdigest()
+            mask = cv2.imdecode(np.frombuffer(raw_mask, np.uint8), cv2.IMREAD_GRAYSCALE)
+            if mask is None: raise ValueError('candidate identity mask unreadable')
+            ys, xs = np.where(mask > 0)
+            if len(xs):
+                scale = np.array([row['image_width'] / mask.shape[1], row['image_height'] / mask.shape[0]] * 2)
+                box = np.array([xs.min(), ys.min(), xs.max()+1, ys.max()+1]) * scale
+                iou = box_iou(box, selected['bbox_xyxy'])
         checks.append({'frame_idx': row['frame_idx'], 'selected_candidate_index': row['association']['selected_candidate_index'],
+                       'mask_path': mask_path, 'mask_sha256': mask_hash,
                        'mask_candidate_iou': iou, 'identity_supported': iou >= .10})
     return {'schema': 'candidate_mask_identity_v1', 'case_id': report['case_id'], 'object_id': report['object_id'],
             'track_id': report['track_id'], 'status': 'ok' if checks and all(r['identity_supported'] for r in checks) else 'failed', 'frames': checks}
@@ -280,7 +289,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         image = Image.open(image_path).convert('RGB')
         detections = run_owlv2_frame(processor, model, image, prompts, float(args.box_threshold))
         selected, association_diagnostic = association.select(frame_idx, detections)
-        record = {'frame_idx': int(frame_idx), 'image_path': str(image_path), 'image_sha256': __import__('hashlib').sha256(image_path.read_bytes()).hexdigest(), 'image_width': int(image.width), 'image_height': int(image.height), 'text_prompts': prompts, 'detections': detections, 'selected_detection': selected, 'association': association_diagnostic}
+        record = {'frame_idx': int(frame_idx), 'image_path': str(image_path), 'image_sha256': hashlib.sha256(image_path.read_bytes()).hexdigest(), 'image_width': int(image.width), 'image_height': int(image.height), 'text_prompts': prompts, 'detections': detections, 'selected_detection': selected, 'association': association_diagnostic}
         detection_records.append(record)
         if frame_idx not in prompt_frames:
             continue
@@ -294,7 +303,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         min_side = min(float(box[2] - box[0]), float(box[3] - box[1]))
         neg_pad = max(float(args.negative_ring_min_pad_px), float(args.negative_ring_pad_fraction) * min_side)
         prompt_rows.append({'frame_idx': int(frame_idx), 'target_visible': True, 'detection_state': 'owlv2_selected_box', 'box_xyxy': box, 'positive_points': [] if args.box_only else [box_center(box)], 'negative_points': negative_ring(box, image.width, image.height, neg_pad), 'candidate_index': association_diagnostic['selected_candidate_index'], 'association': association_diagnostic, 'owlv2_score': float(selected['score']), 'owlv2_text_label': str(selected['text_label']), 'owlv2_text_prompts': prompts})
-    identity_report = {'schema': 'owlv2_temporal_identity_v1', 'case_id': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'raw_frame_manifest': str(args.raw_frame_manifest), 'raw_frame_manifest_sha256': __import__('hashlib').sha256(args.raw_frame_manifest.read_bytes()).hexdigest(), 'detections': detection_records}
+    identity_report = {'schema': 'owlv2_temporal_identity_v1', 'case_id': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'raw_frame_manifest': str(args.raw_frame_manifest), 'raw_frame_manifest_sha256': hashlib.sha256(args.raw_frame_manifest.read_bytes()).hexdigest(), 'detections': detection_records}
     write_json(args.output_root / args.object_id / 'candidate_identity.json', identity_report)
     if association.failed:
         raise RuntimeError('mask-track identity association failed; candidate_identity.json retains ambiguity/loss evidence')

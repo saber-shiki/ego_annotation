@@ -457,7 +457,7 @@ class DepthOrderAdapterTest(unittest.TestCase):
             adapter = {'case': 'caseX', 'object_id': 'objX', 'track_id': 'trackX', 'sam2_track': str(owned_track), 'base_annotations': str(base), 'depth_npz': str(depth), 'calibration_contract': str(camera)}
             annotations = root / 'state' / 'p09.json'
             points = [[0.0, 0.0, 1.0], [0.1, 0.0, 1.0], [0.0, 0.1, 1.0]]
-            annotations.write_text(json.dumps({'v19_visible_geometry_adapter': adapter, 'frames': [{'frame_idx': 0, 'time_s': 0.0, 'camera': {'T_world_camera_metric': np.eye(4).tolist()}, 'objects': [{'object_id': 'objX', 'mask_path': str(owned_mask), 'visible_geometry_candidate': {'world_vertices_sample_m': points, 'camera_vertices_sample_m': points, 'centroid_world_m': [0.03, 0.03, 1.0]}}]}]}))
+            annotations.write_text(json.dumps({'v19_visible_geometry_adapter': adapter, 'frames': [{'frame_idx': 0, 'time_s': 0.0, 'camera': {'T_world_camera_metric': np.eye(4).tolist()}, 'objects': [{'object_id': 'objX', 'rigid_pose_observation_eligible': True, 'mask_path': str(owned_mask), 'visible_geometry_candidate': {'rigid_pose_observation_eligible': True, 'world_vertices_sample_m': points, 'camera_vertices_sample_m': points, 'centroid_world_m': [0.03, 0.03, 1.0]}}]}]}))
 
             def rec(path):
                 return {'path': str(path), 'sha256': digest(path)}

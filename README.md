@@ -269,3 +269,16 @@ re-seeding). Requested keyframes alone seed SAM2. Before visual judgment,
 `candidate_mask_identity.json` checks every associated box against the current
 SAM2 mask in the same pixel plane and binds candidate/track/raw hashes. Astra
 still judges identity against the selected object plan and raw mask overlays.
+
+Trajectory review sends `trajectory_review_compact_v1`: one low-dimensional row
+per posterior frame, source/direct/metric eligibility, heuristic uncertainty,
+rotation observability, frame-to-frame jumps, source deviations and explicit
+support-gap intervals. Representative raw/candidate overlay sheets include
+unreliable-interval endpoints/midpoints and large jumps; the uncertain tail is
+never dropped by an image quota. Full-resolution source images and each sheet
+are individually hash-bound in `state/trajectory_review_evidence.json`.
+The Astra transport saves exact credential-free HTTP bytes and input/payload/
+image hashes under `pose_trajectory_judgment.request` before sending, plus model,
+prompt/schema and observed response routing group. A timeout remains an error
+with its payload retained; there is no internal retry or model fallback. Facts
+above256KB or encoded requests above2MB fail explicitly instead of truncating.

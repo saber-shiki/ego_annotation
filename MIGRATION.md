@@ -134,3 +134,11 @@ mask gate. CPU regression uses actual mug frame149 detections and frame148 SAM2
 support, labelled as fixture-only; no historical mask is a production input.
 Dense detection increases OWLv2 work relative to sparse keyframes. Lost or
 ambiguous tracks are unsupported, not silently reacquired as another instance.
+
+### Cold-run compact pose review
+The full refined posterior, repeated source rows and solver traces are no longer
+Astra prompt input. The compact builder retains every frame and uses null for
+missing source poses/rotation observability. Raw images and actual candidate mesh
+overlays remain the visual evidence; compact facts never assert ground truth.
+Request byte auditing uses the same encoder as HTTP transport, retaining failures
+without increasing the120s deadline or introducing alternate model routes.

@@ -304,12 +304,13 @@ def build_appearance(args: argparse.Namespace) -> tuple[dict, dict]:
         rows.append(row)
         if eligible:
             ranked.append((float(metrics['score']), idx, row, alignment))
+    manifest = {'schema': SCHEMA, 'authority': 'demo_only_visual_hypothesis', 'case': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'frame_count': len(rows), 'source_track': str(raw_track_path), 'source_track_sha256': sha256(raw_track_path), 'raw_frame_manifest': str(raw_manifest_path), 'raw_frame_manifest_sha256': sha256(raw_manifest_path), 'source_annotations': str(annotations_path), 'source_annotations_sha256': sha256(annotations_path), 'depth_order_binding': binding, 'raw_appearance_and_metric_eligibility_are_distinct': True, 'metric_owned_masks_consumed': False, 'frames': rows}
+    (output / 'appearance_mask_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     if not ranked:
+        (output / 'anchor_decision.json').write_text(json.dumps({'status':'no_eligible_anchor','candidate_scores':[{key:row.get(key) for key in ('frame_idx','anchor_eligible','score','rejection')} for row in rows]},indent=2)+'\n')
         raise ValueError('no raw appearance anchor has corrected metric alignment')
     (_, selected_idx, selected, alignment) = sorted(ranked, key=lambda item: (-item[0], item[1]))[0]
-    manifest = {'schema': SCHEMA, 'authority': 'demo_only_visual_hypothesis', 'case': args.case_id, 'object_id': args.object_id, 'track_id': args.track_id, 'frame_count': len(rows), 'source_track': str(raw_track_path), 'source_track_sha256': sha256(raw_track_path), 'raw_frame_manifest': str(raw_manifest_path), 'raw_frame_manifest_sha256': sha256(raw_manifest_path), 'source_annotations': str(annotations_path), 'source_annotations_sha256': sha256(annotations_path), 'depth_order_binding': binding, 'raw_appearance_and_metric_eligibility_are_distinct': True, 'metric_owned_masks_consumed': False, 'frames': rows}
     anchor = {'schema': 'rgb_scene_depth_order_appearance_anchor_v1', 'authority': 'demo_only_visual_hypothesis', 'object_id': args.object_id, 'selected_frame_idx': selected_idx, 'selection': selected, 'appearance_conditioning': {'raw_rgb': selected['raw_rgb_path'], 'raw_rgb_sha256': selected['raw_rgb_sha256'], 'raw_sam2_mask': selected['appearance_mask_path'], 'raw_sam2_mask_sha256': selected['appearance_mask_sha256']}, 'metric_alignment': alignment, 'planes_are_distinct': True, 'physical_authority': False, 'candidate_scores': [{key: row.get(key) for key in ('frame_idx', 'anchor_eligible', 'rejection', 'score', 'score_terms')} for row in rows]}
-    (output / 'appearance_mask_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (output / 'anchor_decision.json').write_text(json.dumps(anchor, indent=2) + '\n')
     return (manifest, anchor)
 
