@@ -1,166 +1,65 @@
-from __future__ import annotations
-
-
 """Full-topology native-gauge and image-scale kernels extracted from visual fitting."""
+from __future__ import annotations
 from pathlib import Path
-import hashlib,json
-import cv2,numpy as np,trimesh
+import hashlib, json
+import cv2, numpy as np, trimesh
 from utils.data import load
 from utils.state import sha
 from utils.geometry import validate_transforms
 from observations.common import pose_from_values
-from utils.data import RKEY,TKEY
+from utils.data import RKEY, TKEY
 
-def _pose(row): return pose_from_values(row[RKEY],row[TKEY])
-
-AUTHORITY = {"demo_only": True,"annotation_ready": False,"physical_authority": False,
-    "demo_visual_proximity_fit_eligible": True,"physical_contact_authority_eligible": False,
-    **{f"generated_faces_{role}_eligible":False for role in ('contact','collision','sign','sdf','nonpenetration')}}
+def _pose(row):
+    return pose_from_values(row[RKEY], row[TKEY])
+AUTHORITY = {'demo_only': True, 'annotation_ready': False, 'physical_authority': False, 'demo_visual_proximity_fit_eligible': True, 'physical_contact_authority_eligible': False, **{f'generated_faces_{role}_eligible': False for role in ('contact', 'collision', 'sign', 'sdf', 'nonpenetration')}}
 
 def digest_json(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 def record(path):
-    return {"path": str(Path(path).resolve()), "sha256": sha(path)}
+    return {'path': str(Path(path).resolve()), 'sha256': sha(path)}
 
 def mesh_arrays(path):
     mesh = trimesh.load(path, process=False)
     if not isinstance(mesh, trimesh.Trimesh):
-        raise ValueError("one complete triangular mesh required")
-    v, f = np.asarray(mesh.vertices, float), np.asarray(mesh.faces)
-    if (v.ndim != 2 or v.shape[1:] != (3,) or not len(v) or not np.isfinite(v).all()
-            or f.ndim != 2 or f.shape[1:] != (3,) or not len(f)
-            or not np.issubdtype(f.dtype, np.integer) or f.min() < 0 or f.max() >= len(v)):
-        raise ValueError("invalid complete vertices/topology")
-    return v, f.astype(np.int64)
+        raise ValueError('one complete triangular mesh required')
+    (v, f) = (np.asarray(mesh.vertices, float), np.asarray(mesh.faces))
+    if v.ndim != 2 or v.shape[1:] != (3,) or (not len(v)) or (not np.isfinite(v).all()) or (f.ndim != 2) or (f.shape[1:] != (3,)) or (not len(f)) or (not np.issubdtype(f.dtype, np.integer)) or (f.min() < 0) or (f.max() >= len(v)):
+        raise ValueError('invalid complete vertices/topology')
+    return (v, f.astype(np.int64))
 
 def write_mesh(path, vertices, faces):
     trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(path)
-    v, f = mesh_arrays(path)
-    if not np.array_equal(f, faces) or v.shape != vertices.shape or not np.allclose(v, vertices, atol=1e-6, rtol=0):
-        raise ValueError("serialized mesh changed topology/vertex order or precision")
-    return {
-        "vertex_count": len(v), "face_count": len(f),
-        "face_index_sha256": hashlib.sha256(np.ascontiguousarray(f, dtype=np.int64).tobytes()).hexdigest(),
-        "vertices_float64_sha256": hashlib.sha256(np.ascontiguousarray(v).tobytes()).hexdigest(),
-        "faces_exactly_preserved": True, "serialized_vertex_tolerance_m": 1e-6,
-    }
-
-def canonical_gauge(native_cv, scale, T, pose):
-    T = validate_transforms([T])[0]
-    R, t = _pose(pose)
-    if not np.isfinite(scale) or scale <= 0:
-        raise ValueError("invalid scene similarity scale")
-    world = (native_cv * scale) @ T[:3, :3].T + T[:3, 3]
-    canonical = (world - t) @ R
-    replay = ((canonical @ R.T + t - T[:3, 3]) @ T[:3, :3]) / scale
-    error = float(np.max(np.abs(replay - native_cv)))
-    if error > 1e-5:
-        raise ValueError("native/canonical gauge roundtrip failed")
-    # Column-vector homogeneous similarity; vertices above use its transpose.
-    transform = np.eye(4)
-    transform[:3, :3] = scale * R.T @ T[:3, :3]
-    transform[:3, 3] = R.T @ (T[:3, 3] - t)
-    return canonical, {"T_original_canonical_from_native_opencv": transform.tolist(),
-                       "T_world_camera_metric": T.tolist(), "initializer_pose": pose,
-                       "initializer_pose_sha256": digest_json(pose),
-                       "roundtrip_max_abs_native_scene_error": error,
-                       "formula": "Vcanonical=((s*Vnative)@Rcamera.T+tcamera-tinitializer)@Rinitializer"}
+    (v, f) = mesh_arrays(path)
+    if not np.array_equal(f, faces) or v.shape != vertices.shape or (not np.allclose(v, vertices, atol=1e-06, rtol=0)):
+        raise ValueError('serialized mesh changed topology/vertex order or precision')
+    return {'vertex_count': len(v), 'face_count': len(f), 'face_index_sha256': hashlib.sha256(np.ascontiguousarray(f, dtype=np.int64).tobytes()).hexdigest(), 'vertices_float64_sha256': hashlib.sha256(np.ascontiguousarray(v).tobytes()).hexdigest(), 'faces_exactly_preserved': True, 'serialized_vertex_tolerance_m': 1e-06}
 
 def scene_similarity(native_cv, observed_cam, K, mask):
-    # Reuse the unchanged P13 front-depth numerical implementation, not its
-    # core owned-mask producer/lineage or any face-authority contract.
     projection = convex_projection_and_front_depth(native_cv, K, mask)
-    if (projection["positive_depth_vertex_fraction"] < .99
-            or projection["owned_zbuffer_pixel_count"] < 100
-            or projection["convex_projection_iou"] < .05):
-        raise ValueError("native positive/projected front-depth support insufficient")
+    if projection['positive_depth_vertex_fraction'] < 0.99 or projection['owned_zbuffer_pixel_count'] < 100 or projection['convex_projection_iou'] < 0.05:
+        raise ValueError('native positive/projected front-depth support insufficient')
     depth = float(np.median(observed_cam[:, 2]))
-    scale = depth / projection["owned_zbuffer_median_native_depth"]
-    if not np.isfinite(scale) or not .05 <= scale <= 5.:
-        raise ValueError("scene similarity outside [0.05,5.0]")
-    return scale, {"scene_similarity_scale": scale, "bounds": [.05, 5.],
-                   "metric_depth_median_m": depth,
-                   "metric_depth_p05_p95_m": np.percentile(observed_cam[:, 2], [5, 95]).tolist(),
-                   "metric_surfel_count": len(observed_cam), "native_front_projection": projection,
-                   "uncertainty": "single_view_native_front_depth_and_retained_monocular_metric_surfel_uncertainty"}
-
-def silhouette(vertices, faces, K, shape):
-    if np.any(vertices[:, 2] <= 1e-5) or not np.isfinite(vertices).all():
-        raise ValueError("scale hypothesis crosses camera near plane")
-    uv = vertices[:, :2] / vertices[:, 2, None] * K[:2] + K[2:]
-    if not np.isfinite(uv).all() or np.max(np.abs(uv)) > 1e7:
-        raise ValueError("unsafe projection")
-    triangles = np.rint(uv[faces]).astype(np.int32)
-    result = np.zeros(shape, np.uint8)
-    for triangle in triangles:
-        cv2.fillConvexPoly(result, triangle, 1)
-    return result.astype(bool)
-
-def estimate_scale(vertices, faces, observations, bounds=(.8, 1.2), samples=41):
-    """Mean triangle-silhouette 1-IoU, fixed poses/K and vertex-mean pivot.
-
-    Observations bind an image mask, K, world-from-camera T and initializer R/t.
-    Every triangle is retained; the low-resolution raster is an image objective,
-    not reconstructed geometry or contact evidence.
-    """
-    bounds = np.asarray(bounds, float)
-    if (bounds.shape != (2,) or not np.isfinite(bounds).all()
-            or not 0 < bounds[0] <= 1 <= bounds[1] or bounds[0] == bounds[1]
-            or type(samples) is not int or not 3 <= samples <= 101):
-        raise ValueError("unsafe uniform scale bounds/grid")
-    if not observations:
-        raise ValueError("at least one appearance frame required for scale alignment")
-    pivot = vertices.mean(axis=0)
-    grid = np.unique(np.r_[np.linspace(*bounds, samples), 1.])
-    def objective(scale):
-        scaled = (vertices - pivot) * scale + pivot
-        errors = []
-        for obs in observations:
-            world = scaled @ obs["R"].T + obs["t"]
-            T = obs["T"]
-            camera = (world - T[:3, 3]) @ T[:3, :3]
-            pred = silhouette(camera, faces, obs["K"], obs["mask"].shape)
-            target = obs["mask"]
-            union = np.count_nonzero(pred | target)
-            errors.append(1 - np.count_nonzero(pred & target) / max(1, union))
-        return float(np.mean(errors))
-    values = [objective(float(value)) for value in grid]
-    initial = objective(1.)
-    # Deterministic ties prefer the least intervention, then the smaller scale.
-    best = min(range(len(grid)), key=lambda i: (values[i], abs(grid[i] - 1), grid[i]))
-    scale = float(grid[best])
-    return {
-        "schema": "v19_demo_image_uniform_scale_v1", **AUTHORITY,
-        "uniform_scale": scale, "bounds": bounds.tolist(), "pivot_canonical_m": pivot.tolist(),
-        "selection_source": "deterministic_multiframe_full_triangle_silhouette_grid",
-        "static_across_timeline": True, "initial_objective": initial, "result_objective": values[best],
-        "objective": "mean_1_minus_IoU_full_triangle_silhouette_at_declared_raster",
-        "boundary_hit": bool(scale in bounds), "grid_scales": grid.tolist(), "grid_objectives": values,
-        "uncertainty": "image_only_occlusion_mask_camera_pose_and_finite_raster_grid_uncertainty",
-        "boundary_policy": "report_no_expansion_no_retry", "sample_count": len(observations),
-    }
-
+    scale = depth / projection['owned_zbuffer_median_native_depth']
+    if not np.isfinite(scale) or not 0.05 <= scale <= 5.0:
+        raise ValueError('scene similarity outside [0.05,5.0]')
+    return (scale, {'scene_similarity_scale': scale, 'bounds': [0.05, 5.0], 'metric_depth_median_m': depth, 'metric_depth_p05_p95_m': np.percentile(observed_cam[:, 2], [5, 95]).tolist(), 'metric_surfel_count': len(observed_cam), 'native_front_projection': projection, 'uncertainty': 'single_view_native_front_depth_and_retained_monocular_metric_surfel_uncertainty'})
 from typing import Any
+
 def finite_vector(value: Any, size: int, label: str) -> np.ndarray:
     array = np.asarray(value, dtype=np.float64).reshape(-1)
     if array.shape != (size,) or not np.isfinite(array).all():
-        raise RuntimeError(f"{label} must be finite length {size}, got {array}")
+        raise RuntimeError(f'{label} must be finite length {size}, got {array}')
     return array
 
-
-def convex_projection_and_front_depth(
-    vertices_camera: np.ndarray,
-    intrinsics: np.ndarray,
-    mask: np.ndarray,
-) -> dict[str, Any]:
+def convex_projection_and_front_depth(vertices_camera: np.ndarray, intrinsics: np.ndarray, mask: np.ndarray) -> dict[str, Any]:
     vertices = np.asarray(vertices_camera, dtype=np.float64)
-    fx, fy, cx, cy = finite_vector(intrinsics, 4, "projection intrinsics")
-    height, width = mask.shape
+    (fx, fy, cx, cy) = finite_vector(intrinsics, 4, 'projection intrinsics')
+    (height, width) = mask.shape
     z = vertices[:, 2]
-    valid = np.isfinite(vertices).all(axis=1) & (z > 1.0e-5)
+    valid = np.isfinite(vertices).all(axis=1) & (z > 1e-05)
     if np.count_nonzero(valid) < 3:
-        raise RuntimeError("SAM3D native pose has fewer than three positive-depth vertices")
+        raise RuntimeError('SAM3D native pose has fewer than three positive-depth vertices')
     u = fx * vertices[valid, 0] / z[valid] + cx
     v = fy * vertices[valid, 1] / z[valid] + cy
     uv = np.column_stack((u, v))
@@ -171,8 +70,7 @@ def convex_projection_and_front_depth(
     uv_inside = uv[inside]
     z_inside = z_projected[inside]
     if len(uv_inside) < 3:
-        raise RuntimeError("SAM3D native mesh projection does not enter the owned-mask image")
-
+        raise RuntimeError('SAM3D native mesh projection does not enter the owned-mask image')
     hull = cv2.convexHull(np.rint(uv_inside).astype(np.int32))
     projected = np.zeros(mask.shape, dtype=np.uint8)
     cv2.fillConvexPoly(projected, hull, 1)
@@ -181,7 +79,6 @@ def convex_projection_and_front_depth(
     intersection = int(np.count_nonzero(projected_bool & target))
     union = int(np.count_nonzero(projected_bool | target))
     iou = float(intersection / max(1, union))
-
     xi = np.rint(uv_inside[:, 0]).astype(np.int64)
     yi = np.rint(uv_inside[:, 1]).astype(np.int64)
     pixel_inside_target = target[yi, xi]
@@ -189,23 +86,12 @@ def convex_projection_and_front_depth(
     yi = yi[pixel_inside_target]
     z_owned = z_inside[pixel_inside_target]
     if len(z_owned) == 0:
-        raise RuntimeError("SAM3D native projected vertices have no object-owned depth samples")
+        raise RuntimeError('SAM3D native projected vertices have no object-owned depth samples')
     flat_index = yi * width + xi
     zbuffer = np.full(height * width, np.inf, dtype=np.float64)
     np.minimum.at(zbuffer, flat_index, z_owned)
     finite_zbuffer = zbuffer[np.isfinite(zbuffer)]
-    return {
-        "positive_depth_vertex_fraction": float(np.count_nonzero(valid) / len(vertices)),
-        "projected_vertices_inside_image": int(len(uv_inside)),
-        "projected_vertices_inside_owned_mask": int(len(z_owned)),
-        "owned_zbuffer_pixel_count": int(len(finite_zbuffer)),
-        "owned_zbuffer_coverage_fraction": float(len(finite_zbuffer) / max(1, np.count_nonzero(target))),
-        "owned_zbuffer_median_native_depth": float(np.median(finite_zbuffer)),
-        "convex_projection_iou": iou,
-        "convex_projection_pixels": int(np.count_nonzero(projected_bool)),
-        "owned_mask_pixels": int(np.count_nonzero(target)),
-    }
-
+    return {'positive_depth_vertex_fraction': float(np.count_nonzero(valid) / len(vertices)), 'projected_vertices_inside_image': int(len(uv_inside)), 'projected_vertices_inside_owned_mask': int(len(z_owned)), 'owned_zbuffer_pixel_count': int(len(finite_zbuffer)), 'owned_zbuffer_coverage_fraction': float(len(finite_zbuffer) / max(1, np.count_nonzero(target))), 'owned_zbuffer_median_native_depth': float(np.median(finite_zbuffer)), 'convex_projection_iou': iou, 'convex_projection_pixels': int(np.count_nonzero(projected_bool)), 'owned_mask_pixels': int(np.count_nonzero(target))}
 import argparse
 import hashlib
 import json
@@ -320,7 +206,6 @@ def score_mask(image: np.ndarray, mask: np.ndarray, *, min_area_fraction: float,
     area_term = min(1.0, area_fraction / 0.25)
     score = 0.45 * area_term + 0.35 * sharpness_term + 0.2 * clearance_term
     return {'eligible': not reasons, 'rejection': None if not reasons else '+'.join(reasons), 'area_px': area, 'area_fraction': area_fraction, 'bbox_xyxy': [x0, y0, x1 + 1, y1 + 1], 'border_clearance_fraction': border_fraction, 'laplacian_variance_dilated_mask': sharpness, 'score_terms': {'area': area_term, 'sharpness': sharpness_term, 'border_clearance': clearance_term, 'safe_clearance_fraction': safe_clearance_fraction, 'weights': {'area': 0.45, 'sharpness': 0.35, 'border_clearance': 0.2}}, 'score': float(score)}
-
 import argparse
 import json
 import shutil
@@ -441,7 +326,6 @@ def appearance_order_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--min-border-fraction', type=float, default=0.005)
     parser.add_argument('--min-sharpness', type=float, default=2.0)
     return parser.parse_args(argv)
-
 import argparse
 import hashlib
 import json
@@ -598,7 +482,6 @@ def conditioning_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--comparison-mask', type=Path, default=None, help='Optional raw/pre-ownership mask recorded only as a diagnostic; never used for conditioning.')
     parser.add_argument('--allow-unverified-mask-provenance', action='store_true', help='Explicit legacy-only override when visible_geometry_candidate.mask_path is absent or differs.')
     return parser.parse_args(argv)
-
 import argparse
 import hashlib
 import json
@@ -706,7 +589,6 @@ def trellis_candidate_record(report_path: Path, expected_crop: Path) -> dict[str
     gaussian_text = str(report.get('gaussian') or '')
     glb_text = str(report.get('glb') or '')
     return {'source_model': 'trellis', 'status': 'frozen_existing_raw_prior_reference', 'runner_report': str(report_path), 'conditioning': {'input_kind': 'object_isolated_rgba_crop', 'image': file_record(expected_crop, 'P11 TRELLIS crop'), 'input_binding': {'report_image': str(image), 'byte_identical': True}}, 'native_outputs': {'raw_mesh': file_record(mesh, 'TRELLIS raw mesh'), 'gaussian': file_record(Path(gaussian_text), 'TRELLIS Gaussian') if gaussian_text else None, 'glb': file_record(Path(glb_text), 'TRELLIS GLB') if glb_text else None, 'mesh_stats': {'vertices': report.get('vertices'), 'faces': report.get('faces'), 'extent_model_units': report.get('extent_model_units'), 'center_model_units': report.get('center_model_units')}}, 'semantics': {'mesh_frame': 'trellis_native_local_object_frame', 'metric_scale_ready': False, 'v19_canonical_frame_ready': False, 'collision_surface_ready': False, 'allowed_use': 'frozen baseline raw geometry prior reference'}, 'source_artifacts_mutated': False}
-
 import argparse
 import hashlib
 import json
@@ -768,34 +650,6 @@ def deterministic_sample_mesh(mesh: trimesh.Trimesh, count: int) -> np.ndarray:
 def nearest_surface_summary(query: np.ndarray, target: np.ndarray) -> dict[str, Any]:
     (distances, _) = cKDTree(np.asarray(target, dtype=np.float64)).query(np.asarray(query, dtype=np.float64), k=1, workers=-1)
     return {'count': int(len(distances)), 'median_m': float(np.median(distances)), 'p90_m': float(np.percentile(distances, 90)), 'p95_m': float(np.percentile(distances, 95)), 'mean_m': float(np.mean(distances)), 'max_m': float(np.max(distances))}
-
-def observed_front_quality_decision(*, median_fraction: float, p95_fraction: float, native_projection_iou: float, maximum_median_fraction: float, strict_maximum_p95_fraction: float, conditional_maximum_p95_fraction: float, conditional_minimum_projection_iou: float) -> dict[str, Any]:
-    """Apply a strict tier plus a bounded, explicitly uncertain P95-tail tier.
-
-    The conditional tier is intentionally narrow: the robust median must still
-    satisfy the unchanged strict limit, only the P95 tail may exceed the strict
-    limit, and the native image-plane pose must have substantial mask overlap.
-    This keeps a small partial-surface tail from suppressing a usable render
-    prior without admitting a gross native-pose failure.
-    """
-    values = np.asarray([median_fraction, p95_fraction, native_projection_iou, maximum_median_fraction, strict_maximum_p95_fraction, conditional_maximum_p95_fraction, conditional_minimum_projection_iou], dtype=np.float64)
-    if not np.isfinite(values).all():
-        raise RuntimeError(f'non-finite observed-front quality inputs: {values}')
-    if conditional_maximum_p95_fraction < strict_maximum_p95_fraction:
-        raise RuntimeError('conditional P95 limit must not be below the strict P95 limit')
-    median_passed = bool(median_fraction <= maximum_median_fraction)
-    strict_p95_passed = bool(p95_fraction <= strict_maximum_p95_fraction)
-    conditional_p95_passed = bool(p95_fraction <= conditional_maximum_p95_fraction)
-    conditional_projection_passed = bool(native_projection_iou >= conditional_minimum_projection_iou)
-    strict_passed = bool(median_passed and strict_p95_passed)
-    conditional_tail_passed = bool(not strict_passed and median_passed and (p95_fraction > strict_maximum_p95_fraction) and conditional_p95_passed and conditional_projection_passed)
-    if strict_passed:
-        mode = 'strict_observed_front_quality'
-    elif conditional_tail_passed:
-        mode = 'conditional_p95_tail_uncertain_native_projection_supported'
-    else:
-        mode = 'failed_observed_front_quality'
-    return {'quality_passed': bool(strict_passed or conditional_tail_passed), 'acceptance_mode': mode, 'strict_quality_passed': strict_passed, 'conditional_tail_quality_passed': conditional_tail_passed, 'conditional_tail_uncertainty': conditional_tail_passed, 'median_passed': median_passed, 'strict_p95_passed': strict_p95_passed, 'conditional_p95_passed': conditional_p95_passed, 'conditional_projection_passed': conditional_projection_passed, 'strict_maximum_p95_fraction_of_extent_diag': float(strict_maximum_p95_fraction), 'conditional_maximum_p95_fraction_of_extent_diag': float(conditional_maximum_p95_fraction), 'conditional_minimum_native_projection_iou': float(conditional_minimum_projection_iou)}
 
 def mesh_from_path(path: Path) -> trimesh.Trimesh:
     import trimesh
@@ -922,6 +776,7 @@ def native_bridge_convex_projection_and_front_depth(vertices_camera: np.ndarray,
     return {'positive_depth_vertex_fraction': float(np.count_nonzero(valid) / len(vertices)), 'projected_vertices_inside_image': int(len(uv_inside)), 'projected_vertices_inside_owned_mask': int(len(z_owned)), 'owned_zbuffer_pixel_count': int(len(finite_zbuffer)), 'owned_zbuffer_coverage_fraction': float(len(finite_zbuffer) / max(1, np.count_nonzero(target))), 'owned_zbuffer_median_native_depth': float(np.median(finite_zbuffer)), 'convex_projection_iou': iou, 'convex_projection_pixels': int(np.count_nonzero(projected_bool)), 'owned_mask_pixels': int(np.count_nonzero(target))}
 
 def bind_sam3d_metric(args: argparse.Namespace) -> dict[str, Any]:
+    from gates.object.geometry import observed_front_quality_decision
     import trimesh
     evidence_path = native_bridge_require_file(args.evidence_report, 'P11 evidence report')
     p12_path = native_bridge_require_file(args.p12_report, 'P12 parallel report')
@@ -1043,7 +898,6 @@ def native_bridge_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--max-observed-to-generated-p95-extent-fraction', type=float, default=0.18, help='Maximum bounded conditional P95/extent tier; reported as uncertain when above strict.')
     parser.add_argument('--min-conditional-tail-native-projection-iou', type=float, default=0.25, help='Minimum native convex projection IoU required by the conditional P95-tail tier.')
     return parser.parse_args(argv)
-
 import argparse
 import hashlib
 import itertools
@@ -1101,51 +955,9 @@ def load_mesh(path: Path) -> trimesh.Trimesh:
         raise RuntimeError(f'empty mesh: {path}')
     return trimesh.Trimesh(vertices=np.asarray(geom.vertices, dtype=float), faces=np.asarray(geom.faces, dtype=np.int64), process=False)
 
-def pca_basis(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    center = points.mean(axis=0)
-    centered = points - center
-    cov = centered.T @ centered / max(1, len(points) - 1)
-    (vals, vecs) = np.linalg.eigh(cov)
-    order = np.argsort(vals)[::-1]
-    vals = vals[order]
-    vecs = vecs[:, order]
-    if np.linalg.det(vecs) < 0:
-        vecs[:, -1] *= -1.0
-    return (center, vecs, vals)
-
-def rotation_candidates(obs_basis: np.ndarray, model_basis: np.ndarray) -> list[np.ndarray]:
-    candidates: list[np.ndarray] = []
-    for perm in itertools.permutations(range(3)):
-        perm_mat = np.eye(3)[:, perm]
-        for signs in itertools.product([-1.0, 1.0], repeat=3):
-            sign_mat = np.diag(signs)
-            r = obs_basis @ perm_mat @ sign_mat @ model_basis.T
-            if np.linalg.det(r) < 0:
-                continue
-            candidates.append(r)
-    return candidates
-
 def nearest_stats(query: np.ndarray, target: np.ndarray) -> dict[str, float]:
     (d, _) = cKDTree(target).query(query, k=1, workers=-1)
     return {'mean_m': float(np.mean(d)), 'median_m': float(np.median(d)), 'p90_m': float(np.percentile(d, 90)), 'p95_m': float(np.percentile(d, 95)), 'max_m': float(np.max(d))}
-
-def umeyama_similarity(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
-    if len(src) != len(dst) or len(src) < 3:
-        raise RuntimeError('Umeyama requires matched arrays with >=3 points')
-    mu_src = src.mean(axis=0)
-    mu_dst = dst.mean(axis=0)
-    xs = src - mu_src
-    xd = dst - mu_dst
-    cov = xd.T @ xs / len(src)
-    (u, s, vt) = np.linalg.svd(cov)
-    d = np.ones(3)
-    if np.linalg.det(u @ vt) < 0:
-        d[-1] = -1.0
-    r = u @ np.diag(d) @ vt
-    var_src = np.sum(xs * xs) / len(src)
-    scale = float(np.sum(s * d) / max(var_src, 1e-12))
-    t = mu_dst - scale * (r @ mu_src)
-    return (scale, r, t)
 
 def completion_support_deterministic_sample_mesh(mesh: trimesh.Trimesh, count: int) -> np.ndarray:
     import trimesh
@@ -1153,79 +965,6 @@ def completion_support_deterministic_sample_mesh(mesh: trimesh.Trimesh, count: i
     rng = np.random.default_rng(18)
     (pts, _) = trimesh.sample.sample_surface(mesh, count, seed=rng)
     return np.asarray(pts, dtype=float)
-
-def align_trellis_to_observed(trellis: trimesh.Trimesh, observed_points: np.ndarray, max_samples: int=20000) -> dict[str, Any]:
-    import trimesh
-    (obs_center, obs_basis, obs_vals) = pca_basis(observed_points)
-    model_vertices = np.asarray(trellis.vertices, dtype=float)
-    (model_center, model_basis, model_vals) = pca_basis(model_vertices)
-    model_samples = completion_support_deterministic_sample_mesh(trellis, min(max_samples, max(2000, len(trellis.faces))))
-    obs_radius = float(np.sqrt(np.mean(np.sum((observed_points - obs_center) ** 2, axis=1))))
-    model_radius = float(np.sqrt(np.mean(np.sum((model_samples - model_center) ** 2, axis=1))))
-    initial_scale = obs_radius / max(model_radius, 1e-12)
-    best: dict[str, Any] | None = None
-    for r in rotation_candidates(obs_basis, model_basis):
-        transformed_samples = initial_scale * (model_samples @ r.T) + obs_center - initial_scale * (model_center @ r.T)
-        stats = nearest_stats(observed_points, transformed_samples)
-        score = stats['median_m'] + 0.25 * stats['p90_m']
-        if best is None or score < best['score']:
-            best = {'scale': initial_scale, 'rotation': r, 'translation': obs_center - initial_scale * (r @ model_center), 'score': float(score), 'observed_to_trellis_stats_initial': stats}
-    assert best is not None
-    r_total = np.asarray(best['rotation'], dtype=float)
-    s_total = float(best['scale'])
-    t_total = np.asarray(best['translation'], dtype=float)
-    refinement_stats = []
-    raw_tree_points = model_samples
-    for _ in range(6):
-        transformed_samples = s_total * (raw_tree_points @ r_total.T) + t_total
-        tree = cKDTree(transformed_samples)
-        (_, idx) = tree.query(observed_points, k=1, workers=-1)
-        src_match = raw_tree_points[idx]
-        (s_new, r_new, t_new) = umeyama_similarity(src_match, observed_points)
-        if not np.isfinite(s_new) or s_new <= 0:
-            break
-        (s_total, r_total, t_total) = (s_new, r_new, t_new)
-        refinement_stats.append(nearest_stats(observed_points, s_total * (raw_tree_points @ r_total.T) + t_total))
-    final_samples = s_total * (model_samples @ r_total.T) + t_total
-    final_stats_obs_to_model = nearest_stats(observed_points, final_samples)
-    final_stats_model_to_obs = nearest_stats(final_samples, observed_points)
-    return {'scale': float(s_total), 'rotation': r_total.astype(float).tolist(), 'translation': t_total.astype(float).tolist(), 'matrix_model_to_canonical': np.vstack([np.hstack([s_total * r_total, t_total.reshape(3, 1)]), np.array([[0.0, 0.0, 0.0, 1.0]])]).astype(float).tolist(), 'initial_scale_from_rms_radius': float(initial_scale), 'observed_pca_eigenvalues': obs_vals.astype(float).tolist(), 'trellis_pca_eigenvalues': model_vals.astype(float).tolist(), 'observed_to_trellis_stats_initial': best['observed_to_trellis_stats_initial'], 'observed_to_trellis_stats_final': final_stats_obs_to_model, 'trellis_to_observed_stats_final': final_stats_model_to_obs, 'icp_refinement_stats': refinement_stats}
-
-def identity_metric_canonical_alignment(generated: trimesh.Trimesh, observed_points: np.ndarray, input_report: dict[str, Any], mesh_path: Path, max_samples: int=20000) -> dict[str, Any]:
-    import trimesh
-    if input_report.get('schema') != 'v19_metric_canonical_generated_prior_input_v1':
-        raise RuntimeError('--input-mesh-already-metric-canonical requires the strict metric-canonical input schema')
-    if input_report.get('status') != 'verified_sam3d_native_sensor_metric_canonical_render_prior':
-        raise RuntimeError('metric-canonical generated input is not a verified SAM3D native bridge')
-    contract = input_report.get('metric_canonical_input_contract')
-    if not isinstance(contract, dict):
-        raise RuntimeError('metric-canonical generated input lacks its contract')
-    required_true = ('alignment_must_be_identity', 'generated_faces_render_only', 'native_orientation_preserved', 'camera_origin_scene_similarity_applied')
-    if any((contract.get(key) is not True for key in required_true)):
-        raise RuntimeError(f'metric-canonical generated input contract is incomplete: {contract}')
-    if str(input_report.get('mesh_sha256') or '') != completion_support_sha256_file(mesh_path):
-        raise RuntimeError('metric-canonical generated mesh hash disagrees with its input contract')
-    bridge_path = Path(str(input_report.get('bridge_report') or '')).expanduser().resolve()
-    if not bridge_path.is_file() or completion_support_sha256_file(bridge_path) != str(input_report.get('bridge_report_sha256') or ''):
-        raise RuntimeError('SAM3D metric bridge report is missing or hash-mismatched')
-    bridge = completion_support_load_json(bridge_path)
-    if bridge.get('schema') != 'v19_sam3d_native_sensor_metric_canonical_bridge_v1' or not str(bridge.get('status') or '').startswith('ok_'):
-        raise RuntimeError('SAM3D metric bridge report is not successful')
-    output_mesh = Path(str((bridge.get('outputs') or {}).get('metric_canonical_render_prior') or '')).expanduser().resolve()
-    if output_mesh != mesh_path.expanduser().resolve():
-        raise RuntimeError('SAM3D metric bridge output path disagrees with P13 input mesh')
-    samples = completion_support_deterministic_sample_mesh(generated, min(max_samples, max(2000, len(generated.faces))))
-    observed_to_generated = nearest_stats(observed_points, samples)
-    generated_to_observed = nearest_stats(samples, observed_points)
-    return {'mode': 'verified_pre_aligned_metric_canonical_identity', 'scale': 1.0, 'rotation': np.eye(3, dtype=float).tolist(), 'translation': [0.0, 0.0, 0.0], 'matrix_model_to_canonical': np.eye(4, dtype=float).tolist(), 'initial_scale_from_rms_radius': None, 'observed_pca_eigenvalues': None, 'trellis_pca_eigenvalues': None, 'observed_to_trellis_stats_initial': observed_to_generated, 'observed_to_trellis_stats_final': observed_to_generated, 'trellis_to_observed_stats_final': generated_to_observed, 'icp_refinement_stats': [], 'native_orientation_preserved': True, 'pca_axis_permutation_used': False, 'icp_rotation_or_scale_used': False, 'bridge_report': str(bridge_path), 'bridge_report_sha256': completion_support_sha256_file(bridge_path)}
-
-def transform_mesh(mesh: trimesh.Trimesh, align: dict[str, Any]) -> trimesh.Trimesh:
-    import trimesh
-    m = np.asarray(align['matrix_model_to_canonical'], dtype=float)
-    verts = np.asarray(mesh.vertices, dtype=float)
-    hom = np.concatenate([verts, np.ones((len(verts), 1))], axis=1)
-    out = (hom @ m.T)[:, :3]
-    return trimesh.Trimesh(vertices=out, faces=np.asarray(mesh.faces, dtype=np.int64), process=False)
 
 def face_center_labels(mesh: trimesh.Trimesh, observed_points: np.ndarray, observed_band_m: float) -> tuple[np.ndarray, np.ndarray]:
     import trimesh
@@ -1281,6 +1020,7 @@ def estimate_projection_source_size(intr: np.ndarray, image_w: int, image_h: int
     return (source_w, source_h, 'estimated_from_principal_point_legacy_evidence')
 
 def trellis_planar_slab_keep_mask(observed_points: np.ndarray, mesh_canonical: trimesh.Trimesh, *, enabled: bool, observed_band_m: float, eigenvalue_ratio_max: float, min_band_m: float, max_band_m: float) -> tuple[np.ndarray, dict[str, Any]]:
+    from observations.object.registration import pca_basis
     import trimesh
     face_count = int(len(mesh_canonical.faces))
     if not enabled:
@@ -1351,6 +1091,9 @@ def trellis_silhouette_keep_mask(evidence: dict[str, Any], mesh_canonical: trime
     return (keep, {'state': 'silhouette_free_space_filter_applied', 'mask_path': str(mask_path), 'mask_size': [int(w), int(h)], 'source_size': [int(source_w), int(source_h)], 'source_size_note': source_note, 'scaled_intrinsics_fx_fy_cx_cy': [float(fx), float(fy), float(cx), float(cy)], 'dilate_px': int(max(0, dilate_px)), 'input_trellis_faces': int(face_count), 'projected_inside_image_faces': int(np.count_nonzero(inside_image)), 'kept_by_silhouette_faces': int(np.count_nonzero(keep)), 'free_space_rejected_faces': int(np.count_nonzero(rejected)), 'claim_scope': 'TRELLIS hidden faces whose evidence-frame projection falls outside the object-owned silhouette are not accepted as object body.'})
 
 def build_completion_face_support(argv=None) -> None:
+    from observations.object.registration import align_trellis_to_observed
+    from observations.object.registration import identity_metric_canonical_alignment
+    from observations.object.registration import transform_mesh
     import trimesh
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence-report', type=Path, required=True)

@@ -175,7 +175,12 @@ def main(argv=None):
     internal.add_argument('arguments',nargs=argparse.REMAINDER)
     tail=commands.add_parser('formal-tail',help='prepared formal/HOT3D/RGB shared physical tail')
     tail.add_argument('--spec',type=Path,required=True)
+    preflight=commands.add_parser('preflight',help='validate actual isolated provider imports and asset roots')
+    preflight.add_argument('--assets-manifest',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='preflight':
+        from utils.config import preflight_providers
+        result=preflight_providers(load(args.assets_manifest));print(json.dumps(result,indent=2));return result
     if args.command=='formal-tail':return formal_tail(load(args.spec))
     if args.command=='annotate':
         result=annotate(args);print(json.dumps(result,indent=2));return result

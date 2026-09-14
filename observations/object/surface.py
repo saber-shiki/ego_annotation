@@ -1,5 +1,6 @@
-"""Extracted formal interval mechanisms; no historical script imports."""
 from __future__ import annotations
+from gates.object.observation import conservative_mask_on_depth
+'Extracted formal interval mechanisms; no historical script imports.'
 
 def classify_object_vertices_against_depth(*, frame: dict[str, Any], vertices_object: np.ndarray, pose: tuple[np.ndarray, np.ndarray], depth_row: dict[str, Any] | None, support_margin_m: float, free_space_margin_m: float) -> tuple[np.ndarray, dict[str, Any]]:
     from typing import Any
@@ -114,82 +115,6 @@ def file_record(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ValueError(f'metric eligibility input missing: {path}')
     return {'path': str(path), 'bytes': int(path.stat().st_size), 'sha256': sha256(path)}
-
-def conservative_mask_on_depth(mask: np.ndarray, A_depth_from_mask: np.ndarray, depth_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
-    """Return OpenCV-nearest mask samples and an explicit coordinate-valid guard.
-
-    OpenCV can assign a border source sample to a destination center whose
-    inverse-mapped continuous coordinate lies outside the declared source
-    raster.  Such subpixel extrapolation remains appearance support but cannot
-    become a metric candidate.
-    """
-    mask = np.asarray(mask, dtype=bool)
-    affine = np.asarray(A_depth_from_mask, dtype=np.float64)
-    if mask.ndim != 2 or len(depth_shape) != 2 or min(depth_shape) <= 0 or (affine.shape != (3, 3)) or (not np.isfinite(affine).all()) or (abs(float(np.linalg.det(affine))) < 1e-12):
-        raise ValueError('invalid mask/depth affine contract')
-    sampled = cv2.resize(mask.astype(np.uint8), (depth_shape[1], depth_shape[0]), interpolation=cv2.INTER_NEAREST_EXACT) > 0 if mask.shape != depth_shape else mask.copy()
-    inverse = np.linalg.inv(affine)
-    (yy, xx) = np.mgrid[:depth_shape[0], :depth_shape[1]]
-    points = np.stack([xx, yy, np.ones_like(xx)], axis=-1) @ inverse.T
-    finite = np.isfinite(points).all(axis=2) & (np.abs(points[..., 2]) > 1e-12)
-    mx = np.divide(points[..., 0], points[..., 2], out=np.zeros_like(points[..., 0], dtype=float), where=finite)
-    my = np.divide(points[..., 1], points[..., 2], out=np.zeros_like(points[..., 1], dtype=float), where=finite)
-    coordinate_valid = finite & (mx >= 0.0) & (mx <= mask.shape[1] - 1.0) & (my >= 0.0) & (my <= mask.shape[0] - 1.0)
-    return (sampled, coordinate_valid)
-
-def classify_native_depth(*, owned_mask: np.ndarray, hand_z: np.ndarray, depth_z: np.ndarray, A_depth_from_mask: np.ndarray, complete_hand_geometry: bool, validated_hand_absence: bool, tolerance_m: float, uncertainty_padding_mask_px: int, raw_mask: np.ndarray | None=None) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
-    """Classify at the exact depth raster and return robust-filter candidates.
-
-    Clear no-overlap object body remains a candidate; no-hit pixels within the
-    conservative projected-hand band do not.  Missing declared hand geometry
-    makes the frame ineligible while preserving appearance elsewhere.
-    """
-    depth_z = np.asarray(depth_z, dtype=np.float64)
-    hand_z = np.asarray(hand_z, dtype=np.float64)
-    if depth_z.ndim != 2 or hand_z.shape != depth_z.shape or (not np.isfinite(tolerance_m)) or (tolerance_m < 0) or (type(uncertainty_padding_mask_px) is not int) or (uncertainty_padding_mask_px < 0):
-        raise ValueError('invalid native depth-order inputs')
-    (owned_depth, coordinate_valid) = conservative_mask_on_depth(owned_mask, A_depth_from_mask, depth_z.shape)
-    (raw_depth, raw_coordinate_valid) = conservative_mask_on_depth(owned_mask if raw_mask is None else raw_mask, A_depth_from_mask, depth_z.shape)
-    if not np.array_equal(coordinate_valid, raw_coordinate_valid):
-        raise ValueError('raw/owned mask coordinate guards disagree')
-    codes = np.full(depth_z.shape, CLASS_CODES['outside_owned_appearance'], dtype=np.uint8)
-    support = np.isfinite(depth_z) & (depth_z > 0)
-    active = raw_depth & coordinate_valid
-    codes[raw_depth & ~coordinate_valid] = CLASS_CODES['invalid_mask_coordinate']
-    codes[active & ~support] = CLASS_CODES['unsupported_depth']
-    if not complete_hand_geometry and (not validated_hand_absence):
-        codes[active & support] = CLASS_CODES['unresolved_hand_geometry']
-        eligible = np.zeros(depth_z.shape, dtype=bool)
-    else:
-        hit = np.isfinite(hand_z) & (hand_z > 0)
-        valid_hit = active & support & hit
-        delta = np.zeros(depth_z.shape, dtype=np.float64)
-        np.subtract(hand_z, depth_z, out=delta, where=valid_hit)
-        front = valid_hit & (delta < -tolerance_m)
-        behind = valid_hit & (delta > tolerance_m)
-        near = valid_hit & ~front & ~behind
-        codes[front] = CLASS_CODES['hand_clearly_front']
-        codes[behind] = CLASS_CODES['hand_clearly_behind']
-        codes[near] = CLASS_CODES['near_depth_ambiguous']
-        no_hit = active & support & ~hit
-        if validated_hand_absence:
-            fringe = np.zeros(depth_z.shape, dtype=bool)
-        else:
-            linear = np.asarray(A_depth_from_mask, dtype=np.float64)[:2, :2]
-            depth_pad = int(np.ceil(float(uncertainty_padding_mask_px) * max(np.linalg.norm(linear[:, 0]), np.linalg.norm(linear[:, 1]))))
-            if depth_pad:
-                kernel = np.ones((2 * depth_pad + 1, 2 * depth_pad + 1), np.uint8)
-                fringe = cv2.dilate(hit.astype(np.uint8), kernel) > 0
-            else:
-                fringe = hit.copy()
-        codes[no_hit & fringe] = CLASS_CODES['no_hit_uncertainty_fringe']
-        codes[no_hit & ~fringe] = CLASS_CODES['clear_no_hand_overlap_candidate']
-        eligible = (behind | no_hit & ~fringe) & owned_depth
-    counts = {name: int(np.count_nonzero(codes == code)) for (name, code) in CLASS_CODES.items()}
-    counts['metric_candidate_eligible'] = int(np.count_nonzero(eligible))
-    counts['appearance_owned_at_depth'] = int(np.count_nonzero(owned_depth))
-    counts['raw_appearance_at_depth'] = int(np.count_nonzero(raw_depth))
-    return (codes, eligible, counts)
 
 class MetricEligibility:
 
@@ -451,31 +376,6 @@ def load_calibration_contract(path: Path | None, *, frame_ids: list[int] | None=
     source = f'legacy_calibration_contract:{source}'
     summary = {'path': str(path), 'schema': payload.get('schema'), 'calibration_authority': payload.get('calibration_authority') or 'legacy_unspecified', 'intrinsics_fx_fy_cx_cy': [float(v) for v in intr.tolist()], 'intrinsics_source': source, 'fov_degrees': payload.get('fov_degrees'), 'aggregation': payload.get('aggregation'), 'legacy_contract_without_explicit_image_planes': True}
     return (intr.astype(float), source, summary, None)
-
-def validate_depth_camera_contract_binding(*, depth: dict[str, Any], camera_contract_v2: dict[str, Any] | None, calibration_contract_path: Path | None, depth_image_plane: str, allow_implicit_depth_resize: bool) -> dict[str, Any]:
-    if camera_contract_v2 is None:
-        return {'status': 'not_required_without_v2_camera_contract', 'archive_binding': depth.get('camera_contract_binding')}
-    if calibration_contract_path is None:
-        raise RuntimeError('internal error: V2 camera contract has no source path')
-    binding = depth.get('camera_contract_binding')
-    if not isinstance(binding, dict):
-        raise RuntimeError('a V2 camera contract requires a depth archive produced by adapt_v19_depth_to_camera_contract.py; the archive has no complete camera-contract binding')
-    expected_contract_hash = camera_contract_sha256_file(calibration_contract_path)
-    if binding['sha256'] != expected_contract_hash:
-        raise RuntimeError(f"depth archive camera-contract hash disagrees with --calibration-contract: depth={binding['sha256']} supplied={expected_contract_hash}")
-    if binding['plane'] != depth_image_plane:
-        raise RuntimeError(f"depth archive is bound to plane {binding['plane']!r}, not requested {depth_image_plane!r}")
-    (expected_depth_intrinsics, expected_depth_transform) = camera_contract_plane_intrinsics(camera_contract_v2['payload'], camera_contract_v2['normalized'], plane_name=depth_image_plane, actual_size_wh=(int(depth['depth'].shape[2]), int(depth['depth'].shape[1])), allow_implicit_resize=bool(allow_implicit_depth_resize))
-    if not np.allclose(depth['intrinsics'], expected_depth_intrinsics[None, :], atol=1e-06, rtol=0.0):
-        raise RuntimeError('depth archive intrinsics rows disagree with the requested V2 contract plane')
-    if not np.allclose(np.asarray(binding['A_depth_from_calibration'], dtype=np.float64), np.asarray(expected_depth_transform['A_actual_plane_from_calibration'], dtype=np.float64), atol=1e-09, rtol=0.0):
-        raise RuntimeError('depth archive A_depth_from_calibration disagrees with the requested V2 contract plane')
-    if binding.get('metadata_only_ray_relabel_override') is True or binding.get('depth_ray_geometry_reprojected') is not True:
-        source_intrinsics = depth.get('source_estimated_intrinsics')
-        same_rays = bool(source_intrinsics is not None and np.asarray(source_intrinsics).shape == np.asarray(depth['intrinsics']).shape and np.allclose(source_intrinsics, depth['intrinsics'], atol=1e-06, rtol=0.0))
-        if not same_rays:
-            raise RuntimeError('depth archive only relabeled K metadata: dense z was not reprojected onto the requested camera rays')
-    return {**binding, 'status': 'exact_camera_contract_hash_plane_intrinsics_and_affine_match', 'supplied_contract_path': str(calibration_contract_path), 'supplied_contract_sha256': expected_contract_hash}
 
 def load_camera_npz(path: Path | None) -> dict[int, tuple[np.ndarray, str]]:
     if path is None:
@@ -1140,6 +1040,7 @@ def remove_existing_object(objects: list[Any], object_id: str, track_id: str) ->
     return out
 
 def build_visible_geometry(args: argparse.Namespace) -> dict[str, Any]:
+    from gates.camera.calibration import validate_depth_camera_contract_binding
     (raw_frames, raw_payload) = raw_frame_map(args.raw_frame_manifest)
     depth = load_depth_npz(args.depth_npz)
     (calibration_intrinsics, calibration_source, calibration_summary, camera_contract_v2) = load_calibration_contract(args.calibration_contract, frame_ids=sorted(raw_frames))
@@ -1476,84 +1377,6 @@ def indexed_track(value: dict[str, Any]) -> dict[int, dict[str, Any]]:
         raise ValueError('empty SAM2 track')
     return result
 
-def first_hit_z(vertices: np.ndarray, faces: np.ndarray, K: np.ndarray, shape: tuple[int, int], near_m: float=1e-06) -> tuple[np.ndarray, dict[str, int]]:
-    """Rasterize camera-z using perspective-correct screen barycentrics.
-
-    Triangles crossing the near plane are clipped in camera coordinates.  A
-    nonfinite face is diagnosed and skipped (therefore cannot erase appearance),
-    while malformed array/topology/camera contracts are mechanical failures.
-    """
-    vertices = np.asarray(vertices, dtype=np.float64)
-    faces_array = np.asarray(faces)
-    K = np.asarray(K, dtype=np.float64)
-    if vertices.ndim != 2 or vertices.shape[1:] != (3,) or len(vertices) < 3:
-        raise ValueError('vertices must have shape [V,3]')
-    if faces_array.ndim != 2 or faces_array.shape[1:] != (3,) or (not len(faces_array)) or (faces_array.dtype.kind not in 'iu') or (int(faces_array.min()) < 0) or (int(faces_array.max()) >= len(vertices)):
-        raise ValueError('malformed triangle topology')
-    if K.shape != (3, 3) or not np.isfinite(K).all() or (not np.allclose(K[2], [0.0, 0.0, 1.0], atol=1e-12)) or (float(K[0, 0]) <= 0) or (float(K[1, 1]) <= 0) or (abs(float(K[1, 0])) > 1e-12):
-        raise ValueError('invalid pinhole camera K')
-    if not isinstance(shape, tuple) or len(shape) != 2 or any((isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in shape)) or (not np.isfinite(near_m)) or (near_m <= 0):
-        raise ValueError('invalid raster shape or near plane')
-    faces = faces_array.astype(np.int64, copy=False)
-    zbuf = np.full(shape, np.inf, dtype=np.float64)
-    report = {'faces_total': int(len(faces)), 'nonfinite_faces': 0, 'behind_near_faces': 0, 'clipped_faces': 0, 'degenerate_faces': 0, 'offscreen_faces': 0}
-    (height, width) = shape
-    for face in faces:
-        triangle = vertices[face]
-        if not np.isfinite(triangle).all():
-            report['nonfinite_faces'] += 1
-            continue
-        if np.all(triangle[:, 2] < near_m):
-            report['behind_near_faces'] += 1
-            continue
-        polygon = list(triangle)
-        if np.any(triangle[:, 2] < near_m):
-            report['clipped_faces'] += 1
-            polygon = []
-            for (start, end) in zip(triangle, np.roll(triangle, -1, axis=0)):
-                (start_in, end_in) = (start[2] >= near_m, end[2] >= near_m)
-                if start_in:
-                    polygon.append(start)
-                if start_in != end_in:
-                    alpha = (near_m - start[2]) / (end[2] - start[2])
-                    polygon.append(start + alpha * (end - start))
-        for fan_index in range(1, len(polygon) - 1):
-            tri = np.asarray([polygon[0], polygon[fan_index], polygon[fan_index + 1]])
-            homogeneous = tri @ K.T
-            uv = homogeneous[:, :2] / homogeneous[:, 2:3]
-            lower = np.maximum(np.floor(uv.min(axis=0)), [0, 0]).astype(int)
-            upper = np.minimum(np.ceil(uv.max(axis=0)), [width - 1, height - 1]).astype(int)
-            if np.any(lower > upper):
-                report['offscreen_faces'] += 1
-                continue
-            (x0, y0) = lower
-            (x1, y1) = upper
-            (a, b, c) = uv
-            denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
-            if abs(float(denominator)) < 1e-12:
-                report['degenerate_faces'] += 1
-                continue
-            (yy, xx) = np.mgrid[y0:y1 + 1, x0:x1 + 1]
-            wa = ((b[1] - c[1]) * (xx - c[0]) + (c[0] - b[0]) * (yy - c[1])) / denominator
-            wb = ((c[1] - a[1]) * (xx - c[0]) + (a[0] - c[0]) * (yy - c[1])) / denominator
-            wc = 1.0 - wa - wb
-            inside = (wa >= -1e-10) & (wb >= -1e-10) & (wc >= -1e-10)
-            inverse_z = wa / tri[0, 2] + wb / tri[1, 2] + wc / tri[2, 2]
-            depth = np.divide(1.0, inverse_z, out=np.full_like(inverse_z, np.inf), where=inverse_z > 0)
-            view = zbuf[y0:y1 + 1, x0:x1 + 1]
-            np.minimum(view, np.where(inside, depth, np.inf), out=view)
-    report['hit_pixels'] = int(np.isfinite(zbuf).sum())
-    return (zbuf, report)
-
-def nearest_hand_first_hits(hands: list[tuple[np.ndarray, np.ndarray]], K: np.ndarray, shape: tuple[int, int], near_m: float=1e-06) -> tuple[np.ndarray, list[dict[str, int]]]:
-    nearest = np.full(shape, np.inf, dtype=np.float64)
-    reports = []
-    for (vertices, faces) in hands:
-        (hand_z, report) = first_hit_z(vertices, faces, K, shape, near_m)
-        np.minimum(nearest, hand_z, out=nearest)
-        reports.append(report)
-    return (nearest, reports)
-
 def front_only(mask: np.ndarray, hand_z: np.ndarray, depth_z: np.ndarray, *, tolerance_m: float=0.005, supported: np.ndarray | None=None) -> tuple[np.ndarray, dict[str, int], dict[str, np.ndarray]]:
     mask = np.asarray(mask, dtype=bool)
     hand_z = np.asarray(hand_z, dtype=np.float64)
@@ -1642,6 +1465,9 @@ def hand_geometry(frame: dict[str, Any], bridge: Any, hawor: Any, bridge_path: P
     return (geometry, identities)
 
 def build_depth_order(args: argparse.Namespace) -> dict[str, Any]:
+    from gates.object.observation import classify_native_depth
+    from optimization.common.correspondences import nearest_hand_first_hits
+    from gates.camera.calibration import validate_depth_camera_contract_binding
     output_dir = args.output_dir.expanduser().resolve()
     if output_dir.exists():
         raise ValueError(f'depth-order output must be new: {output_dir}')

@@ -1,13 +1,9 @@
-from __future__ import annotations
 """Anatomical contact declarations and shared visual reachability qualification."""
+from __future__ import annotations
 import numpy as np
 from utils.data import frame_ids
-
-SIDES = ("left", "right")
-
-
-PRIMARY_DIGITS = ("thumb", "index", "middle", "ring", "little")
-
+SIDES = ('left', 'right')
+PRIMARY_DIGITS = ('thumb', 'index', 'middle', 'ring', 'little')
 
 def primary_contact_pads(payload, ids, object_id):
     """Optional P17 interval declarations; missing designation grants no reach.
@@ -25,11 +21,7 @@ def primary_contact_pads(payload, ids, object_id):
         declaration = row.get('primary_contact_pads')
         if declaration is None:
             continue
-        if (not isinstance(declaration, dict) or set(declaration) != {'digits', 'rationale'}
-                or not isinstance(declaration['digits'], list)
-                or any(not isinstance(d, str) or d not in PRIMARY_DIGITS for d in declaration['digits'])
-                or len(set(declaration['digits'])) != len(declaration['digits'])
-                or not isinstance(declaration['rationale'], str) or not declaration['rationale'].strip()):
+        if not isinstance(declaration, dict) or set(declaration) != {'digits', 'rationale'} or (not isinstance(declaration['digits'], list)) or any((not isinstance(d, str) or d not in PRIMARY_DIGITS for d in declaration['digits'])) or (len(set(declaration['digits'])) != len(declaration['digits'])) or (not isinstance(declaration['rationale'], str)) or (not declaration['rationale'].strip()):
             raise ValueError('primary_contact_pads requires unique anatomical digits and nonempty rationale')
         target = row.get('target_entity_id', row.get('object_id', row.get('track_id')))
         if target and target.split(':', 1)[-1] != object_id.split(':', 1)[-1]:
@@ -41,107 +33,91 @@ def primary_contact_pads(payload, ids, object_id):
         mask = (ids >= start) & (ids <= end) & (states[:, si] == 'likely_contact')
         for digit in declaration['digits']:
             selected[mask, si, PRIMARY_DIGITS.index(digit)] = True
-    # Standalone P17 has explicit visibility; occluded or unresolved poses are
-    # retained but do not gain expanded attraction from an image-only hypothesis.
     for row in payload.get('frames', []):
         at = np.flatnonzero(ids == row['frame_idx'])
         visibility = row.get('visibility', {})
-        for si, side in enumerate(SIDES):
-            if any(visibility.get(entity, {}).get('state') not in {'visible', 'partially_visible'}
-                   for entity in (side, 'object')):
+        for (si, side) in enumerate(SIDES):
+            if any((visibility.get(entity, {}).get('state') not in {'visible', 'partially_visible'} for entity in (side, 'object'))):
                 selected[at, si] = False
     return selected
 
-
 def interaction_states(payload, ids, object_id):
-    states = np.full((len(ids), 2), "legacy_visual_hypothesis", dtype="U32")
+    states = np.full((len(ids), 2), 'legacy_visual_hypothesis', dtype='U32')
     if payload is None:
         return states
     if not isinstance(payload, dict):
-        raise ValueError("interaction judgments payload is not an object")
+        raise ValueError('interaction judgments payload is not an object')
     ids = frame_ids(ids)
-    if payload.get("schema") == "v19_visible_contact_ownership_factor_v2":
-        target = payload.get("target_entity_id")
-        if not isinstance(target, str) or target.split(":", 1)[-1] != object_id.split(":", 1)[-1]:
-            raise ValueError("P17 interaction report target mismatch")
-        rows = payload.get("factor_rows")
+    if payload.get('schema') == 'v19_visible_contact_ownership_factor_v2':
+        target = payload.get('target_entity_id')
+        if not isinstance(target, str) or target.split(':', 1)[-1] != object_id.split(':', 1)[-1]:
+            raise ValueError('P17 interaction report target mismatch')
+        rows = payload.get('factor_rows')
         if not isinstance(rows, list):
-            raise ValueError("P17 interaction report lacks factor_rows")
-        states[:] = "unresolved"
-        lookup = {int(value): position for position, value in enumerate(ids)}
+            raise ValueError('P17 interaction report lacks factor_rows')
+        states[:] = 'unresolved'
+        lookup = {int(value): position for (position, value) in enumerate(ids)}
         occupied = set()
         for row in rows:
             if not isinstance(row, dict):
-                raise ValueError("invalid P17 factor row")
-            idx = int(row["frame_idx"])
-            side = row.get("hand_side", row.get("side"))
-            state = row.get("agent_contact_state")
-            if idx not in lookup or side not in SIDES or state not in {"likely_contact", "possible_contact", "no_contact", "unresolved"}:
-                raise ValueError("invalid P17 frame/side/contact state")
+                raise ValueError('invalid P17 factor row')
+            idx = int(row['frame_idx'])
+            side = row.get('hand_side', row.get('side'))
+            state = row.get('agent_contact_state')
+            if idx not in lookup or side not in SIDES or state not in {'likely_contact', 'possible_contact', 'no_contact', 'unresolved'}:
+                raise ValueError('invalid P17 frame/side/contact state')
             key = (idx, side)
             if key in occupied:
-                raise ValueError("duplicate P17 frame/side state")
+                raise ValueError('duplicate P17 frame/side state')
             occupied.add(key)
             states[lookup[idx], SIDES.index(side)] = state
         return states
-    if payload.get("status") not in (None, "ok"):
-        raise ValueError("interaction judgments status is not ok")
-    rows = payload.get("interaction_judgments", payload.get("judgments", payload.get("segments")))
+    if payload.get('status') not in (None, 'ok'):
+        raise ValueError('interaction judgments status is not ok')
+    rows = payload.get('interaction_judgments', payload.get('judgments', payload.get('segments')))
     if not isinstance(rows, list) or not rows:
-        raise ValueError("missing interaction_judgments")
-    states[:] = "unresolved"
+        raise ValueError('missing interaction_judgments')
+    states[:] = 'unresolved'
     occupied = np.zeros(states.shape, bool)
     matched_rows = 0
     for row in rows:
         if not isinstance(row, dict):
-            raise ValueError("interaction judgment segment is not an object")
-        target = row.get("target_entity_id", row.get("object_id", row.get("track_id")))
-        if target is not None and not isinstance(target, str):
-            raise ValueError("interaction judgment target must be a string")
-        if target and target.split(":", 1)[-1] != object_id.split(":", 1)[-1]:
+            raise ValueError('interaction judgment segment is not an object')
+        target = row.get('target_entity_id', row.get('object_id', row.get('track_id')))
+        if target is not None and (not isinstance(target, str)):
+            raise ValueError('interaction judgment target must be a string')
+        if target and target.split(':', 1)[-1] != object_id.split(':', 1)[-1]:
             continue
-        side = row.get("hand_side", row.get("side"))
+        side = row.get('hand_side', row.get('side'))
         if side not in SIDES:
-            raise ValueError("interaction judgment side must be left or right")
-        state = row.get("contact_state")
-        if not isinstance(state, str) or state not in {"likely_contact", "possible_contact", "no_contact", "unresolved"}:
-            raise ValueError("invalid interaction contact_state")
-        bounds = [row.get("frame_start", row.get("start_frame", int(min(ids)))),
-                  row.get("frame_end", row.get("end_frame", int(max(ids))))]
+            raise ValueError('interaction judgment side must be left or right')
+        state = row.get('contact_state')
+        if not isinstance(state, str) or state not in {'likely_contact', 'possible_contact', 'no_contact', 'unresolved'}:
+            raise ValueError('invalid interaction contact_state')
+        bounds = [row.get('frame_start', row.get('start_frame', int(min(ids)))), row.get('frame_end', row.get('end_frame', int(max(ids))))]
         try:
-            start, end = (int(value) for value in bounds)
+            (start, end) = (int(value) for value in bounds)
         except (ValueError, TypeError, OverflowError) as exc:
-            raise ValueError("interaction interval bounds must be integer frame IDs") from exc
-        if any(isinstance(value, bool) or (isinstance(value, float) and value != int(value)) for value in bounds):
-            raise ValueError("interaction interval bounds must be integer frame IDs")
+            raise ValueError('interaction interval bounds must be integer frame IDs') from exc
+        if any((isinstance(value, bool) or (isinstance(value, float) and value != int(value)) for value in bounds)):
+            raise ValueError('interaction interval bounds must be integer frame IDs')
         if end < start:
-            raise ValueError("inverted interaction interval")
+            raise ValueError('inverted interaction interval')
         mask = (ids >= start) & (ids <= end)
         si = SIDES.index(side)
         if occupied[mask, si].any():
-            raise ValueError("overlapping interaction judgments")
+            raise ValueError('overlapping interaction judgments')
         occupied[mask, si] = True
         states[mask, si] = state
         matched_rows += int(mask.any())
     if not matched_rows:
-        raise ValueError(f"interaction judgments contained no segments for target {object_id!r} on this timeline")
+        raise ValueError(f'interaction judgments contained no segments for target {object_id!r} on this timeline')
     return states
-
-
 VISUAL_PROXIMITY_MAX_GAP_M = 0.012
-
-
 PRIMARY_PROXIMITY_MAX_GAP_M = 0.045
-
-
 HAND_TRANSLATION_BOUND_M = 0.025
-
-
 HAND_SCALE_BOUNDS = (0.85, 1.18)
-
-
 SHARED_TRANSLATION_TOLERANCE_M = 0.001
-
 
 def primary_similarity_reachable(points_camera, targets_camera, active=None):
     """Test one shared camera-origin scale/translation for active primary pads.
@@ -162,15 +138,11 @@ def primary_similarity_reachable(points_camera, targets_camera, active=None):
     active_ids = np.flatnonzero(active)
     if not len(active_ids):
         return reachable
-    low, high = HAND_SCALE_BOUNDS
+    (low, high) = HAND_SCALE_BOUNDS
     tolerance = SHARED_TRANSLATION_TOLERANCE_M
-    # For each coordinate, q - s*p is the one common translation coordinate,
-    # up to the declared closest-triangle target tolerance. Intersect its
-    # bounded translation feasibility and all pairwise common-translation
-    # inequalities before activating any of the declared pads.
     for axis in range(3):
         for i in active_ids:
-            p, q = points[i, axis], targets[i, axis]
+            (p, q) = (points[i, axis], targets[i, axis])
             if not np.isfinite([p, q]).all():
                 return reachable
             bound = HAND_TRANSLATION_BOUND_M + tolerance
@@ -178,8 +150,8 @@ def primary_similarity_reachable(points_camera, targets_camera, active=None):
                 if abs(q) > bound:
                     return reachable
                 continue
-            a, b = sorted(((q-bound) / p, (q+bound) / p))
-            low, high = max(low, a), min(high, b)
+            (a, b) = sorted(((q - bound) / p, (q + bound) / p))
+            (low, high) = (max(low, a), min(high, b))
             if low > high:
                 return reachable
         for i in active_ids:
@@ -187,7 +159,7 @@ def primary_similarity_reachable(points_camera, targets_camera, active=None):
                 if i == j:
                     continue
                 coefficient = points[i, axis] - points[j, axis]
-                lower = targets[i, axis] - targets[j, axis] - 2.0*tolerance
+                lower = targets[i, axis] - targets[j, axis] - 2.0 * tolerance
                 if abs(coefficient) < 1e-12:
                     if lower > 0.0:
                         return reachable
@@ -200,16 +172,14 @@ def primary_similarity_reachable(points_camera, targets_camera, active=None):
     reachable[active_ids] = True
     return reachable
 
-
-def visual_proximity_weights(inside, image_distances, triangle_gaps,
-                             *, state="likely_contact", primary=None, reachable=None):
+def visual_proximity_weights(inside, image_distances, triangle_gaps, *, state='likely_contact', primary=None, reachable=None):
     """Demo-only image/triangle proximity weights; never a contact measurement."""
     inside = np.asarray(inside, dtype=bool)
     gaps = np.asarray(triangle_gaps, dtype=float)
     if inside.shape != (5,) or gaps.shape != (5,) or len(image_distances) != 5:
-        raise ValueError("five fingertip proximity values required")
+        raise ValueError('five fingertip proximity values required')
     result = np.zeros(5, np.float32)
-    if state not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
+    if state not in {'likely_contact', 'possible_contact', 'legacy_visual_hypothesis'}:
         return result
     primary = np.zeros(5, bool) if primary is None else np.asarray(primary, bool)
     reachable = np.zeros(5, bool) if reachable is None else np.asarray(reachable, bool)
@@ -221,34 +191,20 @@ def visual_proximity_weights(inside, image_distances, triangle_gaps,
         expanded = state == 'likely_contact' and primary[finger] and reachable[finger]
         bound = PRIMARY_PROXIMITY_MAX_GAP_M if expanded else VISUAL_PROXIMITY_MAX_GAP_M
         distance = image_distances[finger]
-        if (inside[finger] and distance is not None and np.isfinite(distance)
-                and float(distance) < (16. if expanded else image_bounds[finger])
-                and np.isfinite(gaps[finger]) and 0 <= gaps[finger] < bound):
-            result[finger] = 1. if expanded else strengths[finger]
+        if inside[finger] and distance is not None and np.isfinite(distance) and (float(distance) < (16.0 if expanded else image_bounds[finger])) and np.isfinite(gaps[finger]) and (0 <= gaps[finger] < bound):
+            result[finger] = 1.0 if expanded else strengths[finger]
     return result
 
-
 def validate_visual_proximity_contract(rep, appearance_manifest_path):
-    embedded = rep.get("appearance_mask_manifest")
-    receipt = rep.get("visual_mesh_receipt")
-    if appearance_manifest_path is not None and (not isinstance(embedded, dict)
-            or Path(embedded.get("path", "")).resolve() != appearance_manifest_path.resolve()
-            or embedded.get("sha256") != sha(appearance_manifest_path)):
-        raise ValueError("appearance manifest does not match pose binding identity")
-    if (not isinstance(receipt, dict)
-            or receipt.get("demo_visual_proximity_fit_eligible") is not True
-            or receipt.get("physical_contact_authority_eligible") is not False
-            or any(receipt.get(key) is not False for key in (
-                "generated_faces_contact_eligible", "generated_faces_collision_eligible",
-                "generated_faces_sign_eligible", "generated_faces_sdf_eligible", "generated_faces_nonpenetration_eligible"))):
-        raise ValueError("visual mesh lacks demo visual-proximity-only role contract")
-    mesh_contract = rep.get("render_mesh_contract") or {}
-    if (not receipt.get("output_mesh_path") or not mesh_contract.get("required_mesh_path")
-            or Path(receipt["output_mesh_path"]).resolve() != Path(mesh_contract["required_mesh_path"]).resolve()
-            or receipt.get("output_mesh_sha256") != mesh_contract.get("required_mesh_sha256")):
-        raise ValueError("visual proximity role does not bind the rendered mesh identity")
-
-
+    embedded = rep.get('appearance_mask_manifest')
+    receipt = rep.get('visual_mesh_receipt')
+    if appearance_manifest_path is not None and (not isinstance(embedded, dict) or Path(embedded.get('path', '')).resolve() != appearance_manifest_path.resolve() or embedded.get('sha256') != sha(appearance_manifest_path)):
+        raise ValueError('appearance manifest does not match pose binding identity')
+    if not isinstance(receipt, dict) or receipt.get('demo_visual_proximity_fit_eligible') is not True or receipt.get('physical_contact_authority_eligible') is not False or any((receipt.get(key) is not False for key in ('generated_faces_contact_eligible', 'generated_faces_collision_eligible', 'generated_faces_sign_eligible', 'generated_faces_sdf_eligible', 'generated_faces_nonpenetration_eligible'))):
+        raise ValueError('visual mesh lacks demo visual-proximity-only role contract')
+    mesh_contract = rep.get('render_mesh_contract') or {}
+    if not receipt.get('output_mesh_path') or not mesh_contract.get('required_mesh_path') or Path(receipt['output_mesh_path']).resolve() != Path(mesh_contract['required_mesh_path']).resolve() or (receipt.get('output_mesh_sha256') != mesh_contract.get('required_mesh_sha256')):
+        raise ValueError('visual proximity role does not bind the rendered mesh identity')
 from pathlib import Path
 from utils.state import sha
 
@@ -435,3 +391,94 @@ def load_surface_eligibility_rows(report_path: Path | None, *, target_entity_id:
     from typing import Any
     from pathlib import Path
     return load_factor_rows(report_path, 'factor_rows', expected_family='surface_eligibility', target_entity_id=target_entity_id)
+
+def load_agent_interaction_judgments(path: Path | None, *, case: str, target_entity_id: str, frame_span: tuple[int, int], sides: set[str]) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    from collections import Counter
+    from observations.interaction.evidence import finite_float
+    from observations.interaction.evidence import CONTACT_STATES
+    from observations.interaction.evidence import load_json
+    from observations.interaction.evidence import DEPTH_RELIABILITY_STATES
+    from pathlib import Path
+    from typing import Any
+    from observations.interaction.evidence import target_matches
+    from observations.interaction.evidence import OCCLUSION_RELATIONS
+    if path is None:
+        return ({}, {'enabled': False, 'path': None, 'segments': 0, 'frame_side_count': 0})
+    if not path.exists():
+        raise FileNotFoundError(f'missing agent interaction judgment JSON: {path}')
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f'agent interaction judgment must be a JSON object: {path}')
+    if payload.get('status') not in (None, 'ok'):
+        raise ValueError(f"agent interaction judgment status is not ok in {path}: {payload.get('status')!r}")
+    if payload.get('case') not in (None, case):
+        raise ValueError(f"agent interaction judgment case {payload.get('case')!r} does not match {case!r} in {path}")
+    rows = payload.get('interaction_judgments', payload.get('judgments', payload.get('segments')))
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f'agent interaction judgment has no non-empty interaction_judgments/judgments/segments list: {path}')
+    (start_default, end_default) = frame_span
+    index: dict[tuple[int, str], dict[str, Any]] = {}
+    kept_segments = 0
+    state_counts: Counter[str] = Counter()
+    occlusion_counts: Counter[str] = Counter()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            raise ValueError(f'agent interaction judgment segment is not an object in {path}: {raw!r}')
+        if not target_matches(raw.get('target_entity_id', raw.get('object_id', raw.get('track_id'))), target_entity_id):
+            continue
+        hand_side = str(raw.get('hand_side', raw.get('side', '')))
+        if hand_side not in sides:
+            continue
+        s = int(raw.get('frame_start', raw.get('start_frame', start_default)))
+        e = int(raw.get('frame_end', raw.get('end_frame', end_default)))
+        if e < s:
+            raise ValueError(f'agent interaction judgment has inverted interval {s}>{e} in {path}: {raw}')
+        s = max(s, start_default)
+        e = min(e, end_default)
+        if e < s:
+            continue
+        contact_state = str(raw.get('contact_state', '')).strip()
+        if contact_state not in CONTACT_STATES:
+            raise ValueError(f'agent interaction judgment contact_state must be one of {sorted(CONTACT_STATES)} in {path}: {raw}')
+        occlusion_relation = str(raw.get('occlusion_relation', raw.get('visibility_relation', ''))).strip()
+        if occlusion_relation not in OCCLUSION_RELATIONS:
+            raise ValueError(f'agent interaction judgment occlusion_relation must be one of {sorted(OCCLUSION_RELATIONS)} in {path}: {raw}')
+        depth_reliability = str(raw.get('depth_reliability', 'mixed_or_unresolved')).strip()
+        if depth_reliability not in DEPTH_RELIABILITY_STATES:
+            raise ValueError(f'agent interaction judgment depth_reliability must be one of {sorted(DEPTH_RELIABILITY_STATES)} in {path}: {raw}')
+        prior = finite_float(raw.get('contact_prior_probability'), field='contact_prior_probability', path=path)
+        if not 0.0 <= prior <= 1.0:
+            raise ValueError(f'agent interaction judgment contact_prior_probability must be in [0,1] in {path}: {raw}')
+        support_unc = finite_float(raw.get('contact_support_uncertainty_m'), field='contact_support_uncertainty_m', path=path)
+        if support_unc < 0.0:
+            raise ValueError(f'agent interaction judgment contact_support_uncertainty_m must be nonnegative in {path}: {raw}')
+        weight_mult = finite_float(raw.get('contact_weight_multiplier', 1.0), field='contact_weight_multiplier', path=path)
+        if weight_mult < 0.0:
+            raise ValueError(f'agent interaction judgment contact_weight_multiplier must be nonnegative in {path}: {raw}')
+        normalized = {**raw, 'judgment_id': str(raw.get('judgment_id', f'{hand_side}_{s}_{e}')), 'frame_start': int(s), 'frame_end': int(e), 'hand_side': hand_side, 'target_entity_id': str(target_entity_id), 'contact_state': contact_state, 'occlusion_relation': occlusion_relation, 'depth_reliability': depth_reliability, 'contact_prior_probability': float(prior), 'contact_support_uncertainty_m': float(support_unc), 'contact_weight_multiplier': float(weight_mult), 'source_path': str(path)}
+        kept_segments += 1
+        state_counts[contact_state] += 1
+        occlusion_counts[occlusion_relation] += 1
+        for frame_idx in range(s, e + 1):
+            key = (frame_idx, hand_side)
+            if key in index:
+                raise ValueError(f'overlapping agent interaction judgments for frame/side {key} in {path}: {index[key]} and {raw}')
+            index[key] = normalized
+    if kept_segments == 0:
+        raise ValueError(f'agent interaction judgment contained no segments for case={case} target={target_entity_id} sides={sorted(sides)} span={frame_span}: {path}')
+    return (index, {'enabled': True, 'path': str(path), 'segments': int(kept_segments), 'frame_side_count': int(len(index)), 'contact_state_counts': dict(state_counts), 'occlusion_relation_counts': dict(occlusion_counts)})
+
+def contact_row_state_from_judgment(judgment: dict[str, Any] | None, *, image_candidate: bool, allow_agent_create: bool) -> tuple[bool, str]:
+    from typing import Any
+    if not isinstance(judgment, dict):
+        return (bool(image_candidate), 'active_contact_patch' if image_candidate else 'missing_contact_patch_row')
+    state = str(judgment.get('contact_state') or 'unresolved')
+    if state == 'no_contact':
+        return (True, 'inactive_no_contact_by_agent_judgment')
+    if state in {'likely_contact', 'possible_contact'}:
+        if image_candidate or allow_agent_create:
+            return (True, 'active_contact_patch')
+        return (True, 'inactive_agent_contact_without_image_support')
+    if image_candidate:
+        return (True, 'active_contact_patch')
+    return (True, 'inactive_unresolved_contact_by_agent_judgment')

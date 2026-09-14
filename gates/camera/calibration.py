@@ -162,3 +162,45 @@ def plane_intrinsics(payload: dict[str, Any], normalized: dict[str, Any], *, pla
 
 def summarize_contract(path: Path, payload: dict[str, Any], normalized: dict[str, Any]) -> dict[str, Any]:
     return {'path': str(path), 'sha256': sha256_file(path), 'schema': payload.get('schema'), 'calibration_authority': normalized['calibration_authority'], 'intrinsics_model': normalized['intrinsics_model'], 'intrinsics_coordinate_plane': normalized['intrinsics_coordinate_plane'], 'intrinsics_fx_fy_cx_cy': normalized['intrinsics_fx_fy_cx_cy'], 'calibration_size_wh': normalized['calibration_size_wh'], 'image_plane_names': sorted(normalized['image_planes']), 'intrinsics_source': payload.get('intrinsics_source'), 'source_contract': payload.get('source_contract'), 'fallback': payload.get('fallback')}
+
+def validate_camera_transform(transform: np.ndarray, frame_idx: int) -> np.ndarray:
+    import numpy as np
+    transform = np.asarray(transform, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        raise RuntimeError(f'frame {frame_idx} has invalid T_world_camera_metric')
+    rotation = transform[:3, :3]
+    if np.linalg.norm(rotation.T @ rotation - np.eye(3)) > 0.0001 or abs(np.linalg.det(rotation) - 1.0) > 0.0001:
+        raise RuntimeError(f'frame {frame_idx} has non-rigid T_world_camera_metric')
+    if not np.allclose(transform[3], np.asarray([0.0, 0.0, 0.0, 1.0]), atol=1e-06):
+        raise RuntimeError(f'frame {frame_idx} has malformed homogeneous camera transform')
+    return transform
+
+def validate_depth_camera_contract_binding(*, depth: dict[str, Any], camera_contract_v2: dict[str, Any] | None, calibration_contract_path: Path | None, depth_image_plane: str, allow_implicit_depth_resize: bool) -> dict[str, Any]:
+    from pathlib import Path
+    from typing import Any
+    import numpy as np
+    from gates.camera.calibration import plane_intrinsics as camera_contract_plane_intrinsics
+    from gates.camera.calibration import sha256_file as camera_contract_sha256_file
+    if camera_contract_v2 is None:
+        return {'status': 'not_required_without_v2_camera_contract', 'archive_binding': depth.get('camera_contract_binding')}
+    if calibration_contract_path is None:
+        raise RuntimeError('internal error: V2 camera contract has no source path')
+    binding = depth.get('camera_contract_binding')
+    if not isinstance(binding, dict):
+        raise RuntimeError('a V2 camera contract requires a depth archive produced by adapt_v19_depth_to_camera_contract.py; the archive has no complete camera-contract binding')
+    expected_contract_hash = camera_contract_sha256_file(calibration_contract_path)
+    if binding['sha256'] != expected_contract_hash:
+        raise RuntimeError(f"depth archive camera-contract hash disagrees with --calibration-contract: depth={binding['sha256']} supplied={expected_contract_hash}")
+    if binding['plane'] != depth_image_plane:
+        raise RuntimeError(f"depth archive is bound to plane {binding['plane']!r}, not requested {depth_image_plane!r}")
+    (expected_depth_intrinsics, expected_depth_transform) = camera_contract_plane_intrinsics(camera_contract_v2['payload'], camera_contract_v2['normalized'], plane_name=depth_image_plane, actual_size_wh=(int(depth['depth'].shape[2]), int(depth['depth'].shape[1])), allow_implicit_resize=bool(allow_implicit_depth_resize))
+    if not np.allclose(depth['intrinsics'], expected_depth_intrinsics[None, :], atol=1e-06, rtol=0.0):
+        raise RuntimeError('depth archive intrinsics rows disagree with the requested V2 contract plane')
+    if not np.allclose(np.asarray(binding['A_depth_from_calibration'], dtype=np.float64), np.asarray(expected_depth_transform['A_actual_plane_from_calibration'], dtype=np.float64), atol=1e-09, rtol=0.0):
+        raise RuntimeError('depth archive A_depth_from_calibration disagrees with the requested V2 contract plane')
+    if binding.get('metadata_only_ray_relabel_override') is True or binding.get('depth_ray_geometry_reprojected') is not True:
+        source_intrinsics = depth.get('source_estimated_intrinsics')
+        same_rays = bool(source_intrinsics is not None and np.asarray(source_intrinsics).shape == np.asarray(depth['intrinsics']).shape and np.allclose(source_intrinsics, depth['intrinsics'], atol=1e-06, rtol=0.0))
+        if not same_rays:
+            raise RuntimeError('depth archive only relabeled K metadata: dense z was not reprojected onto the requested camera rays')
+    return {**binding, 'status': 'exact_camera_contract_hash_plane_intrinsics_and_affine_match', 'supplied_contract_path': str(calibration_contract_path), 'supplied_contract_sha256': expected_contract_hash}

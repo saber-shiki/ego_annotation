@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Immutable shape/pose bindings; generated surfaces do not gain physical roles."""
+from __future__ import annotations
 from utils.data import load, RKEY, TKEY
 from utils.state import sha, in_run
 from observations.common import pose_from_values
@@ -7,11 +7,11 @@ from observations.common import pose_from_values
 def validate_posterior(report, object_id, root):
     if report.get('schema') != 'rgb_scene_refined_pose_v1' or report.get('object_id') != object_id:
         raise ValueError('explicit selected-object visual-refined posterior required')
-    source=in_run(report['source_prior']['path'],root)
-    if sha(source)!=report['source_prior']['sha256'] or load(source)['pose_rows']!=report['source_pose_rows']:
+    source = in_run(report['source_prior']['path'], root)
+    if sha(source) != report['source_prior']['sha256'] or load(source)['pose_rows'] != report['source_pose_rows']:
         raise ValueError('immutable source prior changed')
     for row in report['pose_rows']:
-        if pose_from_values(row.get(RKEY),row.get(TKEY)) is None:
+        if pose_from_values(row.get(RKEY), row.get(TKEY)) is None:
             raise ValueError('missing posterior hypothesis')
     return report
 
@@ -165,7 +165,6 @@ def resolve_physical_surface_contract(completed_mesh: Path, physical_surface_mes
     if not selected_path.exists() or selected_path.stat().st_size <= 0:
         raise RuntimeError(f'physical surface mesh {selected_path} is missing or empty')
     return contract
-
 import argparse
 import copy
 import hashlib
@@ -280,3 +279,33 @@ def bind_completion_anchor(completion_path: Path, annotations_path: Path, object
     with output.open('x') as handle:
         handle.write(json.dumps(result, indent=2) + '\n')
     return result
+
+def observed_front_quality_decision(*, median_fraction: float, p95_fraction: float, native_projection_iou: float, maximum_median_fraction: float, strict_maximum_p95_fraction: float, conditional_maximum_p95_fraction: float, conditional_minimum_projection_iou: float) -> dict[str, Any]:
+    """Apply a strict tier plus a bounded, explicitly uncertain P95-tail tier.
+
+    The conditional tier is intentionally narrow: the robust median must still
+    satisfy the unchanged strict limit, only the P95 tail may exceed the strict
+    limit, and the native image-plane pose must have substantial mask overlap.
+    This keeps a small partial-surface tail from suppressing a usable render
+    prior without admitting a gross native-pose failure.
+    """
+    from typing import Any
+    import numpy as np
+    values = np.asarray([median_fraction, p95_fraction, native_projection_iou, maximum_median_fraction, strict_maximum_p95_fraction, conditional_maximum_p95_fraction, conditional_minimum_projection_iou], dtype=np.float64)
+    if not np.isfinite(values).all():
+        raise RuntimeError(f'non-finite observed-front quality inputs: {values}')
+    if conditional_maximum_p95_fraction < strict_maximum_p95_fraction:
+        raise RuntimeError('conditional P95 limit must not be below the strict P95 limit')
+    median_passed = bool(median_fraction <= maximum_median_fraction)
+    strict_p95_passed = bool(p95_fraction <= strict_maximum_p95_fraction)
+    conditional_p95_passed = bool(p95_fraction <= conditional_maximum_p95_fraction)
+    conditional_projection_passed = bool(native_projection_iou >= conditional_minimum_projection_iou)
+    strict_passed = bool(median_passed and strict_p95_passed)
+    conditional_tail_passed = bool(not strict_passed and median_passed and (p95_fraction > strict_maximum_p95_fraction) and conditional_p95_passed and conditional_projection_passed)
+    if strict_passed:
+        mode = 'strict_observed_front_quality'
+    elif conditional_tail_passed:
+        mode = 'conditional_p95_tail_uncertain_native_projection_supported'
+    else:
+        mode = 'failed_observed_front_quality'
+    return {'quality_passed': bool(strict_passed or conditional_tail_passed), 'acceptance_mode': mode, 'strict_quality_passed': strict_passed, 'conditional_tail_quality_passed': conditional_tail_passed, 'conditional_tail_uncertainty': conditional_tail_passed, 'median_passed': median_passed, 'strict_p95_passed': strict_p95_passed, 'conditional_p95_passed': conditional_p95_passed, 'conditional_projection_passed': conditional_projection_passed, 'strict_maximum_p95_fraction_of_extent_diag': float(strict_maximum_p95_fraction), 'conditional_maximum_p95_fraction_of_extent_diag': float(conditional_maximum_p95_fraction), 'conditional_minimum_native_projection_iou': float(conditional_minimum_projection_iou)}

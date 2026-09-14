@@ -1,5 +1,5 @@
+"""Appearance observations are distinct from metric ownership masks."""
 from __future__ import annotations
-'Appearance observations are distinct from metric ownership masks.'
 from pathlib import Path
 from utils.state import sha
 
@@ -622,120 +622,6 @@ def finite_float(value: Any, *, field: str, path: Path) -> float:
         raise ValueError(f'agent interaction judgment field {field!r} is not finite in {path}: {value!r}')
     return out
 
-def load_agent_interaction_judgments(path: Path | None, *, case: str, target_entity_id: str, frame_span: tuple[int, int], sides: set[str]) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
-    if path is None:
-        return ({}, {'enabled': False, 'path': None, 'segments': 0, 'frame_side_count': 0})
-    if not path.exists():
-        raise FileNotFoundError(f'missing agent interaction judgment JSON: {path}')
-    payload = load_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError(f'agent interaction judgment must be a JSON object: {path}')
-    if payload.get('status') not in (None, 'ok'):
-        raise ValueError(f"agent interaction judgment status is not ok in {path}: {payload.get('status')!r}")
-    if payload.get('case') not in (None, case):
-        raise ValueError(f"agent interaction judgment case {payload.get('case')!r} does not match {case!r} in {path}")
-    rows = payload.get('interaction_judgments', payload.get('judgments', payload.get('segments')))
-    if not isinstance(rows, list) or not rows:
-        raise ValueError(f'agent interaction judgment has no non-empty interaction_judgments/judgments/segments list: {path}')
-    (start_default, end_default) = frame_span
-    index: dict[tuple[int, str], dict[str, Any]] = {}
-    kept_segments = 0
-    state_counts: Counter[str] = Counter()
-    occlusion_counts: Counter[str] = Counter()
-    for raw in rows:
-        if not isinstance(raw, dict):
-            raise ValueError(f'agent interaction judgment segment is not an object in {path}: {raw!r}')
-        if not target_matches(raw.get('target_entity_id', raw.get('object_id', raw.get('track_id'))), target_entity_id):
-            continue
-        hand_side = str(raw.get('hand_side', raw.get('side', '')))
-        if hand_side not in sides:
-            continue
-        s = int(raw.get('frame_start', raw.get('start_frame', start_default)))
-        e = int(raw.get('frame_end', raw.get('end_frame', end_default)))
-        if e < s:
-            raise ValueError(f'agent interaction judgment has inverted interval {s}>{e} in {path}: {raw}')
-        s = max(s, start_default)
-        e = min(e, end_default)
-        if e < s:
-            continue
-        contact_state = str(raw.get('contact_state', '')).strip()
-        if contact_state not in CONTACT_STATES:
-            raise ValueError(f'agent interaction judgment contact_state must be one of {sorted(CONTACT_STATES)} in {path}: {raw}')
-        occlusion_relation = str(raw.get('occlusion_relation', raw.get('visibility_relation', ''))).strip()
-        if occlusion_relation not in OCCLUSION_RELATIONS:
-            raise ValueError(f'agent interaction judgment occlusion_relation must be one of {sorted(OCCLUSION_RELATIONS)} in {path}: {raw}')
-        depth_reliability = str(raw.get('depth_reliability', 'mixed_or_unresolved')).strip()
-        if depth_reliability not in DEPTH_RELIABILITY_STATES:
-            raise ValueError(f'agent interaction judgment depth_reliability must be one of {sorted(DEPTH_RELIABILITY_STATES)} in {path}: {raw}')
-        prior = finite_float(raw.get('contact_prior_probability'), field='contact_prior_probability', path=path)
-        if not 0.0 <= prior <= 1.0:
-            raise ValueError(f'agent interaction judgment contact_prior_probability must be in [0,1] in {path}: {raw}')
-        support_unc = finite_float(raw.get('contact_support_uncertainty_m'), field='contact_support_uncertainty_m', path=path)
-        if support_unc < 0.0:
-            raise ValueError(f'agent interaction judgment contact_support_uncertainty_m must be nonnegative in {path}: {raw}')
-        weight_mult = finite_float(raw.get('contact_weight_multiplier', 1.0), field='contact_weight_multiplier', path=path)
-        if weight_mult < 0.0:
-            raise ValueError(f'agent interaction judgment contact_weight_multiplier must be nonnegative in {path}: {raw}')
-        normalized = {**raw, 'judgment_id': str(raw.get('judgment_id', f'{hand_side}_{s}_{e}')), 'frame_start': int(s), 'frame_end': int(e), 'hand_side': hand_side, 'target_entity_id': str(target_entity_id), 'contact_state': contact_state, 'occlusion_relation': occlusion_relation, 'depth_reliability': depth_reliability, 'contact_prior_probability': float(prior), 'contact_support_uncertainty_m': float(support_unc), 'contact_weight_multiplier': float(weight_mult), 'source_path': str(path)}
-        kept_segments += 1
-        state_counts[contact_state] += 1
-        occlusion_counts[occlusion_relation] += 1
-        for frame_idx in range(s, e + 1):
-            key = (frame_idx, hand_side)
-            if key in index:
-                raise ValueError(f'overlapping agent interaction judgments for frame/side {key} in {path}: {index[key]} and {raw}')
-            index[key] = normalized
-    if kept_segments == 0:
-        raise ValueError(f'agent interaction judgment contained no segments for case={case} target={target_entity_id} sides={sorted(sides)} span={frame_span}: {path}')
-    return (index, {'enabled': True, 'path': str(path), 'segments': int(kept_segments), 'frame_side_count': int(len(index)), 'contact_state_counts': dict(state_counts), 'occlusion_relation_counts': dict(occlusion_counts)})
-
-def ownership_quarantine_mode(judgment: dict[str, Any] | None) -> str:
-    if not isinstance(judgment, dict):
-        return 'measurement_default'
-    explicit = judgment.get('ownership_quarantine') or judgment.get('object_surface_policy')
-    if isinstance(explicit, str):
-        norm = explicit.strip()
-        if norm in {'hand_projected', 'measurement_default', 'none', 'unresolved'}:
-            return norm
-        if norm in {'quarantine_projected_hand', 'quarantine_under_hand'}:
-            return 'hand_projected'
-        if norm in {'do_not_quarantine', 'object_visible'}:
-            return 'none'
-    occlusion = str(judgment.get('occlusion_relation') or '')
-    if occlusion in NO_QUARANTINE_OCCLUSIONS:
-        return 'none'
-    if occlusion in HAND_FRONT_OCCLUSIONS:
-        return 'hand_projected'
-    return 'unresolved'
-
-def contact_row_state_from_judgment(judgment: dict[str, Any] | None, *, image_candidate: bool, allow_agent_create: bool) -> tuple[bool, str]:
-    if not isinstance(judgment, dict):
-        return (bool(image_candidate), 'active_contact_patch' if image_candidate else 'missing_contact_patch_row')
-    state = str(judgment.get('contact_state') or 'unresolved')
-    if state == 'no_contact':
-        return (True, 'inactive_no_contact_by_agent_judgment')
-    if state in {'likely_contact', 'possible_contact'}:
-        if image_candidate or allow_agent_create:
-            return (True, 'active_contact_patch')
-        return (True, 'inactive_agent_contact_without_image_support')
-    if image_candidate:
-        return (True, 'active_contact_patch')
-    return (True, 'inactive_unresolved_contact_by_agent_judgment')
-
-def combine_contact_prior(image_prior: float, judgment: dict[str, Any] | None) -> float:
-    image_prior = float(np.clip(image_prior, 0.0, 1.0))
-    if not isinstance(judgment, dict):
-        return image_prior
-    agent_prior = float(np.clip(float(judgment['contact_prior_probability']), 0.0, 1.0))
-    state = str(judgment.get('contact_state') or 'unresolved')
-    if state == 'likely_contact':
-        return max(image_prior, agent_prior)
-    if state == 'possible_contact':
-        return max(min(image_prior, 0.65), agent_prior)
-    if state == 'no_contact':
-        return min(image_prior, agent_prior)
-    return agent_prior
-
 def agent_judgment_provenance(judgment: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(judgment, dict):
         return {'agent_interaction_judgment': None}
@@ -925,6 +811,10 @@ def make_review(raw_path: Path, object_mask: np.ndarray, hand_mask: np.ndarray, 
     cv2.imwrite(str(out), overlay, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
 def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
+    from optimization.problems import combine_contact_prior
+    from gates.interaction.contact import contact_row_state_from_judgment
+    from gates.interaction.contact import load_agent_interaction_judgments
+    from gates.interaction.visibility import ownership_quarantine_mode
     payload = load_json(args.annotations)
     frames = as_list(payload.get('frames')) if isinstance(payload, dict) else []
     (start, end) = [int(x) for x in args.frame_span]
@@ -1130,32 +1020,6 @@ def visible_2d_consistency(frame: dict[str, Any], hand_ann: dict[str, Any], intr
     compatible = bool(after + 1e-12 >= before)
     return {'state': 'preserves_or_improves_detector_box_containment' if compatible else 'degrades_detector_box_containment', 'compatible_with_visible_2d': compatible, 'detector_bbox_intrinsics_grid_xyxy': [float(x) for x in bbox.tolist()], 'projected_joint_inside_detector_box_fraction_before': before, 'projected_joint_inside_detector_box_fraction_after': after, 'detector_bbox_diag_px_in_intrinsics_grid': diag}
 
-def least_norm_halfspace_escape(points: np.ndarray, closest: np.ndarray, signed_depth: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
-    """Least-norm rigid translation satisfying local escape halfspaces.
-
-    For each penetrating vertex p_i with closest surface point q_i, n_i=(q_i-p_i)/||q_i-p_i||
-    is the local outward escape direction. A rigid translation t should satisfy
-    n_i dot t >= signed_depth_i in the first-order signed-distance model. The
-    solution is the projection of zero onto the intersection of those halfspaces.
-    """
-    disp = np.asarray(closest, dtype=float) - np.asarray(points, dtype=float)
-    signed_depth = np.asarray(signed_depth, dtype=float)
-    norms = np.linalg.norm(disp, axis=1)
-    valid = (norms > 1e-12) & np.isfinite(norms) & np.isfinite(signed_depth) & (signed_depth > 0.0)
-    if not np.any(valid):
-        return (np.zeros(3, dtype=float), {'solver': 'no_valid_penetrating_halfspaces', 'success': False, 'constraint_count': 0})
-    normals = disp[valid] / norms[valid, None]
-    depths = signed_depth[valid]
-    x0 = np.average(disp[valid], axis=0, weights=np.maximum(depths, 1e-12))
-    constraint = LinearConstraint(normals, depths, np.full_like(depths, np.inf))
-    res = minimize(lambda x: 0.5 * float(np.dot(x, x)), x0=x0, jac=lambda x: np.asarray(x, dtype=float), constraints=[constraint], method='SLSQP', options={'ftol': 1e-12, 'maxiter': 200, 'disp': False})
-    if res.success and np.all(np.isfinite(res.x)):
-        slack = normals @ res.x - depths
-        return (np.asarray(res.x, dtype=float), {'solver': 'least_norm_local_halfspace_escape', 'success': True, 'constraint_count': int(len(depths)), 'min_constraint_slack_m': float(np.min(slack)) if slack.size else None, 'max_constraint_violation_m': float(max(0.0, -float(np.min(slack)))) if slack.size else 0.0})
-    fallback = np.average(disp[valid], axis=0, weights=np.maximum(depths, 1e-12))
-    slack = normals @ fallback - depths
-    return (np.asarray(fallback, dtype=float), {'solver': 'weighted_mean_escape_fallback', 'success': False, 'constraint_count': int(len(depths)), 'message': str(getattr(res, 'message', 'unknown')), 'min_constraint_slack_m': float(np.min(slack)) if slack.size else None, 'max_constraint_violation_m': float(max(0.0, -float(np.min(slack)))) if slack.size else None})
-
 def inverse_object(points_world: np.ndarray, r_w_from_c: np.ndarray, t_w: np.ndarray) -> np.ndarray:
     return (points_world - t_w) @ r_w_from_c
 
@@ -1217,6 +1081,7 @@ def signed_geometry_source_readiness(completion_readiness: dict[str, Any], sign_
     return {'source': None, 'signed_geometry_ready': None, 'legacy_readiness_fields_missing': True, 'reason': 'explicit sign mesh lacks --sign-mesh-source-report; watertightness alone cannot establish physical sign readiness'}
 
 def build_geometric_constraints(argv=None) -> None:
+    from optimization.common.solvers import least_norm_halfspace_escape
     import trimesh
     import open3d as o3d
     parser = argparse.ArgumentParser()

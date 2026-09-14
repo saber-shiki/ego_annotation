@@ -1,5 +1,5 @@
+"""Current local RGB rotation evidence and independent cycle decisions."""
 from __future__ import annotations
-'Current local RGB rotation evidence and independent cycle decisions.'
 from dataclasses import replace
 import math
 import numpy as np
@@ -844,3 +844,142 @@ def _timeline_rows(report: Mapping[str, Any]) -> dict[int, dict[str, Any]]:
         result[idx] = row
     return result
 from utils.geometry import interpolate_se3_pose
+
+def select_flow_seed_points(frame: dict[str, Any], obj: dict[str, Any], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, *, max_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    import cv2
+    from optimization.object.pose import read_gray
+    from pathlib import Path
+    from typing import Any
+    import numpy as np
+    from optimization.object.pose import frame_camera_for_raster
+    from optimization.object.pose import numeric_summary
+    from optimization.object.pose import apply_pose
+    from optimization.object.pose import read_mask_at_size
+    raw_path = Path(str(frame.get('raw_frame_path') or ''))
+    mask_path = Path(str(obj.get('mask_path') or ''))
+    if not raw_path.is_file() or not mask_path.is_file():
+        raise RuntimeError(f"optical-flow source frame lacks raw image/object-owned mask: {frame.get('frame_idx')}")
+    gray = read_gray(raw_path)
+    (height, width) = gray.shape
+    mask = read_mask_at_size(mask_path, width, height)
+    (world_camera, intrinsics, raster_contract) = frame_camera_for_raster(frame, width, height)
+    camera_world = np.linalg.inv(world_camera)
+    observed_camera = apply_pose(observed_world, camera_world[:3, :3], camera_world[:3, 3])
+    positive = observed_camera[:, 2] > 1e-05
+    uv = np.column_stack([intrinsics[0, 0] * observed_camera[:, 0] / np.maximum(observed_camera[:, 2], 1e-09) + intrinsics[0, 2], intrinsics[1, 1] * observed_camera[:, 1] / np.maximum(observed_camera[:, 2], 1e-09) + intrinsics[1, 2]])
+    inside = positive & (uv[:, 0] >= 2.0) & (uv[:, 0] < width - 2.0) & (uv[:, 1] >= 2.0) & (uv[:, 1] < height - 2.0)
+    canonical = (observed_world - source_translation) @ source_rotation
+    uv = uv[inside]
+    canonical = canonical[inside]
+    rounded = np.rint(uv).astype(np.int64)
+    owned = mask[rounded[:, 1], rounded[:, 0]]
+    uv = uv[owned]
+    canonical = canonical[owned]
+    if len(uv) < 50:
+        raise RuntimeError(f'too few projected object-owned flow seeds: {len(uv)}')
+    gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
+    gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
+    gradient = np.hypot(gradient_x, gradient_y)
+    rounded = np.rint(uv).astype(np.int64)
+    scores = gradient[rounded[:, 1], rounded[:, 0]]
+    order = np.argsort(scores)[::-1]
+    selected = order[:min(max_points, len(order))]
+    return (gray, uv[selected].astype(np.float32), canonical[selected].astype(float), {'raw_frame': str(raw_path), 'object_owned_mask': str(mask_path), 'projected_owned_seed_count': int(len(uv)), 'selected_seed_count': int(len(selected)), 'selected_gradient_summary': numeric_summary(scores[selected]), 'camera_raster_contract': raster_contract})
+
+def estimate_optical_flow_pnp_bridge(*, source_idx: int, target_idx: int, frames: dict[int, dict[str, Any]], objects: dict[int, dict[str, Any]], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, max_seed_points: int, min_tracked_points: int, min_pnp_inliers: int, min_inlier_fraction: float, max_reprojection_median_px: float, max_reprojection_p95_px: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, Any]]:
+    from optimization.object.pose import numeric_summary
+    import cv2
+    from optimization.object.pose import read_gray
+    from optimization.object.pose import rotation_observability_summary
+    import numpy as np
+    from optimization.object.pose import apply_pose
+    from pathlib import Path
+    from typing import Any
+    from optimization.object.pose import frame_camera_for_raster
+    from optimization.object.pose import read_mask_at_size
+    if source_idx == target_idx:
+        raise RuntimeError('optical-flow bridge source and target must differ')
+    direction = 1 if target_idx > source_idx else -1
+    source_frame = frames[source_idx]
+    source_obj = objects[source_idx]
+    (previous_gray, source_uv, canonical_points, seed_report) = select_flow_seed_points(source_frame, source_obj, observed_world, source_rotation, source_translation, max_points=max_seed_points)
+    previous_uv = source_uv.reshape(-1, 1, 2)
+    active_canonical = canonical_points
+    flow_trace: list[dict[str, Any]] = []
+    current_uv = source_uv
+    for frame_idx in range(source_idx + direction, target_idx + direction, direction):
+        frame = frames.get(frame_idx)
+        obj = objects.get(frame_idx)
+        if frame is None or obj is None:
+            raise RuntimeError(f'optical-flow bridge lacks frame/object row {frame_idx}')
+        appearance = obj.get('appearance_observation')
+        if isinstance(appearance, dict):
+            if appearance.get('rgb_tracking_pose_evidence_eligible') is not True or appearance.get('metric_depth_pose_eligible') is not False or (not isinstance(appearance.get('ownership_contract'), dict)) or (appearance['ownership_contract'].get('mano_subtraction_completed') is not True) or (appearance['ownership_contract'].get('bbox_subtraction_used') is not False) or (str(obj.get('mask_semantics') or '') != 'projected_mano_subtracted_object_owned_appearance_mask'):
+                raise RuntimeError(f'optical-flow bridge frame {frame_idx} has malformed appearance-only ownership contract')
+        else:
+            geom = obj.get('visible_geometry_candidate') if isinstance(obj.get('visible_geometry_candidate'), dict) else {}
+            if geom.get('rigid_pose_observation_eligible') is not True or not isinstance(geom.get('object_surface_ownership_filter'), dict):
+                raise RuntimeError(f'optical-flow bridge frame {frame_idx} lacks accepted metric or explicit appearance ownership evidence')
+        raw_path = Path(str(frame.get('raw_frame_path') or ''))
+        mask_path = Path(str(obj.get('mask_path') or ''))
+        if not raw_path.is_file() or not mask_path.is_file():
+            raise RuntimeError(f'optical-flow bridge frame {frame_idx} lacks raw image/object-owned mask')
+        current_gray = read_gray(raw_path)
+        if current_gray.shape != previous_gray.shape:
+            raise RuntimeError('optical-flow bridge raw raster size changed within one clip')
+        (height, width) = current_gray.shape
+        (next_uv, forward_status, _) = cv2.calcOpticalFlowPyrLK(previous_gray, current_gray, previous_uv, None, winSize=(31, 31), maxLevel=4, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 40, 0.01), minEigThreshold=1e-05)
+        if next_uv is None or forward_status is None:
+            raise RuntimeError(f'forward optical flow failed at frame {frame_idx}')
+        (reverse_uv, reverse_status, _) = cv2.calcOpticalFlowPyrLK(current_gray, previous_gray, next_uv, None, winSize=(31, 31), maxLevel=4, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 40, 0.01), minEigThreshold=1e-05)
+        if reverse_uv is None or reverse_status is None:
+            raise RuntimeError(f'reverse optical flow failed at frame {frame_idx}')
+        next_points = next_uv[:, 0]
+        fb_error = np.linalg.norm(reverse_uv[:, 0] - previous_uv[:, 0], axis=1)
+        good = (forward_status[:, 0] > 0) & (reverse_status[:, 0] > 0) & (fb_error <= 1.5) & (next_points[:, 0] >= 0.0) & (next_points[:, 0] < width) & (next_points[:, 1] >= 0.0) & (next_points[:, 1] < height)
+        owned_mask = read_mask_at_size(mask_path, width, height)
+        rounded = np.rint(next_points).astype(np.int64)
+        rounded[:, 0] = np.clip(rounded[:, 0], 0, width - 1)
+        rounded[:, 1] = np.clip(rounded[:, 1], 0, height - 1)
+        good &= owned_mask[rounded[:, 1], rounded[:, 0]]
+        current_uv = next_points[good]
+        active_canonical = active_canonical[good]
+        flow_trace.append({'frame_idx': int(frame_idx), 'input_track_count': int(len(next_points)), 'accepted_track_count': int(len(current_uv)), 'forward_backward_error_px': numeric_summary(fb_error[good]), 'object_owned_mask': str(mask_path)})
+        if len(current_uv) < min_tracked_points:
+            raise RuntimeError(f'optical-flow bridge retained {len(current_uv)} < {min_tracked_points} tracks at frame {frame_idx}')
+        previous_uv = current_uv.astype(np.float32).reshape(-1, 1, 2)
+        previous_gray = current_gray
+    target_frame = frames[target_idx]
+    (target_height, target_width) = previous_gray.shape
+    (world_camera, intrinsics, raster_contract) = frame_camera_for_raster(target_frame, target_width, target_height)
+    (success, rotation_vector, translation_vector, inlier_indices) = cv2.solvePnPRansac(active_canonical.astype(np.float64), current_uv.astype(np.float64), intrinsics, None, flags=cv2.SOLVEPNP_EPNP, iterationsCount=300, reprojectionError=4.0, confidence=0.999)
+    if not success or inlier_indices is None:
+        raise RuntimeError(f'calibrated optical-flow PnP failed at bridge frame {target_idx}')
+    inliers = np.asarray(inlier_indices[:, 0], dtype=np.int64)
+    if len(inliers) >= 6:
+        (rotation_vector, translation_vector) = cv2.solvePnPRefineLM(active_canonical[inliers].astype(np.float64), current_uv[inliers].astype(np.float64), intrinsics, None, rotation_vector, translation_vector)
+    for _ in range(2):
+        (all_projected, _) = cv2.projectPoints(active_canonical.astype(np.float64), rotation_vector, translation_vector, intrinsics, None)
+        all_reprojection = np.linalg.norm(all_projected[:, 0] - current_uv, axis=1)
+        expanded_inliers = np.flatnonzero(all_reprojection <= 4.0)
+        if len(expanded_inliers) < max(6, len(inliers)):
+            break
+        inliers = expanded_inliers.astype(np.int64)
+        (rotation_vector, translation_vector) = cv2.solvePnPRefineLM(active_canonical[inliers].astype(np.float64), current_uv[inliers].astype(np.float64), intrinsics, None, rotation_vector, translation_vector)
+    rotation_camera_from_object = cv2.Rodrigues(rotation_vector)[0]
+    translation_camera = np.asarray(translation_vector, dtype=float).reshape(3)
+    rotation_world_from_object = world_camera[:3, :3] @ rotation_camera_from_object
+    translation_world = world_camera[:3, :3] @ translation_camera + world_camera[:3, 3]
+    (projected, _) = cv2.projectPoints(active_canonical[inliers].astype(np.float64), rotation_vector, translation_vector, intrinsics, None)
+    reprojection = np.linalg.norm(projected[:, 0] - current_uv[inliers], axis=1)
+    camera_inlier_points = apply_pose(active_canonical[inliers], rotation_camera_from_object, translation_camera)
+    positive_depth_fraction = float(np.mean(camera_inlier_points[:, 2] > 0.0))
+    inlier_fraction = float(len(inliers) / max(1, len(current_uv)))
+    reprojection_median = float(np.median(reprojection))
+    reprojection_p95 = float(np.percentile(reprojection, 95))
+    observability = rotation_observability_summary(active_canonical[inliers])
+    quality_passed = bool(len(current_uv) >= min_tracked_points and len(inliers) >= min_pnp_inliers and (inlier_fraction >= min_inlier_fraction) and (reprojection_median <= max_reprojection_median_px) and (reprojection_p95 <= max_reprojection_p95_px) and (positive_depth_fraction >= 0.98) and np.all(np.isfinite(rotation_world_from_object)) and np.all(np.isfinite(translation_world)) and (abs(np.linalg.det(rotation_world_from_object) - 1.0) <= 1e-05))
+    report = {'method': 'object_owned_rgb_forward_backward_lk_plus_calibrated_pnp', 'source_frame_idx': int(source_idx), 'target_frame_idx': int(target_idx), 'direction': 'forward' if direction > 0 else 'backward', 'seed': seed_report, 'flow_trace': flow_trace, 'target_camera_raster_contract': raster_contract, 'target_track_count': int(len(current_uv)), 'pnp_inlier_count': int(len(inliers)), 'pnp_inlier_fraction': inlier_fraction, 'reprojection_error_px': numeric_summary(reprojection), 'positive_camera_depth_fraction': positive_depth_fraction, 'rotation_observability': observability, 'pose_evidence_canonical_points_m': active_canonical[inliers].astype(float).tolist(), 'pose_evidence_point_provenance': "Accepted metric surfels from the source depth-owned frame, converted to the shared anchor canonical frame, then tracked to the target object's MANO-subtracted RGB support; no generated point is included.", 'quality_thresholds': {'minimum_tracked_points': int(min_tracked_points), 'minimum_pnp_inliers': int(min_pnp_inliers), 'minimum_pnp_inlier_fraction': float(min_inlier_fraction), 'maximum_reprojection_median_px': float(max_reprojection_median_px), 'maximum_reprojection_p95_px': float(max_reprojection_p95_px), 'minimum_positive_camera_depth_fraction': 0.98, 'rotation_observability_diagnostic_score_threshold': 0.02, 'per_bridge_observability_hard_gate': False, 'timeline_minimum_observable_fraction_remains_fixed': 0.8}, 'rotation_observability_policy': 'A sparse bridge may remain explicitly rotation-underobservable; the downstream fixed score>=0.02 and observable-fraction>=0.80 timeline gate remains authoritative and cannot be lowered.', 'quality_passed': quality_passed, 'claim_scope': 'Direct prediction-side RGB pose observation: accepted anchor-frame metric surfels are tracked only through MANO-subtracted object-owned image support and solved with the exact calibrated pinhole camera.'}
+    if not quality_passed:
+        raise RuntimeError(f'optical-flow PnP bridge failed closed: {report}')
+    return (rotation_world_from_object, translation_world, report, observability)

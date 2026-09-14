@@ -20,56 +20,32 @@ from factors.motion.temporal import correction_velocity, correction_acceleration
 from factors.interaction.physics import nonpenetration_translation_target
 from optimization.common.correspondences import build_observed_point_factors
 
-
-
 @dataclass
 class GraphConfig:
     outer_iterations: int = 8
     inner_evaluations: int = 80
-    rotation_step_rad: float = .4
-    translation_step_m: float = .05
-    prior_rotation_rad: float = .6
-    prior_translation_m: float = .08
-    rgb_rotation_rad: float = .05
-    rgb_translation_m: float = .025
-    rotation_weight: float = 1.
-    translation_weight: float = 1.
-    observed_weight: float = 1.
-    reprojection_weight: float = 1.
-    depth_restoration_m: float = .01
-    near_depth_m: float = 1e-6
-    # Continuous-time integral penalties; units rad/s and m/s.
-    correction_velocity_rad_s: float = 3.
-    correction_velocity_m_s: float = .5
-    acceleration_rad_s2: float = 8.
-    acceleration_m_s2: float = 2.
+    rotation_step_rad: float = 0.4
+    translation_step_m: float = 0.05
+    prior_rotation_rad: float = 0.6
+    prior_translation_m: float = 0.08
+    rgb_rotation_rad: float = 0.05
+    rgb_translation_m: float = 0.025
+    rotation_weight: float = 1.0
+    translation_weight: float = 1.0
+    observed_weight: float = 1.0
+    reprojection_weight: float = 1.0
+    depth_restoration_m: float = 0.01
+    near_depth_m: float = 1e-06
+    correction_velocity_rad_s: float = 3.0
+    correction_velocity_m_s: float = 0.5
+    acceleration_rad_s2: float = 8.0
+    acceleration_m_s2: float = 2.0
     loss: str = 'soft_l1'
-
-
-def validate(nodes, times, edges, anchor):
-    ids = [n.frame_idx for n in nodes]
-    if len(set(ids)) != len(ids) or not ids or anchor not in ids:
-        raise ValueError('unique full timeline and one gauge anchor required')
-    times = np.asarray(times, float)
-    if times.shape != (len(nodes),) or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
-        raise ValueError('strictly increasing finite timestamps required')
-    for n in nodes:
-        if not valid_rotation(n.initial_rotation) or not np.isfinite(n.initial_translation).all() or np.shape(n.initial_translation) != (3,):
-            raise ValueError('malformed source/initial pose')
-        if not 0 <= n.uncertainty <= 1:
-            raise ValueError('invalid uncertainty')
-    for e in edges:
-        if e.source_frame_idx not in ids or e.target_frame_idx not in ids or e.source_frame_idx == e.target_frame_idx:
-            raise ValueError('edge identity outside timeline')
-        if not valid_rotation(e.rotation_source_to_target_world) or np.shape(e.translation_source_to_target_world_m) != (3,) or not np.isfinite(e.translation_source_to_target_world_m).all() or not np.isfinite(e.weight) or e.weight < 0:
-            raise ValueError('malformed relative pose/precision')
-    return times
-
 
 def reprojection_depths(factor, poses, nodes):
     """Same endpoint/rotation eligibility as the pixel factor, without clipping."""
-    rs, ts = poses[factor.source_frame_idx]
-    rt, tt = poses[factor.target_frame_idx]
+    (rs, ts) = poses[factor.source_frame_idx]
+    (rt, tt) = poses[factor.target_frame_idx]
     if not factor.rotation_eligible:
         rs = nodes[factor.source_pos].initial_rotation
         rt = nodes[factor.target_pos].initial_rotation
@@ -81,50 +57,41 @@ def reprojection_depths(factor, poses, nodes):
         raise ValueError('nonfinite active reprojection geometry')
     return camera[:, 2]
 
-
 def depth_state(poses, nodes, reprojections, cfg):
-    depths, weights = [], []
+    (depths, weights) = ([], [])
     for f in reprojections:
         w = cfg.reprojection_weight * f.edge_weight * np.clip(f.weights, 0, 1)
         active = w > 0
         if not np.any(active):
             continue
-        # Zero-weight samples have no feasibility authority.
         selected = replace(f, source_world=f.source_world[active])
         depths.extend(reprojection_depths(selected, poses, nodes))
         weights.extend(w[active] / max(1, len(w)))
-    return np.asarray(depths), np.asarray(weights)
-
-
-def depth_violation(depths, weights, cfg):
-    return float(np.sum(weights * np.maximum(cfg.near_depth_m - depths, 0)))
-
+    return (np.asarray(depths), np.asarray(weights))
 
 def conditioned_observed_pose(node, poses, reference=None, scales=None):
-    r, t = poses[node.frame_idx]
+    (r, t) = poses[node.frame_idx]
     if reference is not None:
         base = reference[node.frame_idx][0]
         delta = Rotation.from_matrix(r @ base.T).as_rotvec()
         r = Rotation.from_rotvec(scales[node.frame_idx] * delta).as_matrix() @ base
-    return r, t
+    return (r, t)
 
-
-def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rotation_only=False,
-                    observed_reference=None, observed_scales=None):
+def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rotation_only=False, observed_reference=None, observed_scales=None):
     """Each block names its incident positions for exact finite-difference sparsity."""
-    positions = {n.frame_idx: i for i, n in enumerate(nodes)}
+    positions = {n.frame_idx: i for (i, n) in enumerate(nodes)}
     corrections = [pose_correction(n.initial_rotation, n.initial_translation, *poses[n.frame_idx]) for n in nodes]
     blocks = []
+
     def add(deps, value):
         blocks.append((tuple(deps), np.asarray(value).reshape(-1)))
-    for i, (n, (dr, dt)) in enumerate(zip(nodes, corrections)):
-        # Missing metric/source support is a weak prior, not a fabricated measurement.
+    for (i, (n, (dr, dt))) in enumerate(zip(nodes, corrections)):
         scale = 1 + 9 * n.uncertainty
         add([i], source_pose_rotation(dr, cfg.prior_rotation_rad * scale))
         if not rotation_only:
             add([i], source_pose_translation(dt, cfg.prior_translation_m * scale))
     for e in edges:
-        dr, dt = rgb_edge_residual(e, poses)
+        (dr, dt) = rgb_edge_residual(e, poses)
         deps = [positions[e.source_frame_idx], positions[e.target_frame_idx]]
         add(deps, math.sqrt(e.weight * cfg.rotation_weight) * dr / cfg.rgb_rotation_rad)
         if not rotation_only:
@@ -141,15 +108,15 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
             weights = np.sqrt(cfg.reprojection_weight * f.edge_weight * np.clip(f.weights, 0, 1) / len(depths))
             add([f.source_pos, f.target_pos], weights * np.maximum(cfg.near_depth_m - depths, 0) / cfg.depth_restoration_m)
         for f in points:
-            a, b = nodes[f.source_pos], nodes[f.target_pos]
-            delta = (inverse_pose(f.source_world, *conditioned_observed_pose(a, poses, observed_reference, observed_scales))
-                     - inverse_pose(f.target_world, *conditioned_observed_pose(b, poses, observed_reference, observed_scales)))
-            add([f.source_pos, f.target_pos], observed_point_to_plane(delta,f.target_normals,f.weights,cfg.observed_weight))
-            add([f.source_pos, f.target_pos], observed_point_to_point(delta,f.weights,cfg.observed_weight))
-    vr, vt = [], []
+            (a, b) = (nodes[f.source_pos], nodes[f.target_pos])
+            delta = inverse_pose(f.source_world, *conditioned_observed_pose(a, poses, observed_reference, observed_scales)) - inverse_pose(f.target_world, *conditioned_observed_pose(b, poses, observed_reference, observed_scales))
+            add([f.source_pos, f.target_pos], observed_point_to_plane(delta, f.target_normals, f.weights, cfg.observed_weight))
+            add([f.source_pos, f.target_pos], observed_point_to_point(delta, f.weights, cfg.observed_weight))
+    (vr, vt) = ([], [])
     gaps = np.diff(times)
-    for i, gap in enumerate(gaps):
-        ra, ta = poses[nodes[i].frame_idx]; rb, tb = poses[nodes[i + 1].frame_idx]
+    for (i, gap) in enumerate(gaps):
+        (ra, ta) = poses[nodes[i].frame_idx]
+        (rb, tb) = poses[nodes[i + 1].frame_idx]
         vr.append(Rotation.from_matrix(rb @ ra.T).as_rotvec() / gap)
         vt.append((tb - ta) / gap)
         ca = ra @ nodes[i].initial_rotation.T
@@ -166,145 +133,112 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
             add([i - 1, i, i + 1], (vt[i] - vt[i - 1]) / math.sqrt(gap) / cfg.acceleration_m_s2)
     return blocks
 
-
-def robust_cost(residual, loss):
-    return float(np.sum(2 * (np.sqrt(1 + residual**2) - 1) if loss == 'soft_l1' else residual**2))
-
-
 def solve_scene_pose(nodes, times, edges, anchor, config=None, reprojections=()):
+    from optimization.common.diagnostics import depth_violation
+    from factors.common import robust_cost
+    from gates.object.tracking import validate
     cfg = config or GraphConfig()
     times = validate(nodes, times, edges, anchor)
     if cfg.loss not in {'soft_l1', 'linear'} or min(cfg.rotation_step_rad, cfg.translation_step_m, cfg.depth_restoration_m, cfg.near_depth_m) <= 0:
         raise ValueError('invalid graph configuration')
-    # Work on distinct seed nodes: original arrays/rows remain immutable. Rotation
-    # priors and correction velocity now refer to current RGB evidence, not ICP.
-    nodes, edges, reprojections, chain = local_rotation_evidence(nodes, times, edges, anchor, reprojections)
+    (nodes, edges, reprojections, chain) = local_rotation_evidence(nodes, times, edges, anchor, reprojections)
     observed_scales = observed_rotation_authority(nodes, chain)
     poses = {n.frame_idx: (n.initial_rotation.copy(), n.initial_translation.copy()) for n in nodes}
-    # Eliminating this variable fixes the sole gauge exactly, without a huge numerical weight.
-    free = [i for i, n in enumerate(nodes) if n.frame_idx != anchor]
+    free = [i for (i, n) in enumerate(nodes) if n.frame_idx != anchor]
     trace = []
     snapshots = {}
     for rotation_only in (True, False):
-        observed_reference = {i: (r.copy(), t.copy()) for i, (r, t) in poses.items()}
+        observed_reference = {i: (r.copy(), t.copy()) for (i, (r, t)) in poses.items()}
         dof = 3 if rotation_only else 6
         for outer in range(cfg.outer_iterations):
             kernel = SolverConfig(max_points=250, min_pairs=3)
             observed_poses = {n.frame_idx: conditioned_observed_pose(n, poses, observed_reference, observed_scales) for n in nodes}
-            points, info = ([], {}) if rotation_only else build_observed_point_factors(nodes, observed_poses, anchor, kernel, outer)
+            (points, info) = ([], {}) if rotation_only else build_observed_point_factors(nodes, observed_poses, anchor, kernel, outer)
             base = poses
+
             def unpack(x):
                 result = dict(base)
-                for j, i in enumerate(free):
+                for (j, i) in enumerate(free):
                     delta = x[j * dof:(j + 1) * dof]
                     result[nodes[i].frame_idx] = apply_left_correction(*base[nodes[i].frame_idx], delta[:3], np.zeros(3) if rotation_only else delta[3:])
                 return result
+
             def blocks(x):
-                return residual_blocks(unpack(x), nodes, times, edges, points, reprojections, cfg, rotation_only,
-                                       observed_reference, observed_scales)
+                return residual_blocks(unpack(x), nodes, times, edges, points, reprojections, cfg, rotation_only, observed_reference, observed_scales)
+
             def fun(x):
-                return np.concatenate([v for _, v in blocks(x)])
+                return np.concatenate([v for (_, v) in blocks(x)])
             x0 = np.zeros(len(free) * dof)
             if not len(x0):
                 break
-            initial_depths, depth_weights = (np.array([]), np.array([])) if rotation_only else depth_state(base, nodes, reprojections, cfg)
+            (initial_depths, depth_weights) = (np.array([]), np.array([])) if rotation_only else depth_state(base, nodes, reprojections, cfg)
             violation_before = depth_violation(initial_depths, depth_weights, cfg)
             initial_blocks = blocks(x0)
-            sparsity = lil_matrix((sum(len(v) for _, v in initial_blocks), len(x0)), dtype=int)
+            sparsity = lil_matrix((sum((len(v) for (_, v) in initial_blocks)), len(x0)), dtype=int)
             offset = 0
-            for deps, value in initial_blocks:
-                for j, i in enumerate(free):
+            for (deps, value) in initial_blocks:
+                for (j, i) in enumerate(free):
                     if i in deps:
-                        sparsity[offset:offset + len(value), j*dof:(j+1)*dof] = 1
+                        sparsity[offset:offset + len(value), j * dof:(j + 1) * dof] = 1
                 offset += len(value)
             bounds = np.tile([cfg.rotation_step_rad] * 3 + ([] if rotation_only else [cfg.translation_step_m] * 3), len(free))
-            fit = least_squares(fun, x0, bounds=(-bounds, bounds), jac_sparsity=sparsity.tocsr(),
-                                loss=cfg.loss, f_scale=1, x_scale='jac', max_nfev=cfg.inner_evaluations,
-                                ftol=1e-6, xtol=1e-6, gtol=1e-6)
+            fit = least_squares(fun, x0, bounds=(-bounds, bounds), jac_sparsity=sparsity.tocsr(), loss=cfg.loss, f_scale=1, x_scale='jac', max_nfev=cfg.inner_evaluations, ftol=1e-06, xtol=1e-06, gtol=1e-06)
             before = robust_cost(fun(x0), cfg.loss)
             step = fit.x
             if violation_before > 0:
-                # A separate feasibility proposal avoids the singular pixel
-                # objective's local minimum behind the camera. Pixels/edges and
-                # observed terms remain in the full cost; acceptance explicitly
-                # records restoration rather than claiming objective descent.
+
                 def restoration(x):
-                    depths, weights = depth_state(unpack(x), nodes, reprojections, cfg)
+                    (depths, weights) = depth_state(unpack(x), nodes, reprojections, cfg)
                     return np.sqrt(weights) * np.maximum(cfg.near_depth_m - depths, 0) / cfg.depth_restoration_m
-                depth_sparsity = lil_matrix((len(initial_depths),len(x0)),dtype=int)
+                depth_sparsity = lil_matrix((len(initial_depths), len(x0)), dtype=int)
                 offset = 0
                 for f in reprojections:
-                    count = int(np.sum(cfg.reprojection_weight * f.edge_weight * np.clip(f.weights,0,1) > 0))
-                    for j, i in enumerate(free):
-                        if i in (f.source_pos,f.target_pos):
-                            depth_sparsity[offset:offset+count,j*dof:(j+1)*dof] = 1
+                    count = int(np.sum(cfg.reprojection_weight * f.edge_weight * np.clip(f.weights, 0, 1) > 0))
+                    for (j, i) in enumerate(free):
+                        if i in (f.source_pos, f.target_pos):
+                            depth_sparsity[offset:offset + count, j * dof:(j + 1) * dof] = 1
                     offset += count
-                restore = least_squares(restoration, x0, bounds=(-bounds, bounds),
-                                        jac_sparsity=depth_sparsity.tocsr(),
-                                        max_nfev=cfg.inner_evaluations, ftol=1e-9, xtol=1e-9, gtol=1e-9)
-                trial_depths, _ = depth_state(unpack(step), nodes, reprojections, cfg)
-                restored_depths, _ = depth_state(unpack(restore.x), nodes, reprojections, cfg)
+                restore = least_squares(restoration, x0, bounds=(-bounds, bounds), jac_sparsity=depth_sparsity.tocsr(), max_nfev=cfg.inner_evaluations, ftol=1e-09, xtol=1e-09, gtol=1e-09)
+                (trial_depths, _) = depth_state(unpack(step), nodes, reprojections, cfg)
+                (restored_depths, _) = depth_state(unpack(restore.x), nodes, reprojections, cfg)
                 if depth_violation(restored_depths, depth_weights, cfg) < depth_violation(trial_depths, depth_weights, cfg):
                     step = restore.x
             accepted = False
             after = before
             for _ in range(10):
                 candidate = unpack(step)
-                candidate_depths, _ = (np.array([]), np.array([])) if rotation_only else depth_state(candidate, nodes, reprojections, cfg)
+                (candidate_depths, _) = (np.array([]), np.array([])) if rotation_only else depth_state(candidate, nodes, reprojections, cfg)
                 violation_after = depth_violation(candidate_depths, depth_weights, cfg)
                 feasible = initial_depths >= cfg.near_depth_m
                 preserve_feasible = bool(np.all(candidate_depths[feasible] >= cfg.near_depth_m))
                 after = robust_cost(fun(step), cfg.loss)
-                # Restoration need not cross the near plane in one bounded step.
-                # Once feasible, normal robust objective descent resumes.
                 restoration_descent = violation_after < violation_before - 1e-12
-                # An irreducible violation must not freeze independent supported
-                # updates either: allow objective descent without depth regression.
-                descent = restoration_descent or (violation_after <= violation_before and after <= before + 1e-9)
+                descent = restoration_descent or (violation_after <= violation_before and after <= before + 1e-09)
                 accepted = preserve_feasible and np.isfinite(step).all() and np.isfinite(after) and descent
                 if accepted:
                     poses = candidate
                     break
-                step = step * .5
-            trace.append({'stage': 'SO3' if rotation_only else 'SE3', 'outer': outer,
-                          'cost_before': before, 'cost_after': after, 'accepted': bool(accepted),
-                          'max_rotation_step_component_rad': float(np.max(np.abs(step.reshape(-1,dof)[:,:3]))) if accepted else 0.,
-                          'max_translation_step_component_m': float(np.max(np.abs(step.reshape(-1,dof)[:,3:]))) if accepted and not rotation_only else 0.,
-                          'evaluations': fit.nfev, 'restoration_evaluations': restore.nfev if violation_before > 0 else 0, 'observed': info,
-                          'depth_violation_before_m': violation_before,
-                          'depth_violation_after_m': violation_after if accepted else violation_before,
-                          'remaining_invalid_depths': int(np.sum((candidate_depths if accepted else initial_depths) < cfg.near_depth_m))})
-            if not accepted or np.max(np.abs(step)) < 1e-5:
+                step = step * 0.5
+            trace.append({'stage': 'SO3' if rotation_only else 'SE3', 'outer': outer, 'cost_before': before, 'cost_after': after, 'accepted': bool(accepted), 'max_rotation_step_component_rad': float(np.max(np.abs(step.reshape(-1, dof)[:, :3]))) if accepted else 0.0, 'max_translation_step_component_m': float(np.max(np.abs(step.reshape(-1, dof)[:, 3:]))) if accepted and (not rotation_only) else 0.0, 'evaluations': fit.nfev, 'restoration_evaluations': restore.nfev if violation_before > 0 else 0, 'observed': info, 'depth_violation_before_m': violation_before, 'depth_violation_after_m': violation_after if accepted else violation_before, 'remaining_invalid_depths': int(np.sum((candidate_depths if accepted else initial_depths) < cfg.near_depth_m))})
+            if not accepted or np.max(np.abs(step)) < 1e-05:
                 break
-        snapshots['SO3' if rotation_only else 'SE3'] = [
-            {'frame_idx': n.frame_idx, 'rotation': poses[n.frame_idx][0].tolist(),
-             'translation_world_m': poses[n.frame_idx][1].tolist()} for n in nodes]
+        snapshots['SO3' if rotation_only else 'SE3'] = [{'frame_idx': n.frame_idx, 'rotation': poses[n.frame_idx][0].tolist(), 'translation_world_m': poses[n.frame_idx][1].tolist()} for n in nodes]
     diagnostics = []
     for e in edges:
-        dr, dt = rgb_edge_residual(e, poses)
+        (dr, dt) = rgb_edge_residual(e, poses)
         normalized = math.sqrt(e.weight * cfg.rotation_weight) * dr / cfg.rgb_rotation_rad
-        diagnostics.append({'source': e.source_frame_idx, 'target': e.target_frame_idx,
-                            'rotation_error_rad': float(np.linalg.norm(dr)), 'translation_error_m': float(np.linalg.norm(dt)),
-                            'robust_rotation_precision': (1 / np.sqrt(1 + normalized**2)).tolist()})
-    # Connectivity concerns evidence only; temporal terms do not invent measured loops.
+        diagnostics.append({'source': e.source_frame_idx, 'target': e.target_frame_idx, 'rotation_error_rad': float(np.linalg.norm(dr)), 'translation_error_m': float(np.linalg.norm(dt)), 'robust_rotation_precision': (1 / np.sqrt(1 + normalized ** 2)).tolist()})
     connected = {anchor}
     for _ in nodes:
         for e in edges:
-            if e.weight > 0 and ({e.source_frame_idx, e.target_frame_idx} & connected):
+            if e.weight > 0 and {e.source_frame_idx, e.target_frame_idx} & connected:
                 connected.update([e.source_frame_idx, e.target_frame_idx])
     invalid_ids = set()
     for f in reprojections:
         active = cfg.reprojection_weight * f.edge_weight * np.clip(f.weights, 0, 1) > 0
         if np.any(active) and np.any(reprojection_depths(replace(f, source_world=f.source_world[active]), poses, nodes) < cfg.near_depth_m):
             invalid_ids.update((f.source_frame_idx, f.target_frame_idx))
-    return poses, {'trace': trace, 'edges': diagnostics, 'gauge_anchor': anchor,
-                   'local_RGB_rotation': chain, 'stage_snapshots': snapshots,
-                   'observed_rotation_authority': {'policy': 'covariance_min_max_ratio_over_0.02_on_local_RGB_supported_nodes; translation_unchanged',
-                                                   'scales_by_frame': observed_scales},
-                   'depth_restoration': {'affected_frame_ids': sorted(invalid_ids), 'remaining_invalid': int(np.sum(depth_state(poses, nodes, reprojections, cfg)[0] < cfg.near_depth_m)),
-                                         'policy': 'weighted restoration; retain uncertainty when infeasible'},
-                   'relative_evidence_disconnected_ids': [n.frame_idx for n in nodes if n.frame_idx not in connected]}
-
+    return (poses, {'trace': trace, 'edges': diagnostics, 'gauge_anchor': anchor, 'local_RGB_rotation': chain, 'stage_snapshots': snapshots, 'observed_rotation_authority': {'policy': 'covariance_min_max_ratio_over_0.02_on_local_RGB_supported_nodes; translation_unchanged', 'scales_by_frame': observed_scales}, 'depth_restoration': {'affected_frame_ids': sorted(invalid_ids), 'remaining_invalid': int(np.sum(depth_state(poses, nodes, reprojections, cfg)[0] < cfg.near_depth_m)), 'policy': 'weighted restoration; retain uncertainty when infeasible'}, 'relative_evidence_disconnected_ids': [n.frame_idx for n in nodes if n.frame_idx not in connected]})
 import argparse
 import hashlib
 import json
@@ -348,22 +282,6 @@ def deterministic_sample_mesh(mesh: trimesh.Trimesh, count: int) -> np.ndarray:
     (points, _) = trimesh.sample.sample_surface(mesh, min(count, max(1, len(mesh.faces) * 2)), seed=rng)
     return np.asarray(points, dtype=float)
 
-def rigid_umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    if len(src) != len(dst) or len(src) < 3:
-        raise RuntimeError('rigid fit requires matched arrays with >=3 points')
-    mu_src = src.mean(axis=0)
-    mu_dst = dst.mean(axis=0)
-    xs = src - mu_src
-    xd = dst - mu_dst
-    covariance = xs.T @ xd / len(src)
-    (u, _, vt) = np.linalg.svd(covariance)
-    rotation = vt.T @ u.T
-    if np.linalg.det(rotation) < 0:
-        vt[-1, :] *= -1.0
-        rotation = vt.T @ u.T
-    translation = mu_dst - rotation @ mu_src
-    return (rotation.astype(float), translation.astype(float))
-
 def apply_pose(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
     return points @ rotation.T + translation
 
@@ -392,100 +310,6 @@ def rotation_observability_summary(points: np.ndarray) -> dict[str, Any]:
     eigenvalues = np.sort(np.maximum(np.linalg.eigvalsh(covariance), 0.0))
     score = float(eigenvalues[1] / max(eigenvalues[2], 1e-12))
     return {'observable': bool(np.isfinite(score) and score >= 0.02), 'score': score, 'eigenvalues_ascending': eigenvalues.astype(float).tolist(), 'threshold': 0.02, 'reason': 'second_to_first_principal_variance_ratio'}
-
-def rigid_pose_observation_eligibility(obj: dict[str, Any], geom: dict[str, Any]) -> tuple[bool | None, list[str], list[str]]:
-    """Resolve explicit P09 eligibility without rejecting legacy rows lacking the field."""
-    values: list[bool] = []
-    reasons: list[str] = []
-    sources: list[str] = []
-    for (source, payload) in (('object', obj), ('visible_geometry_candidate', geom)):
-        value = payload.get('rigid_pose_observation_eligible')
-        if isinstance(value, bool):
-            values.append(value)
-            sources.append(source)
-        reason = payload.get('rigid_pose_observation_reason')
-        if isinstance(reason, str) and reason and (reason not in reasons):
-            reasons.append(reason)
-    if False in values:
-        return (False, reasons, sources)
-    if True in values:
-        return (True, reasons, sources)
-    return (None, reasons, sources)
-
-def correspondence_state(source: np.ndarray, target: np.ndarray, rotation: np.ndarray, translation: np.ndarray, *, frame_gap: int, trim_fraction: float, max_correspondence_m: float, min_matches: int) -> dict[str, Any]:
-    transformed = apply_pose(source, rotation, translation)
-    target_tree = cKDTree(target)
-    (distances, target_indices) = target_tree.query(transformed, k=1, workers=-1)
-    source_tree = cKDTree(transformed)
-    reverse_indices = source_tree.query(target, k=1, workers=-1)[1]
-    source_indices = np.arange(len(source), dtype=np.int64)
-    mutual = source_indices == reverse_indices[target_indices]
-    pool = np.flatnonzero(mutual)
-    if len(pool) < min_matches:
-        pool = source_indices
-    quantile_cap = float(np.percentile(distances[pool], trim_fraction * 100.0))
-    metric_cap = float(max_correspondence_m * math.sqrt(max(1, frame_gap)))
-    active_cap = min(metric_cap, quantile_cap)
-    keep = pool[distances[pool] <= active_cap]
-    if len(keep) < min_matches:
-        keep = np.argsort(distances)[:min(len(distances), max(min_matches, int(len(source) * 0.35)))]
-    return {'transformed': transformed, 'distances': distances, 'target_indices': target_indices, 'mutual_count': int(np.count_nonzero(mutual)), 'keep': np.asarray(keep, dtype=np.int64), 'active_cap_m': float(active_cap), 'metric_cap_m': metric_cap, 'quantile_cap_m': quantile_cap}
-
-def register_adjacent_observed_surfaces(source: np.ndarray, target: np.ndarray, *, frame_gap: int, iterations: int, trim_fraction: float, max_correspondence_m: float, min_matches: int, max_median_residual_m: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Estimate a world-to-world rigid delta using only accepted observed surfels."""
-    rotation = np.eye(3, dtype=float)
-    translation = target.mean(axis=0) - source.mean(axis=0)
-    trace: list[dict[str, Any]] = []
-    for iteration in range(iterations):
-        state = correspondence_state(source, target, rotation, translation, frame_gap=frame_gap, trim_fraction=trim_fraction, max_correspondence_m=max_correspondence_m, min_matches=min_matches)
-        keep = state['keep']
-        (rotation, translation) = rigid_umeyama(source[keep], target[state['target_indices'][keep]])
-        trace.append({'iteration': int(iteration + 1), 'match_count': int(len(keep)), 'mutual_count': int(state['mutual_count']), 'active_cap_m': float(state['active_cap_m']), 'median_residual_m': float(np.median(state['distances'][keep]))})
-    final = correspondence_state(source, target, rotation, translation, frame_gap=frame_gap, trim_fraction=trim_fraction, max_correspondence_m=max_correspondence_m, min_matches=min_matches)
-    keep = final['keep']
-    residuals = final['distances'][keep]
-    median_residual = float(np.median(residuals))
-    quality_passed = bool(len(keep) >= min_matches and np.isfinite(median_residual) and (median_residual <= max_median_residual_m) and np.all(np.isfinite(rotation)) and np.all(np.isfinite(translation)) and (abs(np.linalg.det(rotation) - 1.0) <= 1e-05))
-    report = {'method': 'trimmed_mutual_nearest_observed_surfel_icp', 'frame_gap': int(frame_gap), 'source_point_count': int(len(source)), 'target_point_count': int(len(target)), 'match_count': int(len(keep)), 'mutual_count': int(final['mutual_count']), 'trim_fraction': float(trim_fraction), 'active_cap_m': float(final['active_cap_m']), 'max_correspondence_m_at_gap': float(final['metric_cap_m']), 'residual_m': numeric_summary(residuals), 'delta_rotation_deg': rotation_angle_deg(rotation), 'delta_translation_m': float(np.linalg.norm(translation)), 'quality_thresholds': {'minimum_matches': int(min_matches), 'maximum_median_residual_m': float(max_median_residual_m)}, 'quality_passed': quality_passed, 'trace': trace}
-    if not quality_passed:
-        raise RuntimeError(f'observed-surface pairwise registration failed closed: {report}')
-    return (rotation, translation, report)
-
-def refine_translation_from_observed_anchor(anchor_canonical_points: np.ndarray, observed_world: np.ndarray, rotation: np.ndarray, initial_translation: np.ndarray, *, iterations: int, trim_fraction: float) -> tuple[np.ndarray, dict[str, Any]]:
-    """Refine translation at fixed rotation using no generated mesh faces."""
-    translation = np.asarray(initial_translation, dtype=float).copy()
-    trace: list[dict[str, Any]] = []
-    for iteration in range(iterations):
-        model_world = apply_pose(anchor_canonical_points, rotation, translation)
-        (distances, model_indices) = cKDTree(model_world).query(observed_world, k=1, workers=-1)
-        keep_count = max(30, int(len(observed_world) * trim_fraction))
-        keep = np.argsort(distances)[:min(len(distances), keep_count)]
-        deltas = observed_world[keep] - model_world[model_indices[keep]]
-        update = np.median(deltas, axis=0)
-        translation += update
-        trace.append({'iteration': int(iteration + 1), 'match_count': int(len(keep)), 'median_residual_m': float(np.median(distances[keep])), 'translation_update_m': update.astype(float).tolist()})
-    model_world = apply_pose(anchor_canonical_points, rotation, translation)
-    final = nearest_summary(observed_world, model_world)
-    return (translation, {'method': 'fixed_rotation_trimmed_anchor_observed_surfel_translation', 'trim_fraction': float(trim_fraction), 'iterations': int(iterations), 'observed_to_anchor_surface_final': final, 'trace': trace})
-
-def refine_pose_from_observed_anchor(anchor_canonical_points: np.ndarray, observed_world: np.ndarray, initial_rotation: np.ndarray, initial_translation: np.ndarray, *, iterations: int, trim_fraction: float, damping: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Obtain an observed-only unary pose candidate in the temporal chain's local basin."""
-    rotation = np.asarray(initial_rotation, dtype=float).copy()
-    translation = np.asarray(initial_translation, dtype=float).copy()
-    trace: list[dict[str, Any]] = []
-    for iteration in range(iterations):
-        model_world = apply_pose(anchor_canonical_points, rotation, translation)
-        (distances, model_indices) = cKDTree(model_world).query(observed_world, k=1, workers=-1)
-        keep_count = max(30, int(len(observed_world) * trim_fraction))
-        keep = np.argsort(distances)[:min(len(distances), keep_count)]
-        (candidate_rotation, candidate_translation) = rigid_umeyama(anchor_canonical_points[model_indices[keep]], observed_world[keep])
-        rotation_delta = Rotation.from_matrix(candidate_rotation @ rotation.T).as_rotvec()
-        damped_delta = Rotation.from_rotvec(float(damping) * rotation_delta).as_matrix()
-        rotation = damped_delta @ rotation
-        translation = (1.0 - float(damping)) * translation + float(damping) * candidate_translation
-        trace.append({'iteration': int(iteration + 1), 'match_count': int(len(keep)), 'median_residual_m': float(np.median(distances[keep])), 'undamped_rotation_update_deg': float(np.degrees(np.linalg.norm(rotation_delta)))})
-    final_world = apply_pose(anchor_canonical_points, rotation, translation)
-    return (rotation, translation, {'method': 'temporally_initialized_trimmed_observed_anchor_surface_icp', 'iterations': int(iterations), 'trim_fraction': float(trim_fraction), 'damping': float(damping), 'observed_to_anchor_surface_final': nearest_summary(observed_world, final_world), 'trace': trace})
 
 def frame_object(frame: dict[str, Any], object_id: str) -> dict[str, Any] | None:
     for candidate in frame.get('objects', []) if isinstance(frame.get('objects'), list) else []:
@@ -526,126 +350,6 @@ def frame_camera_for_raster(frame: dict[str, Any], width: int, height: int) -> t
     intrinsics = np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=float)
     return (transform, intrinsics, {'source_intrinsics_fx_fy_cx_cy': values.astype(float).tolist(), 'source_size_wh': [source_width, source_height], 'raster_size_wh': [int(width), int(height)], 'A_raster_from_source': [[sx, 0.0, 0.5 * sx - 0.5], [0.0, sy, 0.5 * sy - 0.5], [0.0, 0.0, 1.0]], 'raster_intrinsics': intrinsics.astype(float).tolist(), 'pixel_center_convention': 'OpenCV half-pixel resize mapping'})
 
-def select_flow_seed_points(frame: dict[str, Any], obj: dict[str, Any], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, *, max_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
-    raw_path = Path(str(frame.get('raw_frame_path') or ''))
-    mask_path = Path(str(obj.get('mask_path') or ''))
-    if not raw_path.is_file() or not mask_path.is_file():
-        raise RuntimeError(f"optical-flow source frame lacks raw image/object-owned mask: {frame.get('frame_idx')}")
-    gray = read_gray(raw_path)
-    (height, width) = gray.shape
-    mask = read_mask_at_size(mask_path, width, height)
-    (world_camera, intrinsics, raster_contract) = frame_camera_for_raster(frame, width, height)
-    camera_world = np.linalg.inv(world_camera)
-    observed_camera = apply_pose(observed_world, camera_world[:3, :3], camera_world[:3, 3])
-    positive = observed_camera[:, 2] > 1e-05
-    uv = np.column_stack([intrinsics[0, 0] * observed_camera[:, 0] / np.maximum(observed_camera[:, 2], 1e-09) + intrinsics[0, 2], intrinsics[1, 1] * observed_camera[:, 1] / np.maximum(observed_camera[:, 2], 1e-09) + intrinsics[1, 2]])
-    inside = positive & (uv[:, 0] >= 2.0) & (uv[:, 0] < width - 2.0) & (uv[:, 1] >= 2.0) & (uv[:, 1] < height - 2.0)
-    canonical = (observed_world - source_translation) @ source_rotation
-    uv = uv[inside]
-    canonical = canonical[inside]
-    rounded = np.rint(uv).astype(np.int64)
-    owned = mask[rounded[:, 1], rounded[:, 0]]
-    uv = uv[owned]
-    canonical = canonical[owned]
-    if len(uv) < 50:
-        raise RuntimeError(f'too few projected object-owned flow seeds: {len(uv)}')
-    gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
-    gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
-    gradient = np.hypot(gradient_x, gradient_y)
-    rounded = np.rint(uv).astype(np.int64)
-    scores = gradient[rounded[:, 1], rounded[:, 0]]
-    order = np.argsort(scores)[::-1]
-    selected = order[:min(max_points, len(order))]
-    return (gray, uv[selected].astype(np.float32), canonical[selected].astype(float), {'raw_frame': str(raw_path), 'object_owned_mask': str(mask_path), 'projected_owned_seed_count': int(len(uv)), 'selected_seed_count': int(len(selected)), 'selected_gradient_summary': numeric_summary(scores[selected]), 'camera_raster_contract': raster_contract})
-
-def estimate_optical_flow_pnp_bridge(*, source_idx: int, target_idx: int, frames: dict[int, dict[str, Any]], objects: dict[int, dict[str, Any]], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, max_seed_points: int, min_tracked_points: int, min_pnp_inliers: int, min_inlier_fraction: float, max_reprojection_median_px: float, max_reprojection_p95_px: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, Any]]:
-    if source_idx == target_idx:
-        raise RuntimeError('optical-flow bridge source and target must differ')
-    direction = 1 if target_idx > source_idx else -1
-    source_frame = frames[source_idx]
-    source_obj = objects[source_idx]
-    (previous_gray, source_uv, canonical_points, seed_report) = select_flow_seed_points(source_frame, source_obj, observed_world, source_rotation, source_translation, max_points=max_seed_points)
-    previous_uv = source_uv.reshape(-1, 1, 2)
-    active_canonical = canonical_points
-    flow_trace: list[dict[str, Any]] = []
-    current_uv = source_uv
-    for frame_idx in range(source_idx + direction, target_idx + direction, direction):
-        frame = frames.get(frame_idx)
-        obj = objects.get(frame_idx)
-        if frame is None or obj is None:
-            raise RuntimeError(f'optical-flow bridge lacks frame/object row {frame_idx}')
-        appearance = obj.get('appearance_observation')
-        if isinstance(appearance, dict):
-            if appearance.get('rgb_tracking_pose_evidence_eligible') is not True or appearance.get('metric_depth_pose_eligible') is not False or (not isinstance(appearance.get('ownership_contract'), dict)) or (appearance['ownership_contract'].get('mano_subtraction_completed') is not True) or (appearance['ownership_contract'].get('bbox_subtraction_used') is not False) or (str(obj.get('mask_semantics') or '') != 'projected_mano_subtracted_object_owned_appearance_mask'):
-                raise RuntimeError(f'optical-flow bridge frame {frame_idx} has malformed appearance-only ownership contract')
-        else:
-            geom = obj.get('visible_geometry_candidate') if isinstance(obj.get('visible_geometry_candidate'), dict) else {}
-            if geom.get('rigid_pose_observation_eligible') is not True or not isinstance(geom.get('object_surface_ownership_filter'), dict):
-                raise RuntimeError(f'optical-flow bridge frame {frame_idx} lacks accepted metric or explicit appearance ownership evidence')
-        raw_path = Path(str(frame.get('raw_frame_path') or ''))
-        mask_path = Path(str(obj.get('mask_path') or ''))
-        if not raw_path.is_file() or not mask_path.is_file():
-            raise RuntimeError(f'optical-flow bridge frame {frame_idx} lacks raw image/object-owned mask')
-        current_gray = read_gray(raw_path)
-        if current_gray.shape != previous_gray.shape:
-            raise RuntimeError('optical-flow bridge raw raster size changed within one clip')
-        (height, width) = current_gray.shape
-        (next_uv, forward_status, _) = cv2.calcOpticalFlowPyrLK(previous_gray, current_gray, previous_uv, None, winSize=(31, 31), maxLevel=4, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 40, 0.01), minEigThreshold=1e-05)
-        if next_uv is None or forward_status is None:
-            raise RuntimeError(f'forward optical flow failed at frame {frame_idx}')
-        (reverse_uv, reverse_status, _) = cv2.calcOpticalFlowPyrLK(current_gray, previous_gray, next_uv, None, winSize=(31, 31), maxLevel=4, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 40, 0.01), minEigThreshold=1e-05)
-        if reverse_uv is None or reverse_status is None:
-            raise RuntimeError(f'reverse optical flow failed at frame {frame_idx}')
-        next_points = next_uv[:, 0]
-        fb_error = np.linalg.norm(reverse_uv[:, 0] - previous_uv[:, 0], axis=1)
-        good = (forward_status[:, 0] > 0) & (reverse_status[:, 0] > 0) & (fb_error <= 1.5) & (next_points[:, 0] >= 0.0) & (next_points[:, 0] < width) & (next_points[:, 1] >= 0.0) & (next_points[:, 1] < height)
-        owned_mask = read_mask_at_size(mask_path, width, height)
-        rounded = np.rint(next_points).astype(np.int64)
-        rounded[:, 0] = np.clip(rounded[:, 0], 0, width - 1)
-        rounded[:, 1] = np.clip(rounded[:, 1], 0, height - 1)
-        good &= owned_mask[rounded[:, 1], rounded[:, 0]]
-        current_uv = next_points[good]
-        active_canonical = active_canonical[good]
-        flow_trace.append({'frame_idx': int(frame_idx), 'input_track_count': int(len(next_points)), 'accepted_track_count': int(len(current_uv)), 'forward_backward_error_px': numeric_summary(fb_error[good]), 'object_owned_mask': str(mask_path)})
-        if len(current_uv) < min_tracked_points:
-            raise RuntimeError(f'optical-flow bridge retained {len(current_uv)} < {min_tracked_points} tracks at frame {frame_idx}')
-        previous_uv = current_uv.astype(np.float32).reshape(-1, 1, 2)
-        previous_gray = current_gray
-    target_frame = frames[target_idx]
-    (target_height, target_width) = previous_gray.shape
-    (world_camera, intrinsics, raster_contract) = frame_camera_for_raster(target_frame, target_width, target_height)
-    (success, rotation_vector, translation_vector, inlier_indices) = cv2.solvePnPRansac(active_canonical.astype(np.float64), current_uv.astype(np.float64), intrinsics, None, flags=cv2.SOLVEPNP_EPNP, iterationsCount=300, reprojectionError=4.0, confidence=0.999)
-    if not success or inlier_indices is None:
-        raise RuntimeError(f'calibrated optical-flow PnP failed at bridge frame {target_idx}')
-    inliers = np.asarray(inlier_indices[:, 0], dtype=np.int64)
-    if len(inliers) >= 6:
-        (rotation_vector, translation_vector) = cv2.solvePnPRefineLM(active_canonical[inliers].astype(np.float64), current_uv[inliers].astype(np.float64), intrinsics, None, rotation_vector, translation_vector)
-    for _ in range(2):
-        (all_projected, _) = cv2.projectPoints(active_canonical.astype(np.float64), rotation_vector, translation_vector, intrinsics, None)
-        all_reprojection = np.linalg.norm(all_projected[:, 0] - current_uv, axis=1)
-        expanded_inliers = np.flatnonzero(all_reprojection <= 4.0)
-        if len(expanded_inliers) < max(6, len(inliers)):
-            break
-        inliers = expanded_inliers.astype(np.int64)
-        (rotation_vector, translation_vector) = cv2.solvePnPRefineLM(active_canonical[inliers].astype(np.float64), current_uv[inliers].astype(np.float64), intrinsics, None, rotation_vector, translation_vector)
-    rotation_camera_from_object = cv2.Rodrigues(rotation_vector)[0]
-    translation_camera = np.asarray(translation_vector, dtype=float).reshape(3)
-    rotation_world_from_object = world_camera[:3, :3] @ rotation_camera_from_object
-    translation_world = world_camera[:3, :3] @ translation_camera + world_camera[:3, 3]
-    (projected, _) = cv2.projectPoints(active_canonical[inliers].astype(np.float64), rotation_vector, translation_vector, intrinsics, None)
-    reprojection = np.linalg.norm(projected[:, 0] - current_uv[inliers], axis=1)
-    camera_inlier_points = apply_pose(active_canonical[inliers], rotation_camera_from_object, translation_camera)
-    positive_depth_fraction = float(np.mean(camera_inlier_points[:, 2] > 0.0))
-    inlier_fraction = float(len(inliers) / max(1, len(current_uv)))
-    reprojection_median = float(np.median(reprojection))
-    reprojection_p95 = float(np.percentile(reprojection, 95))
-    observability = rotation_observability_summary(active_canonical[inliers])
-    quality_passed = bool(len(current_uv) >= min_tracked_points and len(inliers) >= min_pnp_inliers and (inlier_fraction >= min_inlier_fraction) and (reprojection_median <= max_reprojection_median_px) and (reprojection_p95 <= max_reprojection_p95_px) and (positive_depth_fraction >= 0.98) and np.all(np.isfinite(rotation_world_from_object)) and np.all(np.isfinite(translation_world)) and (abs(np.linalg.det(rotation_world_from_object) - 1.0) <= 1e-05))
-    report = {'method': 'object_owned_rgb_forward_backward_lk_plus_calibrated_pnp', 'source_frame_idx': int(source_idx), 'target_frame_idx': int(target_idx), 'direction': 'forward' if direction > 0 else 'backward', 'seed': seed_report, 'flow_trace': flow_trace, 'target_camera_raster_contract': raster_contract, 'target_track_count': int(len(current_uv)), 'pnp_inlier_count': int(len(inliers)), 'pnp_inlier_fraction': inlier_fraction, 'reprojection_error_px': numeric_summary(reprojection), 'positive_camera_depth_fraction': positive_depth_fraction, 'rotation_observability': observability, 'pose_evidence_canonical_points_m': active_canonical[inliers].astype(float).tolist(), 'pose_evidence_point_provenance': "Accepted metric surfels from the source depth-owned frame, converted to the shared anchor canonical frame, then tracked to the target object's MANO-subtracted RGB support; no generated point is included.", 'quality_thresholds': {'minimum_tracked_points': int(min_tracked_points), 'minimum_pnp_inliers': int(min_pnp_inliers), 'minimum_pnp_inlier_fraction': float(min_inlier_fraction), 'maximum_reprojection_median_px': float(max_reprojection_median_px), 'maximum_reprojection_p95_px': float(max_reprojection_p95_px), 'minimum_positive_camera_depth_fraction': 0.98, 'rotation_observability_diagnostic_score_threshold': 0.02, 'per_bridge_observability_hard_gate': False, 'timeline_minimum_observable_fraction_remains_fixed': 0.8}, 'rotation_observability_policy': 'A sparse bridge may remain explicitly rotation-underobservable; the downstream fixed score>=0.02 and observable-fraction>=0.80 timeline gate remains authoritative and cannot be lowered.', 'quality_passed': quality_passed, 'claim_scope': 'Direct prediction-side RGB pose observation: accepted anchor-frame metric surfels are tracked only through MANO-subtracted object-owned image support and solved with the exact calibrated pinhole camera.'}
-    if not quality_passed:
-        raise RuntimeError(f'optical-flow PnP bridge failed closed: {report}')
-    return (rotation_world_from_object, translation_world, report, observability)
-
 def bridge_positions_for_gap(left: int, right: int, maximum_gap: int) -> list[int]:
     gap = int(right - left)
     if gap <= maximum_gap:
@@ -680,25 +384,13 @@ def complete_translation_measurements(direct_translations: dict[int, np.ndarray]
             sources.append('edge_hold_regularization_support')
     return (np.asarray(measurements, dtype=float), np.asarray(weights, dtype=float), sources)
 
-def regularize_translation_timeline(measurements: np.ndarray, weights: np.ndarray, *, velocity_weight: float, acceleration_weight: float, zero_prior_weight: float=0.0) -> np.ndarray:
-    count = len(measurements)
-    if count < 3:
-        return measurements.copy()
-    first_difference = np.zeros((count - 1, count), dtype=float)
-    for row in range(count - 1):
-        first_difference[row, row] = -1.0
-        first_difference[row, row + 1] = 1.0
-    second_difference = np.zeros((count - 2, count), dtype=float)
-    for row in range(count - 2):
-        second_difference[row, row] = 1.0
-        second_difference[row, row + 1] = -2.0
-        second_difference[row, row + 2] = 1.0
-    weight_matrix = np.diag(weights)
-    system = weight_matrix + float(zero_prior_weight) * np.eye(count, dtype=float) + float(velocity_weight) * (first_difference.T @ first_difference) + float(acceleration_weight) * (second_difference.T @ second_difference)
-    rhs = weight_matrix @ measurements
-    return np.column_stack([np.linalg.solve(system, rhs[:, axis]) for axis in range(3)])
-
 def fit_observed_pose(argv=None) -> None:
+    from observations.object.rgb_tracking import estimate_optical_flow_pnp_bridge
+    from observations.object.registration import refine_pose_from_observed_anchor
+    from observations.object.registration import refine_translation_from_observed_anchor
+    from observations.object.registration import register_adjacent_observed_surfaces
+    from optimization.common.solvers import regularize_translation_timeline
+    from gates.object.observation import rigid_pose_observation_eligibility
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--annotations', type=Path, required=True)
     parser.add_argument('--completion-report', type=Path, required=True)
@@ -988,7 +680,6 @@ def fit_observed_pose(argv=None) -> None:
     output_path = args.output_dir / 'v18_compact_rigid_object_pose_fit_report.json'
     output_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps(report, indent=2))
-
 import argparse
 import hashlib
 import json
@@ -1008,32 +699,6 @@ COMPLETED_POSE_STATUS = 'completed_temporal_rigid_pose_uncertain'
 STRICT_ROTATION_STEP_DEG = 15.0
 CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS = {'max_rotation_step_deg': 18.0, 'max_count': 2, 'max_fraction': 0.015, 'max_translation_step_m': 0.02, 'max_endpoint_observability_score': 0.03}
 
-@dataclass(frozen=True)
-class PoseObservation:
-    frame_idx: int
-    source_row: dict[str, Any]
-    rotation_world_from_canonical: np.ndarray
-    translation_world_m: np.ndarray
-    translation_sigma_m: float
-    rotation_sigma_rad: float
-    visible_sample_count: int
-    observed_points_world: np.ndarray
-    nonpenetration_target_world_m: np.ndarray | None
-    nonpenetration_weight: float
-    nonpenetration_source_rows: int
-
-@dataclass(frozen=True)
-class ImageFactorObservation:
-    frame_idx: int
-    T_world_camera: np.ndarray
-    K_raster: np.ndarray
-    depth_points_canonical: np.ndarray
-    depth_observed_z: np.ndarray
-    depth_weight: np.ndarray
-    silhouette_points_canonical: np.ndarray
-    silhouette_target_uv: np.ndarray
-    silhouette_kind: np.ndarray
-
 def formal_object_load_json(path: Path) -> Any:
     with path.open('r', encoding='utf-8') as f:
         return json.load(f)
@@ -1048,17 +713,6 @@ def formal_object_sha256_file(path: Path) -> str:
         for chunk in iter(lambda : handle.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
-
-def validate_camera_transform(transform: np.ndarray, frame_idx: int) -> np.ndarray:
-    transform = np.asarray(transform, dtype=np.float64)
-    if transform.shape != (4, 4) or not np.isfinite(transform).all():
-        raise RuntimeError(f'frame {frame_idx} has invalid T_world_camera_metric')
-    rotation = transform[:3, :3]
-    if np.linalg.norm(rotation.T @ rotation - np.eye(3)) > 0.0001 or abs(np.linalg.det(rotation) - 1.0) > 0.0001:
-        raise RuntimeError(f'frame {frame_idx} has non-rigid T_world_camera_metric')
-    if not np.allclose(transform[3], np.asarray([0.0, 0.0, 0.0, 1.0]), atol=1e-06):
-        raise RuntimeError(f'frame {frame_idx} has malformed homogeneous camera transform')
-    return transform
 
 def as_array(value: Any, shape: tuple[int, ...], name: str) -> np.ndarray:
     arr = np.asarray(value if value is not None else [], dtype=float)
@@ -1115,11 +769,6 @@ def formal_object_numeric_summary(values: list[float] | np.ndarray) -> dict[str,
 def formal_object_apply_pose(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
     return points @ rotation.T + translation[None, :]
 
-def corrected_pose(obs: PoseObservation, rot_delta: np.ndarray, trans_delta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    r_corr = Rotation.from_rotvec(rot_delta).as_matrix() @ obs.rotation_world_from_canonical
-    t_corr = obs.translation_world_m + trans_delta
-    return (r_corr, t_corr)
-
 def pose_row_sigma(row: dict[str, Any], object_radius_m: float, args: argparse.Namespace) -> tuple[float, float]:
     final = row.get('observed_to_mesh_final') if isinstance(row.get('observed_to_mesh_final'), dict) else {}
     median = final.get('median_m')
@@ -1172,6 +821,9 @@ def constraint_targets(path: Path | None, max_target_m: float, accepted_states: 
     return out
 
 def load_image_factor_observations(path: Path | None, observations: list[PoseObservation], args: argparse.Namespace, expected_completed_mesh: Path) -> tuple[dict[int, ImageFactorObservation], dict[str, Any]]:
+    from utils.data import ImageFactorObservation
+    from utils.data import PoseObservation
+    from gates.camera.calibration import validate_camera_transform
     if path is None:
         return ({}, {'enabled': False})
     resolved = path.expanduser().resolve()
@@ -1312,6 +964,7 @@ def load_image_factor_observations(path: Path | None, observations: list[PoseObs
     return (by_frame, metadata_out)
 
 def build_observations(args: argparse.Namespace, annotations: dict[str, Any], pose_report: dict[str, Any], mesh: trimesh.Trimesh) -> tuple[list[PoseObservation], list[dict[str, Any]], dict[int, tuple[np.ndarray, float, int]]]:
+    from utils.data import PoseObservation
     import trimesh
     frames_by_idx = {int(frame.get('frame_idx')): frame for frame in annotations.get('frames', []) if isinstance(frame, dict) and frame.get('frame_idx') is not None}
     radius = float(np.linalg.norm(np.asarray(mesh.extents, dtype=float)) / 2.0)
@@ -1369,14 +1022,14 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
     observations.sort(key=lambda obs: obs.frame_idx)
     return (observations, skipped, targets)
 
-def unpack(x: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
-    arr = x.reshape(n, 6)
-    return (arr[:, :3], arr[:, 3:6])
-
 def image_factors_active(args: argparse.Namespace, image_factors: dict[int, ImageFactorObservation] | None) -> bool:
+    from utils.data import ImageFactorObservation
     return bool(image_factors and (float(args.image_first_hit_weight) > 0.0 or float(args.image_silhouette_weight) > 0.0))
 
 def image_factor_blocks(obs: PoseObservation, factor: ImageFactorObservation | None, rot_delta_i: np.ndarray, trans_delta_i: np.ndarray, args: argparse.Namespace) -> list[np.ndarray]:
+    from utils.data import ImageFactorObservation
+    from utils.data import PoseObservation
+    from optimization.common.variables import corrected_pose
     if factor is None:
         return []
     (r, t) = corrected_pose(obs, rot_delta_i, trans_delta_i)
@@ -1384,39 +1037,43 @@ def image_factor_blocks(obs: PoseObservation, factor: ImageFactorObservation | N
     if len(factor.depth_observed_z) and float(args.image_first_hit_weight) > 0.0:
         world = formal_object_apply_pose(factor.depth_points_canonical, r, t)
         camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
-        blocks.append(first_hit_depth(camera[:,2],factor.depth_observed_z,factor.depth_weight,sigma=float(args.sigma_image_first_hit_m),clip=float(args.max_image_first_hit_residual_m),weight=float(args.image_first_hit_weight)))
+        blocks.append(first_hit_depth(camera[:, 2], factor.depth_observed_z, factor.depth_weight, sigma=float(args.sigma_image_first_hit_m), clip=float(args.max_image_first_hit_residual_m), weight=float(args.image_first_hit_weight)))
     if len(factor.silhouette_kind) and float(args.image_silhouette_weight) > 0.0:
         world = formal_object_apply_pose(factor.silhouette_points_canonical, r, t)
         camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
         z = np.maximum(camera[:, 2], 1e-09)
         uv = np.column_stack((factor.K_raster[0, 0] * camera[:, 0] / z + factor.K_raster[0, 2], factor.K_raster[1, 1] * camera[:, 1] / z + factor.K_raster[1, 2]))
-        blocks.append(silhouette_endpoint_residual(uv,factor.silhouette_target_uv,
-            sigma=float(args.sigma_image_silhouette_px),clip=float(args.max_image_silhouette_residual_px),weight=float(args.image_silhouette_weight)))
+        blocks.append(silhouette_endpoint_residual(uv, factor.silhouette_target_uv, sigma=float(args.sigma_image_silhouette_px), clip=float(args.max_image_silhouette_residual_px), weight=float(args.image_silhouette_weight)))
     return blocks
 
 def residual_vector(x: np.ndarray, observations: list[PoseObservation], args: argparse.Namespace, image_factors: dict[int, ImageFactorObservation] | None=None) -> np.ndarray:
+    from utils.data import ImageFactorObservation
+    from utils.data import PoseObservation
+    from optimization.common.variables import unpack
     (rot_delta, trans_delta) = unpack(x, len(observations))
     residuals: list[np.ndarray] = []
     for (i, obs) in enumerate(observations):
-        residuals.append(source_pose_translation(trans_delta[i],obs.translation_sigma_m))
-        residuals.append(source_pose_rotation(rot_delta[i],obs.rotation_sigma_rad))
+        residuals.append(source_pose_translation(trans_delta[i], obs.translation_sigma_m))
+        residuals.append(source_pose_rotation(rot_delta[i], obs.rotation_sigma_rad))
         if obs.nonpenetration_target_world_m is not None and obs.nonpenetration_weight > 0.0:
-            residuals.append(nonpenetration_translation_target(trans_delta[i],obs.nonpenetration_target_world_m,obs.nonpenetration_weight,float(args.sigma_nonpenetration_target_m)))
+            residuals.append(nonpenetration_translation_target(trans_delta[i], obs.nonpenetration_target_world_m, obs.nonpenetration_weight, float(args.sigma_nonpenetration_target_m)))
         if image_factors:
             residuals.extend(image_factor_blocks(obs, image_factors.get(obs.frame_idx), rot_delta[i], trans_delta[i], args))
     for i in range(1, len(observations)):
         gap = max(1, observations[i].frame_idx - observations[i - 1].frame_idx)
         scale = math.sqrt(float(gap))
-        residuals.append(correction_velocity(trans_delta[i],trans_delta[i-1],gap,float(args.sigma_translation_delta_step_m)))
-        residuals.append(correction_velocity(rot_delta[i],rot_delta[i-1],gap,float(args.sigma_rotation_delta_step_rad)))
+        residuals.append(correction_velocity(trans_delta[i], trans_delta[i - 1], gap, float(args.sigma_translation_delta_step_m)))
+        residuals.append(correction_velocity(rot_delta[i], rot_delta[i - 1], gap, float(args.sigma_rotation_delta_step_rad)))
     for i in range(1, len(observations) - 1):
         gap0 = max(1, observations[i].frame_idx - observations[i - 1].frame_idx)
         gap1 = max(1, observations[i + 1].frame_idx - observations[i].frame_idx)
-        residuals.append(correction_acceleration(trans_delta[i-1],trans_delta[i],trans_delta[i+1],gap0,gap1,float(args.sigma_translation_delta_accel_m)))
-        residuals.append(correction_acceleration(rot_delta[i-1],rot_delta[i],rot_delta[i+1],gap0,gap1,float(args.sigma_rotation_delta_accel_rad)))
+        residuals.append(correction_acceleration(trans_delta[i - 1], trans_delta[i], trans_delta[i + 1], gap0, gap1, float(args.sigma_translation_delta_accel_m)))
+        residuals.append(correction_acceleration(rot_delta[i - 1], rot_delta[i], rot_delta[i + 1], gap0, gap1, float(args.sigma_rotation_delta_accel_rad)))
     return np.concatenate([r.reshape(-1) for r in residuals]).astype(float)
 
 def residual_sparsity(observations: list[PoseObservation], image_factors: dict[int, ImageFactorObservation] | None=None, args: argparse.Namespace | None=None) -> sparse.csr_matrix:
+    from utils.data import ImageFactorObservation
+    from utils.data import PoseObservation
     n = len(observations)
     cols = n * 6
     entries: list[tuple[int, int]] = []
@@ -1460,6 +1117,10 @@ def residual_sparsity(observations: list[PoseObservation], image_factors: dict[i
     return sparse.csr_matrix((np.ones(len(entries), dtype=bool), (rr, cc)), shape=(row, cols))
 
 def image_factor_metrics(x: np.ndarray, observations: list[PoseObservation], image_factors: dict[int, ImageFactorObservation], args: argparse.Namespace) -> dict[str, Any]:
+    from utils.data import ImageFactorObservation
+    from utils.data import PoseObservation
+    from optimization.common.variables import corrected_pose
+    from optimization.common.variables import unpack
     if not image_factors_active(args, image_factors):
         return {'enabled': False}
     (rot_delta, trans_delta) = unpack(x, len(observations))
@@ -1509,6 +1170,8 @@ def image_factor_metrics(x: np.ndarray, observations: list[PoseObservation], ima
     return {'enabled': True, 'frame_count': int(len(per_frame)), 'depth_factor_count': int(depth_count), 'silhouette_factor_count': int(silhouette_count), 'image_first_hit_weight': float(args.image_first_hit_weight), 'image_silhouette_weight': float(args.image_silhouette_weight), 'first_hit_depth_error_m': formal_object_numeric_summary(np.concatenate(depth_errors) if depth_errors else []), 'depth_factor_weight': formal_object_numeric_summary(np.concatenate(depth_weight_values) if depth_weight_values else []), 'outside_silhouette_error_px': formal_object_numeric_summary(np.concatenate(outside_errors) if outside_errors else []), 'missing_silhouette_error_px': formal_object_numeric_summary(np.concatenate(missing_errors) if missing_errors else []), 'normalized_image_factor_rms': float(np.sqrt(np.mean(normalized * normalized))) if len(normalized) else None, 'per_frame': per_frame}
 
 def target_residual_summary(x: np.ndarray, observations: list[PoseObservation]) -> dict[str, Any]:
+    from utils.data import PoseObservation
+    from optimization.common.variables import unpack
     (_, trans_delta) = unpack(x, len(observations))
     vals = []
     norms = []
@@ -1521,6 +1184,8 @@ def target_residual_summary(x: np.ndarray, observations: list[PoseObservation]) 
     return {'target_residual_norm_m': formal_object_numeric_summary(vals), 'target_norm_m': formal_object_numeric_summary(norms), 'target_frame_count': len(vals)}
 
 def correction_summary(x: np.ndarray, observations: list[PoseObservation]) -> dict[str, Any]:
+    from utils.data import PoseObservation
+    from optimization.common.variables import unpack
     (rot_delta, trans_delta) = unpack(x, len(observations))
     gaps = np.asarray([observations[i].frame_idx - observations[i - 1].frame_idx for i in range(1, len(observations))], dtype=float)
     trans_norm = np.linalg.norm(trans_delta, axis=1)
@@ -1530,6 +1195,7 @@ def correction_summary(x: np.ndarray, observations: list[PoseObservation]) -> di
     return {'translation_delta_norm_m': formal_object_numeric_summary(trans_norm), 'rotation_delta_norm_rad': formal_object_numeric_summary(rot_norm), 'translation_delta_step_norm_m': formal_object_numeric_summary(step_t), 'rotation_delta_step_norm_rad': formal_object_numeric_summary(step_r), 'visible_frame_gap': formal_object_numeric_summary(gaps)}
 
 def formal_object_rotation_observability_summary(observations: list[PoseObservation], minimum_score: float) -> dict[str, Any]:
+    from utils.data import PoseObservation
     rows = []
     for observation in observations:
         centered = observation.observed_points_world - observation.observed_points_world.mean(axis=0, keepdims=True)
@@ -1542,120 +1208,10 @@ def formal_object_rotation_observability_summary(observations: list[PoseObservat
     observable_count = int(sum((row['observable'] for row in rows)))
     return {'minimum_score': float(minimum_score), 'observable_frame_count': observable_count, 'observation_frame_count': int(len(rows)), 'observable_fraction': float(observable_count / max(1, len(rows))), 'score_summary': formal_object_numeric_summary([row['rotation_observability_score'] for row in rows]), 'rows': rows, 'interpretation': 'Conservative covariance-eigenvalue proxy; symmetric, line-like, or near-planar-isotropic visible support cannot establish all rotation axes.'}
 
-def sparse_conditional_rotation_tail_decision(*, step_rows: list[dict[str, Any]], accepted_rows_by_idx: dict[int, dict[str, Any]], observability: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    """Bound a tiny underobservable 15--18 degree tail without changing poses.
-
-    The strict 15 degree tier remains the default. The conditional tier can
-    only admit adjacent direct metric-surface rows, never interpolated/held/RGB
-    or generated-geometry rows, and every excess transition must be sparse,
-    translation-continuous, and weakly or marginally rotation-observable.
-    """
-    strict_limit = float(args.max_rotation_step_deg)
-    enabled = bool(getattr(args, 'allow_sparse_conditional_rotation_tail', False))
-    conditional_limit = float(getattr(args, 'conditional_max_rotation_step_deg', 18.0))
-    maximum_count = int(getattr(args, 'conditional_max_rotation_step_count', 2))
-    maximum_fraction = float(getattr(args, 'conditional_max_rotation_step_fraction', 0.015))
-    maximum_translation_m = float(getattr(args, 'conditional_max_rotation_step_translation_m', 0.02))
-    maximum_endpoint_observability = float(getattr(args, 'conditional_max_endpoint_rotation_observability_score', 0.03))
-    numeric_policy = {'strict_max_rotation_step_deg': strict_limit, 'conditional_max_rotation_step_deg': conditional_limit, 'conditional_max_rotation_step_fraction': maximum_fraction, 'conditional_max_translation_step_m': maximum_translation_m, 'conditional_max_endpoint_observability_score': maximum_endpoint_observability}
-    if not all((math.isfinite(value) for value in numeric_policy.values())):
-        raise RuntimeError(f'non-finite conditional rotation-tail policy: {numeric_policy}')
-    if enabled and (not math.isclose(strict_limit, STRICT_ROTATION_STEP_DEG, abs_tol=1e-12)):
-        raise RuntimeError(f'conditional rotation tail requires the fixed {STRICT_ROTATION_STEP_DEG:g}-degree strict tier')
-    if conditional_limit < strict_limit:
-        raise RuntimeError('conditional rotation-step limit must not be below the strict limit')
-    if maximum_count < 0 or not 0.0 <= maximum_fraction <= 1.0 or maximum_translation_m < 0.0 or (maximum_endpoint_observability < 0.0):
-        raise RuntimeError('invalid conditional rotation-tail bounds')
-    configured = {'max_rotation_step_deg': conditional_limit, 'max_count': maximum_count, 'max_fraction': maximum_fraction, 'max_translation_step_m': maximum_translation_m, 'max_endpoint_observability_score': maximum_endpoint_observability}
-    broadened = {key: value for (key, value) in configured.items() if value > CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS[key] + 1e-12}
-    if broadened:
-        raise RuntimeError(f'conditional rotation-tail CLI exceeds immutable policy ceilings: configured={broadened}, ceilings={CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS}')
-    observability_by_idx = {int(row['frame_idx']): row for row in observability.get('rows', []) if isinstance(row, dict) and row.get('frame_idx') is not None}
-    excess = [row for row in step_rows if float(row.get('rotation_step_deg') or 0.0) > strict_limit]
-    evaluated = []
-    for step in excess:
-        from_idx = int(step['from_frame_idx'])
-        to_idx = int(step['to_frame_idx'])
-        previous = accepted_rows_by_idx.get(from_idx, {})
-        current = accepted_rows_by_idx.get(to_idx, {})
-        previous_score = observability_by_idx.get(from_idx, {}).get('rotation_observability_score')
-        current_score = observability_by_idx.get(to_idx, {}).get('rotation_observability_score')
-        endpoint_scores_available = bool(isinstance(previous_score, (int, float)) and isinstance(current_score, (int, float)) and np.isfinite([previous_score, current_score]).all())
-        direct_metric_rows = bool(previous.get('status') == CORRECTED_POSE_STATUS and current.get('status') == CORRECTED_POSE_STATUS and (previous.get('direct_pose_observation_source') == 'adjacent_observed_metric_surfel_registration') and (current.get('direct_pose_observation_source') == 'adjacent_observed_metric_surfel_registration') and (previous.get('rigid_pose_observation_eligible') is True) and (current.get('rigid_pose_observation_eligible') is True))
-        generated_geometry_excluded = bool(previous.get('generated_geometry_pose_evidence_consumed') is False and current.get('generated_geometry_pose_evidence_consumed') is False)
-        criteria = {'adjacent_frame_step': int(step.get('frame_gap', -1)) == 1, 'within_conditional_rotation_limit': float(step['rotation_step_deg']) <= conditional_limit, 'within_conditional_translation_limit': float(step['translation_step_m']) <= maximum_translation_m, 'direct_adjacent_metric_surface_rows': direct_metric_rows, 'generated_geometry_pose_evidence_excluded': generated_geometry_excluded, 'endpoint_observability_available': endpoint_scores_available, 'endpoints_weak_or_marginally_observable': bool(endpoint_scores_available and float(previous_score) <= maximum_endpoint_observability and (float(current_score) <= maximum_endpoint_observability))}
-        evaluated.append({**step, 'from_rotation_observability_score': previous_score, 'to_rotation_observability_score': current_score, 'criteria': criteria, 'transition_eligible': bool(all(criteria.values()))})
-    excess_fraction = float(len(excess) / max(1, len(step_rows)))
-    population_criteria = {'conditional_tier_enabled': enabled, 'has_strict_exceedance': bool(excess), 'exceedance_count_within_limit': len(excess) <= maximum_count, 'exceedance_fraction_within_limit': excess_fraction <= maximum_fraction, 'all_exceedances_individually_eligible': bool(excess and all((row['transition_eligible'] for row in evaluated)))}
-    accepted = bool(all(population_criteria.values()))
-    return {'strict_max_rotation_step_deg': strict_limit, 'strict_gate_passed': not excess, 'conditional_tier_enabled': enabled, 'conditional_max_rotation_step_deg': conditional_limit, 'conditional_max_rotation_step_count': maximum_count, 'conditional_max_rotation_step_fraction': maximum_fraction, 'conditional_max_translation_step_m': maximum_translation_m, 'conditional_max_endpoint_rotation_observability_score': maximum_endpoint_observability, 'immutable_policy_ceilings': dict(CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS), 'strict_exceedance_count': int(len(excess)), 'strict_exceedance_fraction': excess_fraction, 'conditional_tier_applied': accepted, 'gate_passed': bool(not excess or accepted), 'acceptance_mode': 'strict_max_rotation_step' if not excess else 'conditional_sparse_underobservable_rotation_tail' if accepted else 'failed_rotation_step_gate', 'population_criteria': population_criteria, 'conditional_transitions': evaluated, 'trajectory_values_modified_or_clipped': False, 'generated_geometry_pose_evidence_consumed': False, 'uncertainty': 'A sparse direct observed-metric rotation tail exceeds the strict 15-degree tier but remains at or below the bounded 18-degree conditional tier. The original trajectory is preserved without clipping; these transitions are explicitly low confidence.' if accepted else None}
-
-def temporal_readiness_diagnostics(*, pose_rows: list[dict[str, Any]], annotations: dict[str, Any], observations: list[PoseObservation], full_timeline_completion: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    timeline = sorted((int(frame['frame_idx']) for frame in annotations.get('frames', []) if isinstance(frame, dict) and frame.get('frame_idx') is not None and (args.frame_start is None or int(frame['frame_idx']) >= int(args.frame_start)) and (args.frame_end is None or int(frame['frame_idx']) <= int(args.frame_end))))
-    timeline_set = set(timeline)
-    accepted = []
-    for row in pose_rows:
-        idx = int(row.get('frame_idx', -1))
-        if idx not in timeline_set or row.get('status') not in {CORRECTED_POSE_STATUS, COMPLETED_POSE_STATUS}:
-            continue
-        rotation = np.asarray(row.get('rotation_world_from_completed_canonical_matrix'), dtype=np.float64)
-        translation = np.asarray(row.get('translation_world_m'), dtype=np.float64)
-        if rotation.shape != (3, 3) or translation.shape != (3,) or (not np.isfinite(rotation).all()) or (not np.isfinite(translation).all()):
-            continue
-        accepted.append((idx, rotation, translation, row))
-    accepted.sort(key=lambda value: value[0])
-    direct_frames = sorted((int(observation.frame_idx) for observation in observations if observation.frame_idx in timeline_set))
-    direct_fraction = float(len(direct_frames) / max(1, len(timeline)))
-    internal_gaps = [direct_frames[i] - direct_frames[i - 1] for i in range(1, len(direct_frames))]
-    max_direct_gap = max(internal_gaps) if internal_gaps else 0 if direct_frames else None
-    leading_gap = direct_frames[0] - timeline[0] if direct_frames and timeline else None
-    trailing_gap = timeline[-1] - direct_frames[-1] if direct_frames and timeline else None
-    rotation_steps_deg = []
-    translation_steps_m = []
-    step_rows = []
-    for (previous, current) in zip(accepted[:-1], accepted[1:]):
-        (prev_idx, prev_rotation, prev_translation, _) = previous
-        (idx, rotation, translation, _) = current
-        relative = rotation @ prev_rotation.T
-        rotation_deg = float(np.degrees(np.linalg.norm(Rotation.from_matrix(relative).as_rotvec())))
-        translation_m = float(np.linalg.norm(translation - prev_translation))
-        rotation_steps_deg.append(rotation_deg)
-        translation_steps_m.append(translation_m)
-        step_rows.append({'from_frame_idx': int(prev_idx), 'to_frame_idx': int(idx), 'frame_gap': int(idx - prev_idx), 'rotation_step_deg': rotation_deg, 'translation_step_m': translation_m})
-    mode_counts = full_timeline_completion.get('mode_counts') if isinstance(full_timeline_completion.get('mode_counts'), dict) else {}
-    completed_count = int(full_timeline_completion.get('completed_row_count') or 0)
-    hold_count = int(mode_counts.get('nearest_visible_pose_hold') or 0)
-    completed_fraction = float(completed_count / max(1, len(timeline)))
-    hold_fraction = float(hold_count / max(1, len(timeline)))
-    observability = formal_object_rotation_observability_summary(observations, float(args.min_rotation_observability_score))
-    accepted_rows_by_idx = {idx: row for (idx, _rotation, _translation, row) in accepted}
-    rotation_step_gate = sparse_conditional_rotation_tail_decision(step_rows=step_rows, accepted_rows_by_idx=accepted_rows_by_idx, observability=observability, args=args)
-    max_rotation_step = max(rotation_steps_deg) if rotation_steps_deg else 0.0
-    max_translation_step = max(translation_steps_m) if translation_steps_m else 0.0
-    failure_reasons = []
-    if len(accepted) != len(timeline):
-        failure_reasons.append('incomplete_full_timeline_pose_rows')
-    if direct_fraction < float(args.min_direct_pose_fraction):
-        failure_reasons.append('insufficient_direct_pose_fraction')
-    if max_direct_gap is None or max_direct_gap > int(args.max_direct_pose_gap_frames):
-        failure_reasons.append('direct_pose_gap_too_large')
-    if leading_gap is None or leading_gap > int(args.max_rigid_pose_extrapolation_gap_frames):
-        failure_reasons.append('leading_pose_extrapolation_too_large')
-    if trailing_gap is None or trailing_gap > int(args.max_rigid_pose_extrapolation_gap_frames):
-        failure_reasons.append('trailing_pose_extrapolation_too_large')
-    if completed_fraction > float(args.max_completed_pose_fraction):
-        failure_reasons.append('completed_pose_fraction_too_large')
-    if hold_fraction > float(args.max_nearest_hold_fraction):
-        failure_reasons.append('nearest_hold_fraction_too_large')
-    if not rotation_step_gate['gate_passed']:
-        failure_reasons.append('rotation_step_jump')
-    if max_translation_step > float(args.max_translation_step_m):
-        failure_reasons.append('translation_step_jump')
-    if observability['observable_fraction'] < float(args.min_rotation_observable_fraction):
-        failure_reasons.append('insufficient_rotation_observability')
-    return {'ready': not failure_reasons, 'failure_reasons': failure_reasons, 'timeline_frame_count': int(len(timeline)), 'accepted_full_timeline_pose_count': int(len(accepted)), 'direct_pose_count': int(len(direct_frames)), 'direct_pose_fraction': direct_fraction, 'direct_frame_span': [direct_frames[0], direct_frames[-1]] if direct_frames else None, 'max_direct_frame_gap': max_direct_gap, 'leading_direct_frame_gap': leading_gap, 'trailing_direct_frame_gap': trailing_gap, 'completed_pose_count': completed_count, 'completed_pose_fraction': completed_fraction, 'nearest_hold_count': hold_count, 'nearest_hold_fraction': hold_fraction, 'completion_mode_counts': mode_counts, 'rotation_step_deg': formal_object_numeric_summary(rotation_steps_deg), 'translation_step_m': formal_object_numeric_summary(translation_steps_m), 'max_rotation_step_deg': max_rotation_step, 'max_translation_step_m': max_translation_step, 'rotation_observability': observability, 'rotation_step_gate': rotation_step_gate, 'conditional_temporal_uncertainty': rotation_step_gate.get('uncertainty'), 'thresholds': {'min_direct_pose_fraction': float(args.min_direct_pose_fraction), 'max_direct_pose_gap_frames': int(args.max_direct_pose_gap_frames), 'max_completed_pose_fraction': float(args.max_completed_pose_fraction), 'max_nearest_hold_fraction': float(args.max_nearest_hold_fraction), 'max_rotation_step_deg': float(args.max_rotation_step_deg), 'allow_sparse_conditional_rotation_tail': bool(getattr(args, 'allow_sparse_conditional_rotation_tail', False)), 'conditional_max_rotation_step_deg': float(getattr(args, 'conditional_max_rotation_step_deg', 18.0)), 'conditional_max_rotation_step_count': int(getattr(args, 'conditional_max_rotation_step_count', 2)), 'conditional_max_rotation_step_fraction': float(getattr(args, 'conditional_max_rotation_step_fraction', 0.015)), 'conditional_max_rotation_step_translation_m': float(getattr(args, 'conditional_max_rotation_step_translation_m', 0.02)), 'conditional_max_endpoint_rotation_observability_score': float(getattr(args, 'conditional_max_endpoint_rotation_observability_score', 0.03)), 'max_translation_step_m': float(args.max_translation_step_m), 'min_rotation_observable_fraction': float(args.min_rotation_observable_fraction), 'min_rotation_observability_score': float(args.min_rotation_observability_score)}, 'step_rows': step_rows}
-
 def surface_metrics(observations: list[PoseObservation], mesh_samples: np.ndarray, x: np.ndarray) -> dict[str, Any]:
+    from utils.data import PoseObservation
+    from optimization.common.variables import corrected_pose
+    from optimization.common.variables import unpack
     (rot_delta, trans_delta) = unpack(x, len(observations))
     obs_to_mesh_medians: list[float] = []
     mesh_to_obs_medians: list[float] = []
@@ -1673,6 +1229,9 @@ def surface_metrics(observations: list[PoseObservation], mesh_samples: np.ndarra
     return {'observed_to_mesh_median_m': formal_object_numeric_summary(obs_to_mesh_medians), 'mesh_to_observed_median_m': formal_object_numeric_summary(mesh_to_obs_medians), 'per_frame': per_frame}
 
 def build_pose_rows(original_pose_rows: list[dict[str, Any]], observations: list[PoseObservation], x: np.ndarray, args: argparse.Namespace, graph_support_sufficient: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from utils.data import PoseObservation
+    from optimization.common.variables import corrected_pose
+    from optimization.common.variables import unpack
     obs_by_idx = {obs.frame_idx: i for (i, obs) in enumerate(observations)}
     (rot_delta, trans_delta) = unpack(x, len(observations))
     corrected_by_idx: dict[int, tuple[np.ndarray, np.ndarray, PoseObservation, np.ndarray, np.ndarray]] = {}
@@ -1751,6 +1310,7 @@ def build_pose_rows(original_pose_rows: list[dict[str, Any]], observations: list
     return (out, summary)
 
 def fit_formal_object(args: argparse.Namespace) -> dict[str, Any]:
+    from gates.object.trajectory import temporal_readiness_diagnostics
     started = time.time()
     annotations = formal_object_load_json(args.annotations)
     pose_report = formal_object_load_json(args.pose_report)
