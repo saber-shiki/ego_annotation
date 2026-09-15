@@ -102,7 +102,7 @@ class MaskIdentityReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); ns = fixture(root)
             credential = root/'credential'; credential.write_text('CPU fixture only'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=response) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime._astra_response', side_effect=response) as send:
                 with self.assertRaisesRegex(ValueError, 'mask identity review rejected'):
                     exec(main_mask_body(), ns)
             batches = load(root/'state/mask_review_evidence.json')['batches']
@@ -143,7 +143,7 @@ class MaskIdentityReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); ns = fixture(root, uncertain=())
             credential = root/'credential'; credential.write_text('CPU'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=response) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime._astra_response', side_effect=response) as send:
                 exec(main_mask_body(), ns)
             self.assertEqual(send.call_count, 1)
             evidence = wire_evidence(send.call_args.args[0])
@@ -160,7 +160,7 @@ class MaskIdentityReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder); source = base/'source'; source.mkdir(); ns = fixture(source)
             credential = base/'credential'; credential.write_text('CPU'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=response):
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime._astra_response', side_effect=response):
                 with self.assertRaisesRegex(ValueError, 'mask identity review rejected'):
                     exec(main_mask_body(), ns)
             batch = load(source/'state/mask_review_evidence.json')['batches'][0]
@@ -176,13 +176,13 @@ class MaskIdentityReviewTests(unittest.TestCase):
             ns.update(root=root, ledger=ledger)
             path = root/'state/mask.json'
             ns['recovery'] = StageRecovery(ledger, identity)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=response) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime._astra_response', side_effect=response) as send:
                 first = ns['ask']('mask_track', batch, images, path)
                 self.assertEqual(send.call_count, 1)
             ns['recovery'].close()
             receipts = ledger.registry.read_bytes()
             ns['recovery'] = StageRecovery(ledger, identity, resume=True)
-            with patch('urllib.request.urlopen') as send:
+            with patch('utils.runtime._astra_response') as send:
                 self.assertEqual(first, ns['ask']('mask_track', batch, images, path))
                 send.assert_not_called()
             ns['recovery'].close()
@@ -198,7 +198,7 @@ class MaskIdentityReviewTests(unittest.TestCase):
                 elif change == 'bytes':
                     images[0].write_bytes(original + b'changed')
                 ns['recovery'] = StageRecovery(ledger, identity, resume=True)
-                with patch.object(mask_judge, 'MAX_REQUEST_BYTES', 1_999_999 if change == 'policy' else 2_000_000), patch('urllib.request.urlopen') as send:
+                with patch.object(mask_judge, 'MAX_REQUEST_BYTES', 1_999_999 if change == 'policy' else 2_000_000), patch('utils.runtime._astra_response') as send:
                     with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'planned stage contract changed'):
                         ns['ask']('mask_track', evidence, ordered, path)
                     send.assert_not_called()
@@ -211,7 +211,7 @@ class MaskIdentityReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); uncertain = list(range(8, 149, 10)); ns = fixture(root, uncertain)
             credential = root/'credential'; credential.write_text('CPU'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=response) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime._astra_response', side_effect=response) as send:
                 with self.assertRaisesRegex(ValueError, 'mask identity review rejected'):
                     exec(main_mask_body(), ns)
             evidences = [wire_evidence(call.args[0]) for call in send.call_args_list]

@@ -7,16 +7,129 @@ agree with the request before any judgment can be consumed.
 from pathlib import Path
 import argparse
 import base64
+import contextlib
+import http.client
 import json
 import mimetypes
 import os
 import stat
+import socket
+import ssl
 import subprocess
+import time
 import urllib.request
 from utils.state import sha
 
 ASTRA_MODEL = 'gpt-6-astra'
 ASTRA_ENDPOINT = 'https://litellm.dex-gem.ai/v1/responses'
+
+
+def astra_connection_policy():
+    """Fixed pre-request policy, shared by planned identity and execution."""
+    return {'name': 'same_endpoint_pre_request_v1', 'address_tcp_tls_seconds': 5,
+        'total_connect_seconds': 20, 'read_timeout_seconds': 120,
+        'dns': 'system_getaddrinfo_once_blocking_not_interruptible',
+        'addresses': 'unique_resolver_order_ipv4_ipv6', 'tls': 'default_ca_hostname_verified',
+        'proxy': False, 'redirect': False, 'post_retry': False}
+
+
+def _connect_astra(host, port, diagnostics):
+    """Return one verified socket; all address recovery ends before HTTP starts.
+
+    getaddrinfo is blocking: elapsed DNS time counts, but cannot be preempted.
+    No HTTP library connect method is used, avoiding implicit address retries.
+    """
+    policy = astra_connection_policy()
+    started = time.monotonic()
+    deadline = started + policy['total_connect_seconds']
+    diagnostics['phase'] = 'dns'
+    try:
+        addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM,
+                                      socket.IPPROTO_TCP)
+    finally:
+        diagnostics['dns_elapsed_seconds'] = time.monotonic() - started
+    diagnostics['phase'] = 'tls_context'
+    context = ssl.create_default_context()
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.set_alpn_protocols(['http/1.1'])
+    seen = set()
+    for family, socktype, proto, _, address in addresses:
+        if family not in (socket.AF_INET, socket.AF_INET6) or (family, address) in seen:
+            continue
+        seen.add((family, address))
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        attempt_deadline = min(deadline, now + policy['address_tcp_tls_seconds'])
+        attempt = {'address': list(address), 'family': int(family), 'phase': 'tcp',
+                   'budget_seconds': attempt_deadline - now}
+        diagnostics['attempts'].append(attempt)
+        raw_socket = tls_socket = None
+        try:
+            diagnostics['phase'] = 'tcp'
+            raw_socket = socket.socket(family, socktype, proto)
+            remaining = attempt_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Astra address connection budget exhausted')
+            raw_socket.settimeout(remaining)
+            raw_socket.connect(address)
+            attempt['phase'] = diagnostics['phase'] = 'tls'
+            remaining = attempt_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Astra address connection budget exhausted')
+            raw_socket.settimeout(remaining)
+            tls_socket = context.wrap_socket(raw_socket, server_hostname=host,
+                                            do_handshake_on_connect=False)
+            remaining = attempt_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Astra address connection budget exhausted')
+            tls_socket.settimeout(remaining)
+            tls_socket.do_handshake()
+            if time.monotonic() >= attempt_deadline:
+                raise TimeoutError('Astra address connection budget exhausted')
+            tls_socket.settimeout(policy['read_timeout_seconds'])
+            attempt['outcome'] = 'connected'
+            diagnostics['phase'] = 'connected'
+            connected = tls_socket
+            raw_socket = tls_socket = None  # ownership passes to the HTTP connection
+            return connected
+        except OSError as exc:
+            attempt['outcome'] = 'failed'
+            attempt['error_type'] = type(exc).__name__
+        finally:
+            attempt['elapsed_seconds'] = time.monotonic() - now
+            if tls_socket is not None:
+                tls_socket.close()
+            if raw_socket is not None:
+                raw_socket.close()
+    diagnostics['phase'] = 'connect_exhausted'
+    raise ConnectionError('Astra same-endpoint connection attempts exhausted before POST')
+
+
+@contextlib.contextmanager
+def _astra_response(request, *, timeout, diagnostics):
+    """One direct POST, no proxy/redirect handling and no post-send reconnect."""
+    from urllib.parse import urlsplit
+    if request.full_url != ASTRA_ENDPOINT or request.get_method() != 'POST':
+        raise ValueError('Astra transport requires the fixed endpoint and POST')
+    endpoint = urlsplit(ASTRA_ENDPOINT)
+    connection = http.client.HTTPSConnection(endpoint.hostname, endpoint.port or 443,
+                                             timeout=timeout)
+    connection.auto_open = 0
+    try:
+        connection.sock = _connect_astra(endpoint.hostname, endpoint.port or 443, diagnostics)
+        diagnostics['phase'] = 'request_started'
+        connection.request('POST', endpoint.path, body=request.data,
+                           headers=dict(request.header_items()))
+        diagnostics['phase'] = 'response_read'
+        with connection.getresponse() as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f'Astra HTTP status {response.status}; POST will not be retried')
+            yield response
+        diagnostics['phase'] = 'response_received'
+    finally:
+        connection.close()
 
 
 def stage_environment(environment, extra_keys=()):
@@ -63,6 +176,7 @@ def astra_stage_inputs(prompt, schema, evidence, images, *, max_request_bytes=No
     """Plan exactly the ordered visual request inputs, without calling Astra."""
     inputs = {'model': ASTRA_MODEL, 'endpoint': ASTRA_ENDPOINT, 'disable_fallbacks': True,
         'prompt': prompt, 'schema': schema, 'evidence': evidence,
+        'connection_policy': astra_connection_policy(),
         'images': [{'path': str(Path(image).resolve()), 'sha256': sha(image),
                     'mime': mimetypes.guess_type(str(image))[0]} for image in images]}
     if adaptive_review_images:
@@ -147,7 +261,8 @@ def encode_astra_request(prompt, schema, evidence, images, *, max_request_bytes=
         'effective_payload_bytes': len(request_bytes), 'image_sha256': image_hashes,
         'ordered_images': ordered_images, 'review_encoding_policy': policy, 'encoding_attempts': attempts,
         'budget_satisfied': max_request_bytes is None or len(request_bytes) <= max_request_bytes,
-        'prompt': prompt, 'schema': schema, 'gateway_model_group': None}
+        'prompt': prompt, 'schema': schema, 'gateway_model_group': None,
+        'connection_policy': astra_connection_policy()}
 
 
 def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None, adaptive_review_images=False):
@@ -170,8 +285,10 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
         raise ValueError(f'Astra request exceeds {max_request_bytes} bytes; exact payload retained for explicit review')
     request=urllib.request.Request(ASTRA_ENDPOINT,data=request_bytes,
         headers={'Content-Type':'application/json','User-Agent':'ego-annotation/1.0','Authorization':'Bearer '+key},method='POST')
+    connection_diagnostics = {'policy': astra_connection_policy(), 'endpoint': ASTRA_ENDPOINT,
+        'request_sha256': request_provenance['effective_payload_sha256'], 'attempts': []}
     try:
-        with urllib.request.urlopen(request,timeout=120) as response:
+        with _astra_response(request, timeout=120, diagnostics=connection_diagnostics) as response:
             raw=json.load(response)
             group=response.headers.get('x-litellm-model-group')
             request_id=response.headers.get('x-request-id')
@@ -179,6 +296,9 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
         if audit_dir is not None:
             (audit_dir/'transport_failure.json').write_text(json.dumps({'error_type':type(exc).__name__, 'request_sha256':request_provenance['effective_payload_sha256'], 'retry':False, 'gateway_model_group':None}))
         raise
+    finally:
+        if audit_dir is not None:
+            (audit_dir/'connection_attempts.json').write_text(json.dumps(connection_diagnostics, indent=2))
     if audit_dir is not None:
         (audit_dir/'response_identity.json').write_text(json.dumps({'response_model':raw.get('model'),'gateway_model_group':group,'request_id':request_id,'response_id':raw.get('id')}))
     if raw.get('model')!=ASTRA_MODEL or (group is not None and group!=ASTRA_MODEL):
