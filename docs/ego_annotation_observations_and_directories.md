@@ -14,8 +14,8 @@
 
 当前执行合同与部署记录可进一步参见：
 
-- [`docs/ego_annotation_pipeline_optimization_and_losses.md`](ego_annotation_pipeline_optimization_and_losses.md)：当前 V19 输入处理、优化问题、目标函数、loss wiring 和实际优化结果
-- [`runtime/v19_runtime_spec.md`](../runtime/v19_runtime_spec.md)
+- [`docs/REFACTOR_RL_OPT_BASELINE_ZH.md`](REFACTOR_RL_OPT_BASELINE_ZH.md)：当前 grouped `refactor/rl-opt` 源码管线、实际生效设置、恢复/acceptance 边界与验证基线
+- [`docs/ego_annotation_pipeline_optimization_and_losses.md`](ego_annotation_pipeline_optimization_and_losses.md)：历史 V19/TRELLIS 冻结运行的输入、loss wiring 和数值结果（不是当前默认实现）
 - [`docs/local_deployment.md`](local_deployment.md)
 - [`docs/pipeline_v16.md`](pipeline_v16.md)
 - [`docs/pipeline_v17.md`](pipeline_v17.md)
@@ -1565,8 +1565,8 @@ source frames: 2040–2189
 
 完整 benchmark adapter、运行结果和 evaluator 位于：
 
-- [`experiments/egoexo4d_rigid_benchmark/README.md`](../experiments/egoexo4d_rigid_benchmark/README.md)
-- [`experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md`](../experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md)
+- [`experiments/egoexo4d_rigid_benchmark/README.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/README.md)
+- [`experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md)
 
 ### 30.1 可用真值
 

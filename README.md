@@ -1,5 +1,10 @@
 # Grouped ego annotation
 
+> **Current source baseline:** [`docs/REFACTOR_RL_OPT_BASELINE_ZH.md`](docs/REFACTOR_RL_OPT_BASELINE_ZH.md)
+> records the code-verified pipeline, effective settings, migration delta,
+> acceptance boundaries, validation evidence, and future-change checklist for
+> `refactor/rl-opt` at commit `3d63360`.
+
 The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain
 separate from candidate estimates.

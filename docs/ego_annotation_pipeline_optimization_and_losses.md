@@ -1,5 +1,12 @@
 # ego_annotation V19 输入处理、优化问题与 Loss 汇总
 
+> **历史文档声明（2026-09-15）**：本文审计的是旧 V19/TRELLIS 冻结运行及其当时的
+> P13–P18 实现，不代表当前 grouped `refactor/rl-opt` 默认代码路径。当前源码
+> `3d63360` 已改为 SAM3D cold geometry、observed-surface/RGB pose、独立 visual/formal
+> problems、严格 acceptance 和双后端显示。后续修改请以
+> [`REFACTOR_RL_OPT_BASELINE_ZH.md`](REFACTOR_RL_OPT_BASELINE_ZH.md) 为当前基线；
+> 本文仅用于解释历史运行和迁移来源，不能据此反推当前参数或运行结果。
+
 ## 1. 文档范围和结论先行
 
 本文继续沿着 V19 runtime 的实际 phase graph 梳理输入数据如何被处理，并把其中的机制分成四类：
@@ -1345,8 +1352,8 @@ P18 的 `max_translation=0.045 m`、`visible_shift=12 px`、`depth_shift=0.035 m
 与观测字段/目录的更完整说明见：
 
 - [`docs/ego_annotation_observations_and_directories.md`](ego_annotation_observations_and_directories.md)
-- [`experiments/toy_optimization_lab/README.md`](../experiments/toy_optimization_lab/README.md)：P13/P14/P15/P16/P18 和联合 gauge 的低维可视化 toy，以及 RL 边界
-- [`runtime/v19_runtime_spec.md`](../runtime/v19_runtime_spec.md)
+- [`experiments/toy_optimization_lab/README.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/toy_optimization_lab/README.md)：P13/P14/P15/P16/P18 和联合 gauge 的低维可视化 toy，以及 RL 边界
+- [`runtime/v19_runtime_spec.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/runtime/v19_runtime_spec.md)
 
 ---
 
@@ -1354,8 +1361,8 @@ P18 的 `max_translation=0.045 m`、`visible_shift=12 px`、`depth_shift=0.035 m
 
 完整材料：
 
-- [`experiments/egoexo4d_rigid_benchmark/README.md`](../experiments/egoexo4d_rigid_benchmark/README.md)
-- [`experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md`](../experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md)
+- [`experiments/egoexo4d_rigid_benchmark/README.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/README.md)
+- [`experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/RESULTS_V19_V1_ZH.md)
 
 新运行对象为 validation split 中的黄色刚性塑料撬胎棒，150 帧、30 fps。预测侧只消费 raw RGB 和文字 target hint；GT hand、Mask 和 camera extrinsics 在运行后才进入 evaluator。
 
@@ -1505,7 +1512,7 @@ Fixed 在 frame 0/30/60/90 上 IoU 均为 0，只在 trusted interval 附近的 
 
 完整报告：
 
-- [`experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](../experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
+- [`experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
 
 它将问题分为 confirmed implementation bugs、可修 pipeline design/architecture problems、当前输入/GT 的 observability limits，以及尚需 targeted test 的 suspected bugs；没有把缺失 object SE(3)/contact GT 的指标补造出来。
 
@@ -1513,7 +1520,7 @@ Fixed 在 frame 0/30/60/90 上 IoU 均为 0，只在 trusted interval 附近的 
 
 下一阶段完整计划：
 
-- [`experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](../experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
+- [`experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](https://github.com/DexGEM-Lab/ego_annotation/blob/12aede8eaa2a945150b3de9bd3d0f81461d408b4/experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
 
 已冻结 12 个五秒 clips，覆盖 elongated/tiny/reflective tools、large symmetric objects、visibility transition 和 intentional low-support controls。6 development + 1 consumed reference 用于 staged diagnostics/exact-state correction；5 locked internal holdout 在 revision、target hints、suite metrics 和 no-per-case-tuning policy 冻结前不得运行。
 
