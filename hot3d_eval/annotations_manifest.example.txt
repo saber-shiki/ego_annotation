@@ -1,0 +1,4 @@
+# One annotation JSON per line. Relative paths resolve against this file.
+# Replace these examples with your exported annotations.
+../runs/example_sequence_a/final/annotation.json
+../runs/example_sequence_b/final/annotation.json
