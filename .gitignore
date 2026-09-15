@@ -18,3 +18,4 @@ build/
 dist/
 *.egg-info/
 config.local.yaml
+hot3d_eval/reports/

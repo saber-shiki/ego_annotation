@@ -6,6 +6,19 @@ hand/camera metrics with per-hand coverage and reproducibility hashes. It does
 not import the annotation pipeline, run inference, download assets, or modify
 input runs.
 
+## 最简用法（sh 脚本）
+
+编辑 `hot3d_eval/run_eval.sh` 顶部的 `ANNOTATIONS`，把标注 JSON 路径填进去，然后：
+
+```bash
+bash hot3d_eval/run_eval.sh
+```
+
+报告写到 `hot3d_eval/reports/`（已 gitignore），文件名带时间戳。也可以不改文件、直接传参：
+`bash hot3d_eval/run_eval.sh /path/to/run/final/annotation.json`。
+解释器、MANO 配置、数据集根均内置本服务器默认值，可用环境变量
+`HOT3D_EVAL_PYTHON` / `HOT3D_EVAL_MODEL_CONFIG` / `HOT3D_EVAL_DATASET_ROOT` / `HOT3D_EVAL_OUTPUT` 覆盖。
+
 ## Run
 
 Use a Python environment with NumPy, SciPy, CPU PyTorch, and `smplx`. Licensed
