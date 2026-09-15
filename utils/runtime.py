@@ -39,44 +39,118 @@ def stage_environment(environment, extra_keys=()):
         if key in environment else None for key in sorted(keys)}
 
 
-def astra_stage_inputs(prompt, schema, evidence, images):
+# Full-field review encoding only; no crops, image quotas, or unbounded retries.
+# Stop at 75% dimensions / quality65 to preserve labels and per-frame detail.
+REVIEW_IMAGE_LEVELS = (
+    ('original', 1., None),
+    ('jpeg_q80', 1., 80),
+    ('jpeg_q70', 1., 70),
+    ('jpeg_q70_scale875', .875, 70),
+    ('jpeg_q65_scale750', .75, 65),
+)
+
+
+def review_encoding_policy(max_request_bytes):
+    if not isinstance(max_request_bytes, int) or max_request_bytes <= 0:
+        raise ValueError('adaptive review encoding requires a positive request budget')
+    return {'name': 'full_sheet_budget_v1', 'max_request_bytes': max_request_bytes,
+            'levels': [{'name': name, 'scale': scale, 'jpeg_quality': quality}
+                       for name, scale, quality in REVIEW_IMAGE_LEVELS],
+            'resize': 'lanczos', 'jpeg_subsampling': 2, 'crop': False}
+
+
+def astra_stage_inputs(prompt, schema, evidence, images, *, max_request_bytes=None, adaptive_review_images=False):
     """Plan exactly the ordered visual request inputs, without calling Astra."""
-    return {'model': ASTRA_MODEL, 'endpoint': ASTRA_ENDPOINT, 'disable_fallbacks': True,
+    inputs = {'model': ASTRA_MODEL, 'endpoint': ASTRA_ENDPOINT, 'disable_fallbacks': True,
         'prompt': prompt, 'schema': schema, 'evidence': evidence,
         'images': [{'path': str(Path(image).resolve()), 'sha256': sha(image),
                     'mime': mimetypes.guess_type(str(image))[0]} for image in images]}
+    if adaptive_review_images:
+        inputs['review_encoding'] = review_encoding_policy(max_request_bytes)
+    return inputs
 
 
-def encode_astra_request(prompt, schema, evidence, images):
-    """Encode once: audit hashes describe exactly the bytes sent to Astra."""
+def encode_astra_request(prompt, schema, evidence, images, *, max_request_bytes=None, adaptive_review_images=False):
+    """Select the first fitting full-sheet tier; return exact wire bytes and audit.
+
+    Read originals once; every tier derives from those bytes, not the previous
+    lossy tier. Facts, image order and labels remain identical at every tier.
+    An exhausted budget returns the final oversized bytes for pre-send auditing;
+    astra_request refuses to send them. Non-review judgments keep original bytes.
+    """
     import hashlib
-    images=[Path(p).resolve() for p in images]
+    import io
+    policy = review_encoding_policy(max_request_bytes) if adaptive_review_images else None
+    images = [Path(p).resolve() for p in images]
     if not images:
         raise ValueError('visual judgment requires actual image evidence')
-    content=[{'type':'input_text','text':'Return JSON. Current evidence JSON:\n'+json.dumps(evidence,allow_nan=False)}]
-    image_hashes={}
+    sources = []
     for image in images:
-        mime=mimetypes.guess_type(image.name)[0]
-        if mime not in {'image/png','image/jpeg','image/webp'}:
+        mime = mimetypes.guess_type(image.name)[0]
+        if mime not in {'image/png', 'image/jpeg', 'image/webp'}:
             raise ValueError(f'unsupported image evidence type: {image.suffix}')
-        raw=image.read_bytes()
-        import hashlib
-        image_hashes[str(image)]=hashlib.sha256(raw).hexdigest()
-        content.append({'type':'input_text','text':f'Image evidence: {image.name}'})
-        content.append({'type':'input_image','image_url':f'data:{mime};base64,'+base64.b64encode(raw).decode(),'detail':'high'})
-    payload={'model':ASTRA_MODEL,'disable_fallbacks':True,'store':False,'stream':False,
-             'instructions':prompt+'\nReturn only a JSON object satisfying this schema:\n'+json.dumps(schema),
-             'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_object'}}}
-    request_bytes=json.dumps(payload, separators=(',', ':'), allow_nan=False).encode()
-    input_bytes=json.dumps({'prompt':prompt,'schema':schema,'evidence':evidence},sort_keys=True,allow_nan=False).encode()
-    return request_bytes, {'request_model':ASTRA_MODEL,'disable_fallbacks':True, 'endpoint':ASTRA_ENDPOINT,
-        'input_sha256':hashlib.sha256(input_bytes).hexdigest(), 'effective_payload_sha256':hashlib.sha256(request_bytes).hexdigest(),
-        'effective_payload_bytes':len(request_bytes),'image_sha256':image_hashes,
-        'ordered_images':[{'path':str(p),'sha256':image_hashes[str(p)]} for p in images],
-        'prompt':prompt,'schema':schema,'gateway_model_group':None}
+        raw = image.read_bytes()
+        dimensions = None
+        if adaptive_review_images:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as decoded:
+                decoded.load()
+                if getattr(decoded, 'n_frames', 1) != 1:
+                    raise ValueError('review sheet must be a single still image')
+                dimensions = list(decoded.size)
+        sources.append((image, mime, raw, dimensions))
+    image_hashes = {str(p): hashlib.sha256(raw).hexdigest() for p, _, raw, _ in sources}
+    review_images = evidence.get('review_images', []) if adaptive_review_images else []
+    if adaptive_review_images:
+        if len(review_images) != len(images) or any(
+            Path(row['path']).resolve() != image or row['sha256'] != image_hashes[str(image)]
+            for row, image in zip(review_images, images)):
+            raise ValueError('review sheet order/hash does not match evidence mapping')
+        if [idx for row in review_images for idx in row['frame_ids']] != evidence.get('review_frame_ids'):
+            raise ValueError('review sheet frame coverage/order mismatch')
+    evidence_text = 'Return JSON. Current evidence JSON:\n' + json.dumps(evidence, allow_nan=False)
+    attempts = []
+    levels = REVIEW_IMAGE_LEVELS if adaptive_review_images else REVIEW_IMAGE_LEVELS[:1]
+    for level, scale, quality in levels:
+        content = [{'type': 'input_text', 'text': evidence_text}]
+        ordered_images = []
+        for index, (image, original_mime, original, dimensions) in enumerate(sources):
+            raw, mime, effective_dimensions = original, original_mime, dimensions
+            if quality is not None:
+                with Image.open(io.BytesIO(original)) as decoded:
+                    sheet = decoded.convert('RGB')
+                effective_dimensions = [max(1, round(side * scale)) for side in dimensions]
+                if effective_dimensions != dimensions:
+                    sheet = sheet.resize(tuple(effective_dimensions), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                sheet.save(buffer, format='JPEG', quality=quality, subsampling=2, optimize=False)
+                raw, mime = buffer.getvalue(), 'image/jpeg'
+            ordered_images.append({'index': index, 'path': str(image), 'sha256': image_hashes[str(image)],
+                'original_sha256': image_hashes[str(image)], 'original_bytes': len(original),
+                'original_dimensions_wh': dimensions, 'effective_sha256': hashlib.sha256(raw).hexdigest(),
+                'effective_bytes': len(raw), 'effective_dimensions_wh': effective_dimensions,
+                'effective_mime': mime, 'jpeg_quality': quality, 'scale': scale, 'encoding_level': level,
+                'frame_ids': review_images[index]['frame_ids'] if adaptive_review_images else None})
+            content.append({'type': 'input_text', 'text': f'Image evidence: {image.name}'})
+            content.append({'type': 'input_image', 'image_url': f'data:{mime};base64,' + base64.b64encode(raw).decode(), 'detail': 'high'})
+        payload = {'model': ASTRA_MODEL, 'disable_fallbacks': True, 'store': False, 'stream': False,
+            'instructions': prompt + '\nReturn only a JSON object satisfying this schema:\n' + json.dumps(schema),
+            'input': [{'role': 'user', 'content': content}], 'text': {'format': {'type': 'json_object'}}}
+        request_bytes = json.dumps(payload, separators=(',', ':'), allow_nan=False).encode()
+        attempts.append({'encoding_level': level, 'payload_bytes': len(request_bytes),
+                         'payload_sha256': hashlib.sha256(request_bytes).hexdigest()})
+        if max_request_bytes is None or len(request_bytes) <= max_request_bytes:
+            break
+    input_bytes = json.dumps({'prompt': prompt, 'schema': schema, 'evidence': evidence}, sort_keys=True, allow_nan=False).encode()
+    return request_bytes, {'request_model': ASTRA_MODEL, 'disable_fallbacks': True, 'endpoint': ASTRA_ENDPOINT,
+        'input_sha256': hashlib.sha256(input_bytes).hexdigest(), 'effective_payload_sha256': hashlib.sha256(request_bytes).hexdigest(),
+        'effective_payload_bytes': len(request_bytes), 'image_sha256': image_hashes,
+        'ordered_images': ordered_images, 'review_encoding_policy': policy, 'encoding_attempts': attempts,
+        'budget_satisfied': max_request_bytes is None or len(request_bytes) <= max_request_bytes,
+        'prompt': prompt, 'schema': schema, 'gateway_model_group': None}
 
 
-def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None):
+def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None, adaptive_review_images=False):
     credential_path=Path(os.environ['EGO_ASTRA_CREDENTIAL_FILE'])
     info=credential_path.stat()
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
@@ -84,7 +158,8 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
     key=credential_path.read_text().strip()
     if not key:
         raise ValueError('empty Astra credential')
-    request_bytes, request_provenance = encode_astra_request(prompt, schema, evidence, images)
+    request_bytes, request_provenance = encode_astra_request(prompt, schema, evidence, images,
+        max_request_bytes=max_request_bytes, adaptive_review_images=adaptive_review_images)
     if audit_dir is not None:
         audit_dir=Path(audit_dir);audit_dir.mkdir(parents=True,exist_ok=False)
         (audit_dir/'effective_payload.json').write_bytes(request_bytes)

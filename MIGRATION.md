@@ -140,5 +140,16 @@ The full refined posterior, repeated source rows and solver traces are no longer
 Astra prompt input. The compact builder retains every frame and uses null for
 missing source poses/rotation observability. Raw images and actual candidate mesh
 overlays remain the visual evidence; compact facts never assert ground truth.
-Request byte auditing uses the same encoder as HTTP transport, retaining failures
-without increasing the120s deadline or introducing alternate model routes.
+Request byte auditing uses the same adaptive encoder as HTTP transport. The
+planned Astra stage binds `full_sheet_budget_v1` and its2MB limit. Only trajectory
+review opts in: original → JPEG80 → JPEG70 → JPEG70/87.5% → JPEG65/75%, from the
+original bytes at each tier, full image extent and all ordered sheets retained.
+Original image hashes still identify inputs; effective image hashes/dimensions/
+quality and per-tier payload hashes/sizes identify what Astra actually receives.
+The review-image path/hash/frame mapping is checked before encoding. All150
+facts and uncertain tails remain unchanged. Exhausting the finite ladder retains
+the exact oversized final payload and refuses HTTP; there is no120s deadline
+increase, retry or alternate model route. `observations.test_review_encoding`
+checks exact2,037,316-byte overflow, next-tier success, wire/audit identity and
+high-entropy exhaustion. Its optional `EGO_CAN93_DIAGNOSTIC_ROOT` test reads the
+original failed run only as an offline regression, never producing a receipt.

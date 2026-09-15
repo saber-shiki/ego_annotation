@@ -281,4 +281,14 @@ The Astra transport saves exact credential-free HTTP bytes and input/payload/
 image hashes under `pose_trajectory_judgment.request` before sending, plus model,
 prompt/schema and observed response routing group. A timeout remains an error
 with its payload retained; there is no internal retry or model fallback. Facts
-above256KB or encoded requests above2MB fail explicitly instead of truncating.
+above256KB fail explicitly. Review requests try a finite, full-sheet encoding
+ladder against the exact2MB JSON/base64 budget: original bytes, JPEG quality80,
+quality70, quality70 at87.5% dimensions, then quality65 at75%. Each tier starts
+from the original sheet; resizing uses Lanczos without cropping, dropping images
+or changing frame facts. The first fitting tier is sent. The original source and
+sheet hashes/order/frame mapping remain bound; `ordered_images` additionally
+records effective dimensions, JPEG quality, encoded bytes and SHA256, and the
+manifest records every attempted payload size/hash. If all tiers exceed budget,
+the final exact oversized payload/audit is retained and HTTP is refused. This is
+lossy review transport, never replacement raw input or physical evidence; subtle
+features may remain unresolved at the lower tiers. The120s timeout is unchanged.

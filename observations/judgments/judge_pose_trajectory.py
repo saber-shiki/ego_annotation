@@ -158,10 +158,14 @@ def trajectory_review_sheets(evidence, raw_by_id, overlay_paths, output):
     return sheets, source_images
 
 
+MAX_REQUEST_BYTES = 2_000_000
+
+
 def judge(evidence, images, *, audit_dir=None):
     """Consume current-run image evidence and return a validated pose_trajectory judgment."""
     validate_compact(evidence)
-    result, provenance = astra_request(PROMPT, SCHEMA, evidence, images, audit_dir=audit_dir, max_request_bytes=2_000_000)
+    result, provenance = astra_request(PROMPT, SCHEMA, evidence, images, audit_dir=audit_dir,
+        max_request_bytes=MAX_REQUEST_BYTES, adaptive_review_images=True)
     if 'object_id' in result and result['object_id'] != evidence['object_id']:
         raise ValueError('judgment changed selected object identity')
     allowed = set(evidence['frame_ids'])

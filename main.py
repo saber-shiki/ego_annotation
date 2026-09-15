@@ -439,7 +439,9 @@ def annotate(args):
             request_evidence={'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence}
             planned=planned_stage_contract('observations.judgments.judge_'+name,'astra',
                 parameters={'output':path,'role':'judgment'},
-                inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images),
+                inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images,
+                    **({'max_request_bytes':module.MAX_REQUEST_BYTES,'adaptive_review_images':True}
+                       if name=='pose_trajectory' else {})),
                 execution=process_execution)
             def execute():
                 verify_code()
