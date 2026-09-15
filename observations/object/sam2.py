@@ -331,6 +331,53 @@ def render_combined(args: argparse.Namespace, tracks: list[Track], frames: list[
         cap.release()
     return writer_path
 
+def propagate_full_timeline(predictor, state, frames: list[dict], prompt_frames: list[int]):
+    """Infer the unprompted prefix backwards; never overwrite forward results."""
+    selected = [int(frame['frame_idx']) for frame in frames]
+    if not selected or len(set(selected)) != len(selected) or selected != sorted(selected):
+        raise ValueError('SAM2 requires unique increasing source frames')
+    if not prompt_frames or not set(prompt_frames).issubset(selected):
+        raise ValueError('SAM2 prompt frames must belong to the selected timeline')
+    first = selected.index(min(prompt_frames))
+    propagated = {}
+    counts = {}
+    passes = [('forward', {})]
+    if first > 0:
+        passes.append(('reverse_prefix', {'start_frame_idx': first,
+                                         'max_frame_num_to_track': first, 'reverse': True}))
+    for direction, kwargs in passes:
+        count = 0
+        seen = set()
+        for local_idx, object_ids, logits in predictor.propagate_in_video(state, **kwargs):
+            local_idx = int(local_idx)
+            if local_idx < 0 or local_idx >= len(selected) or local_idx in seen:
+                raise RuntimeError('SAM2 returned an invalid or duplicate local frame')
+            seen.add(local_idx)
+            if direction == 'reverse_prefix':
+                if local_idx > first:
+                    raise RuntimeError('SAM2 reverse prefix escaped its selected range')
+                if local_idx == first:
+                    continue  # keep the already-computed forward conditioning frame
+            source_idx = selected[local_idx]
+            if source_idx in propagated:
+                raise RuntimeError('SAM2 propagation would overwrite a forward frame')
+            ids = [int(value) for value in object_ids]
+            propagated[source_idx] = {
+                obj_id: (logits[pos, 0].detach().cpu().numpy() > 0.0).astype(np.uint8)
+                for pos, obj_id in enumerate(ids)}
+            count += 1
+            if local_idx % 10 == 0 or local_idx == len(selected) - 1:
+                print(json.dumps({'event': 'propagated', 'direction': direction,
+                    'local_frame': local_idx, 'source_frame': source_idx, 'object_ids': ids}), flush=True)
+        counts[direction] = count
+    missing = sorted(set(selected) - set(propagated))
+    if missing:
+        raise RuntimeError(f'SAM2 did not infer selected source frames: {missing[:20]}')
+    return propagated, {'policy': 'forward_then_unprompted_prefix_reverse_v1',
+        'first_prompt_source_frame': selected[first], 'first_prompt_local_frame': first,
+        'frame_counts': counts, 'full_timeline_inferred': True}
+
+
 def run(args: argparse.Namespace) -> dict:
     import torch
     import os
@@ -363,23 +410,14 @@ def run(args: argparse.Namespace) -> dict:
     predictor = build_sam2_video_predictor(args.model_cfg, str(args.checkpoint), device=device, vos_optimized=False)
     predictor.non_overlap_masks = True
     predictor.add_all_frames_to_correct_as_cond = True
-    propagated: dict[int, dict[int, np.ndarray]] = {}
     with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
         state = predictor.init_state(video_path=str(frame_dir), offload_video_to_cpu=True, offload_state_to_cpu=True)
         prompt_reports = add_prompt_frames(predictor, state, tracks, frames, prompt_frames, prompt_sizes, video_size, use_positive_prompt_box=bool(args.use_positive_prompt_box), prompt_box_pad_ratio=float(args.prompt_box_pad_ratio), prompt_box_min_pad_px=float(args.prompt_box_min_pad_px))
-        selected_frames_list = [int(frame['frame_idx']) for frame in frames]
-        for (out_frame_idx, out_obj_ids, out_mask_logits) in predictor.propagate_in_video(state):
-            source_idx = selected_frames_list[int(out_frame_idx)]
-            ids = [int(v) for v in out_obj_ids]
-            per_frame: dict[int, np.ndarray] = {}
-            for (obj_pos, obj_id) in enumerate(ids):
-                per_frame[obj_id] = (out_mask_logits[obj_pos, 0].detach().cpu().numpy() > 0.0).astype(np.uint8)
-            propagated[source_idx] = per_frame
-            if int(out_frame_idx) % 10 == 0 or int(out_frame_idx) == len(selected_frames_list) - 1:
-                print(json.dumps({'event': 'propagated', 'local_frame': int(out_frame_idx), 'source_frame': int(source_idx), 'object_ids': ids}, sort_keys=True), flush=True)
+        propagated, propagation = propagate_full_timeline(predictor, state, frames, prompt_frames)
     all_results = write_track_results(args, tracks, frames, propagated, prompt_reports, prompt_frames, video_size, (info.width, info.height))
     overlay = render_combined(args, tracks, frames, all_results)
     summary = {'status': 'ok', 'backend': 'SAM2 multi-object propagation from spatial prompts', 'clip': str(args.clip), 'point_root': str(args.point_root), 'output_root': str(args.output_root), 'track_ids': [track.track_id for track in tracks], 'active_intervals_by_track': {track.track_id: [[int(start), int(end)] for (start, end) in track.active_intervals] for track in tracks}, 'frame_start': int(args.frame_start), 'frame_end': int(args.frame_end), 'frames': len(frames), 'prompt_frames': prompt_frames, 'visible_frames_by_track': {track.track_id: int(sum((1 for row in all_results[track.track_id].values() if row.get('visible')))) for track in tracks}, 'prompt_contract_satisfied': int(sum((1 for row in prompt_reports if row.get('satisfies_prompt_contract')))), 'prompt_contract_reports': len(prompt_reports), 'prompt_coordinate_sizes_by_track': {track_id: list(size) for (track_id, size) in prompt_sizes.items()}, 'source_video_size': list(source_size), 'sam2_video_size': list(video_size), 'checkpoint': str(args.checkpoint), 'model_cfg': args.model_cfg, 'non_overlap_masks': True, 'positive_prompt_box_enabled': bool(args.use_positive_prompt_box), 'prompt_box_pad_ratio': float(args.prompt_box_pad_ratio), 'prompt_box_min_pad_px': float(args.prompt_box_min_pad_px), 'overlay': str(overlay), 'elapsed_s': time.time() - started}
+    summary['propagation'] = propagation
     (args.output_root / 'qc_sam2_multiobject_points.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(json.dumps({k: v for (k, v) in summary.items() if k != 'track_ids'}, indent=2))
     return summary
