@@ -165,6 +165,10 @@ class AdaptiveReviewTests(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertEqual(len(audit['encoding_attempts']), 1)
             self.assertEqual(audit['ordered_images'][0]['original_sha256'], audit['ordered_images'][0]['effective_sha256'])
+            with patch('urllib.request.urlopen') as send:
+                with self.assertRaisesRegex(ValueError, 'requires an exact payload audit directory'):
+                    judge(evidence, images)
+                send.assert_not_called()
 
     @unittest.skipUnless(os.environ.get('EGO_CAN93_DIAGNOSTIC_ROOT'), 'optional read-only fixed93 can diagnostic')
     def test_real_can93_exact_failed_request_and_preserved_evidence(self):

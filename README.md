@@ -297,6 +297,7 @@ or changing frame facts. The first fitting tier is sent. The original source and
 sheet hashes/order/frame mapping remain bound; `ordered_images` additionally
 records effective dimensions, JPEG quality, encoded bytes and SHA256, and the
 manifest records every attempted payload size/hash. If all tiers exceed budget,
-the final exact oversized payload/audit is retained and HTTP is refused. This is
+the final exact oversized payload/audit is retained and HTTP is refused. Adaptive
+transport requires an audit directory; main and the judgment CLI supply it. This is
 lossy review transport, never replacement raw input or physical evidence; subtle
 features may remain unresolved at the lower tiers. The120s timeout is unchanged.

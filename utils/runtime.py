@@ -151,6 +151,8 @@ def encode_astra_request(prompt, schema, evidence, images, *, max_request_bytes=
 
 
 def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None, adaptive_review_images=False):
+    if adaptive_review_images and audit_dir is None:
+        raise ValueError('adaptive review transport requires an exact payload audit directory')
     credential_path=Path(os.environ['EGO_ASTRA_CREDENTIAL_FILE'])
     info=credential_path.stat()
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
