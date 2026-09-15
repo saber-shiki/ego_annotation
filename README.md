@@ -4,6 +4,10 @@
 > records the code-verified pipeline, effective settings, migration delta,
 > acceptance boundaries, validation evidence, and future-change checklist for
 > `refactor/rl-opt` integrated baseline: remote `8b17958` plus local feasibility fixes `76b8bcd`.
+>
+> **Latest feasibility checkpoint:** [2026-09-16 tested repairs and remaining geometry blocker](docs/RLOPT_FEASIBILITY_20260916.md),
+> prediction source `9ef06b3`. Real model execution reached SAM3D reconstruction;
+> the metric bridge failed and end-to-end annotation feasibility is not yet established.
 
 The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain

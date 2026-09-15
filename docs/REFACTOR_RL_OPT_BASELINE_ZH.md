@@ -1,5 +1,9 @@
 # `refactor/rl-opt` 整理后管线基线
 
+> **后续实跑更新**：本文是整理时的结构基线。修复及实际执行边界请读
+> [2026-09-16 可行性检查点](RLOPT_FEASIBILITY_20260916.md)：测试源码 `9ef06b3`
+> 已完成真实 SAM3D 重建，但 metric bridge 质量未通过，不能宣称端到端成功。
+
 > **基线日期**：2026-09-15
 > **上游分支**：[`DexGEM-Lab/ego_annotation@refactor/rl-opt`](https://github.com/DexGEM-Lab/ego_annotation/tree/refactor/rl-opt)
 > **不可变源码基线**：远端 `8b17958a0bccfba4b2951ce50fc9c8bc60a24c31`
@@ -728,7 +732,7 @@ python main.py resume \
 - 954 files changed；
 - 33,453 insertions；
 - 417,996 deletions；
-- 78新增、870删除、2重命名、4修改；
+- 89新增、859删除、2重命名、4修改；
 - tracked Python文本行约从 314,470降到 28,853（约减少90.8%）；
 - 旧 `scripts/` 700 files、`experiments/` 95 files、`tests/` 42 files和旧 runtime入口均从 active checkout退休。
 
