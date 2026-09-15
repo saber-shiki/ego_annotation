@@ -441,12 +441,12 @@ def annotate(args):
                 parameters={'output':path,'role':'judgment'},
                 inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images,
                     **({'max_request_bytes':module.MAX_REQUEST_BYTES,'adaptive_review_images':True}
-                       if name=='pose_trajectory' else {})),
+                       if name=='pose_trajectory' or (name=='mask_track' and 'mask_review_batch' in evidence) else {})),
                 execution=process_execution)
             def execute():
                 verify_code()
                 if path.exists():raise ValueError('judgment output already exists')
-                value=module.judge(request_evidence,images, audit_dir=path.with_suffix('.request')) if name=='pose_trajectory' else module.judge(request_evidence,images)
+                value=module.judge(request_evidence,images, audit_dir=path.with_suffix('.request')) if name=='pose_trajectory' or (name=='mask_track' and 'mask_review_batch' in evidence) else module.judge(request_evidence,images)
                 path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
                 ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids))
                 return value
@@ -544,10 +544,19 @@ def annotate(args):
             output=root/'state/candidate_mask_identity.json';output.write_text(json.dumps(value,indent=2))
             if value['status']!='ok':raise ValueError('mask-track candidate identity check failed; see candidate_mask_identity.json')
             record('candidate_mask_identity',[(output,'candidate_mask_identity')])
-        @stage('mask_review', inputs={'track':track_path,'raw_manifest':manifest,'sampled':sampled},
-            parameters={'output_dir':root/'renders/mask_review'})
+        @stage('mask_review', inputs={'track':track_path,'raw_manifest':manifest,'sampled':sampled,
+            'candidate_checks':root/'state/candidate_mask_identity.json'},
+            parameters={'output_dir':root/'renders/mask_review','uncertain_context_neighbors':1,'batch_frames':6,'panel_max_width':480})
         def _stage_mask_review():
+            from observations.judgments.judge_mask_track import render_uncertain_reviews
             track_payload=load(track_path);mask_reviews=[]
+            batches=render_uncertain_reviews(load(root/'state/candidate_mask_identity.json'),
+                track_payload,raw_by_id,ids,sampled,root/'renders/mask_review')
+            if batches:
+                output=root/'state/mask_review_evidence.json'
+                output.write_text(json.dumps({'schema':'mask_identity_visual_review_v1','batches':batches},indent=2,allow_nan=False))
+                record('mask_review',[(output,'mask_identity_visual_evidence')])
+                return track_payload,mask_reviews,batches
             for frame in sampled:
                 raw_image=cv2.imread(raw_by_id[frame]['raw_frame_path'])
                 row=track_payload.get(str(frame),{})
@@ -560,9 +569,25 @@ def annotate(args):
                 path=root/'renders/mask_review'/f'{frame:06d}.jpg';path.parent.mkdir(parents=True,exist_ok=True)
                 if not cv2.imwrite(str(path),raw_image):raise RuntimeError('mask evidence render failed')
                 mask_reviews.append(path)
-            return track_payload, mask_reviews
-        track_payload, mask_reviews = _stage_mask_review
-        mask_judgment=ask('mask_track',{'track':track_payload,'selected_object_plan':obj,'candidate_identity_checks':load(root/'state/candidate_mask_identity.json'),'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
+            return track_payload, mask_reviews, []
+        track_payload, mask_reviews, mask_batches = _stage_mask_review
+        if mask_batches:
+            batch_paths=[root/'state/mask_track_batches'/f'{index:04d}.json' for index in range(len(mask_batches))]
+            results=[ask('mask_track',{'selected_object_plan':obj,**batch},
+                [Path(image['path']) for image in batch['review_images']],path)
+                for batch,path in zip(mask_batches,batch_paths)]
+            @stage('mask_review_merge', inputs={'results':batch_paths,'evidence':root/'state/mask_review_evidence.json'},
+                parameters={'output':root/'state/mask_track_judgment.json','identity_rule':'all_batches_true'})
+            def _stage_mask_review_merge():
+                from observations.judgments.judge_mask_track import merge_batch_judgments
+                value=merge_batch_judgments(results,mask_batches)
+                output=root/'state/mask_track_judgment.json'
+                output.write_text(json.dumps(value,indent=2,allow_nan=False))
+                record('judge_mask_track',[(output,'judgment')])
+                return value
+            mask_judgment=_stage_mask_review_merge
+        else:
+            mask_judgment=ask('mask_track',{'track':track_payload,'selected_object_plan':obj,'candidate_identity_checks':load(root/'state/candidate_mask_identity.json'),'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
         if mask_judgment['identity_consistent'] is False:
             raise ValueError('mask identity review rejected the selected-object track; no scene is published')
         base=root/'state/base_annotations/annotations_v19_base.json'

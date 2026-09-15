@@ -277,6 +277,22 @@ category re-seeding). Requested keyframes alone seed SAM2. Before visual judgmen
 `candidate_mask_identity.json` checks every associated box against the current
 SAM2 mask in the same pixel plane and binds candidate/track/raw hashes. Astra
 still judges identity against the selected object plan and raw mask overlays.
+Extent-uncertain check rows retain the selected detection, competing detections,
+original margin and complete association diagnostics. Only when such rows exist,
+`mask_identity_visual_review_v1` evidence schedules every uncertain frame with
+its immediate timeline neighbors, followed by remaining general samples. Each
+batch contains at most six labeled full-field RAW/actual-SAM2-overlay sheets
+(480px maximum panel width), with raw/raster/sheet hashes and ordered frame
+mapping; neighboring contexts are packed together without splitting any context
+or omitting required frames.
+`judge_mask_track.judge(..., audit_dir=...)` uses the existing exact2MB adaptive
+encoder for these typed batches. Main binds the policy, evidence and image bytes
+into each planned judgment and saves payload/manifest under
+`state/mask_track_batches/*.request`. The final judgment keeps every batch's
+intervals, uncertainties, evidence and provenance; any `identity_consistent=false`
+still rejects before base annotations. Exhausting the encoding ladder explicitly
+fails without dropping frames. Without association uncertainty, the original
+12-frame render and single non-adaptive judgment call remain unchanged.
 
 Trajectory review sends `trajectory_review_compact_v1`: one low-dimensional row
 per posterior frame, source/direct/metric eligibility, heuristic uncertainty,

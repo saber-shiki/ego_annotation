@@ -264,9 +264,21 @@ def check_candidate_mask_identity(report, track, source_size_wh):
                 scale = np.array([row['image_width'] / mask.shape[1], row['image_height'] / mask.shape[0]] * 2)
                 box = np.array([xs.min(), ys.min(), xs.max()+1, ys.max()+1]) * scale
                 iou = box_iou(box, selected['bbox_xyxy'])
-        checks.append({'frame_idx': row['frame_idx'], 'selected_candidate_index': row['association']['selected_candidate_index'],
-                       'mask_path': mask_path, 'mask_sha256': mask_hash,
-                       'mask_candidate_iou': iou, 'identity_supported': iou >= .10})
+        check = {'frame_idx': row['frame_idx'], 'selected_candidate_index': row['association']['selected_candidate_index'],
+                 'mask_path': mask_path, 'mask_sha256': mask_hash,
+                 'mask_candidate_iou': iou, 'identity_supported': iou >= .10}
+        association = row['association']
+        if association.get('association_uncertainty') or association.get('extent_alternatives'):
+            check['association_uncertainty'] = association.get('association_uncertainty')
+            check['selected_detection'] = selected
+            check['competing_detections'] = [
+                {'candidate_index': alternative['candidate_index'],
+                 'detection': row['detections'][alternative['candidate_index']]}
+                for alternative in association.get('extent_alternatives', [])]
+            check['extent_alternatives'] = association.get('extent_alternatives', [])
+            check['raw_distinct_cost_margin'] = association.get('raw_distinct_cost_margin')
+            check['association'] = association
+        checks.append(check)
     return {'schema': 'candidate_mask_identity_v1', 'case_id': report['case_id'], 'object_id': report['object_id'],
             'track_id': report['track_id'], 'status': 'ok' if checks and all(r['identity_supported'] for r in checks) else 'failed', 'frames': checks}
 
