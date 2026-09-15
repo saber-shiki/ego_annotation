@@ -227,7 +227,9 @@ def main(argv=None):
         import importlib
         if args.output.exists():raise ValueError('judgment output must be create-only')
         module=importlib.import_module('observations.judgments.judge_'+args.name)
-        value=module.judge(load(args.evidence),args.image)
+        evidence=load(args.evidence)
+        audited=args.name in {'pose_trajectory','rigidity'} or (args.name=='mask_track' and 'mask_review_batch' in evidence)
+        value=module.judge(evidence,args.image,audit_dir=args.output.with_suffix('.request')) if audited else module.judge(evidence,args.image)
         args.output.parent.mkdir(parents=True,exist_ok=True)
         with args.output.open('x') as handle:json.dump(value,handle,indent=2,allow_nan=False)
         return value
@@ -439,16 +441,19 @@ def annotate(args):
             verify_code()
             module=importlib.import_module('observations.judgments.judge_'+name)
             request_evidence={'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence}
+            if name=='rigidity':
+                request_evidence=module.review_evidence(request_evidence,images)
+            audited=name in {'pose_trajectory','rigidity'} or (name=='mask_track' and 'mask_review_batch' in evidence)
             planned=planned_stage_contract('observations.judgments.judge_'+name,'astra',
                 parameters={'output':path,'role':'judgment'},
                 inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images,
                     **({'max_request_bytes':module.MAX_REQUEST_BYTES,'adaptive_review_images':True}
-                       if name=='pose_trajectory' or (name=='mask_track' and 'mask_review_batch' in evidence) else {})),
+                       if audited else {})),
                 execution=process_execution)
             def execute():
                 verify_code()
                 if path.exists():raise ValueError('judgment output already exists')
-                value=module.judge(request_evidence,images, audit_dir=path.with_suffix('.request')) if name=='pose_trajectory' or (name=='mask_track' and 'mask_review_batch' in evidence) else module.judge(request_evidence,images)
+                value=module.judge(request_evidence,images, audit_dir=path.with_suffix('.request')) if audited else module.judge(request_evidence,images)
                 path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
                 ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids))
                 return value

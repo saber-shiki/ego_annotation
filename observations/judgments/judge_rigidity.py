@@ -42,14 +42,31 @@ SCHEMA['properties'].update({
         'additionalProperties':False}}})
 
 
-def judge(evidence, images):
-    """Consume current-run image evidence and return a validated rigidity judgment."""
+MAX_REQUEST_BYTES = 3_000_000
+
+
+def review_evidence(evidence, images):
+    """Bind every existing motion sheet/frame to the full-sheet encoder."""
+    from pathlib import Path
     if evidence.get('schema') != 'tracked_whole_rigidity_motion_evidence_v1' or evidence.get('selected_object',{}).get('object_id') != evidence['object_id']:
         raise ValueError('rigidity requires selected-object plan and contiguous current-track motion evidence')
     covered=[frame for sequence in evidence['motion_sequences'] for frame in sequence['frame_ids']]
     if covered != evidence['frame_ids'] or len(images)!=len(evidence['motion_sequences']):
         raise ValueError('rigidity image/contiguous timeline coverage mismatch')
-    result, provenance = astra_request(PROMPT, SCHEMA, evidence, images)
+    sheets=[]
+    for sequence, image in zip(evidence['motion_sequences'], images):
+        if Path(sequence['sheet']).resolve() != Path(image).resolve():
+            raise ValueError('rigidity motion sheet path/order mismatch')
+        sheets.append({'path':str(Path(image).resolve()), 'sha256':sequence['sha256'],
+                       'frame_ids':list(sequence['frame_ids'])})
+    return {**evidence, 'review_images':sheets, 'review_frame_ids':list(covered)}
+
+
+def judge(evidence, images, *, audit_dir=None):
+    """One bounded full-interval rigidity judgment; no frame/image dropping."""
+    evidence = review_evidence(evidence, images)
+    result, provenance = astra_request(PROMPT, SCHEMA, evidence, images,
+        audit_dir=audit_dir, max_request_bytes=MAX_REQUEST_BYTES, adaptive_review_images=True)
     if 'object_id' in result and result['object_id'] != evidence['object_id']:
         raise ValueError('judgment changed selected object identity')
     allowed = set(evidence['frame_ids'])
@@ -71,4 +88,4 @@ def judge(evidence, images):
 
 
 if __name__ == '__main__':
-    judgment_cli(judge)
+    judgment_cli(judge, audit_requests=True)
