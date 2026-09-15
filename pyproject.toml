@@ -24,7 +24,7 @@ py-modules = ["main", "render", "evaluate"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["utils*", "observations*", "gates*", "factors*", "optimization*"]
+include = ["utils*", "observations*", "gates*", "factors*", "optimization*", "hot3d_eval*"]
 namespaces = true
 
 [tool.pytest.ini_options]
