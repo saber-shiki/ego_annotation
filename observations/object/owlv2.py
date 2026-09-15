@@ -140,13 +140,42 @@ def box_iou(a, b):
     return float(intersection / max(1e-9, (a[2:] - a[:2]).prod() + (b[2:] - b[:2]).prod() - intersection))
 
 
+def occluded_extent_alternative(a, b, previous, gap, metrics):
+    """Box-only occlusion hypothesis, never a claim of physical identity.
+
+    A visible sub-box and an occluder-expanded box largely contain one another,
+    share three boundaries, and both stay close to the previous track. Their
+    shared boundaries must also move continuously. A translated neighbor of
+    similar area, a fresh ambiguous seed or a stale track cannot use this rule.
+    """
+    a, b, previous = (np.asarray(box, float) for box in (a, b, previous))
+    sides = previous[2:] - previous[:2]
+    areas = [(box[2:] - box[:2]).prod() for box in (a, b)]
+    intersection = np.maximum(0., np.minimum(a[2:], b[2:]) - np.maximum(a[:2], b[:2])).prod()
+    containment = float(intersection / min(areas))
+    area_ratio = float(min(areas) / max(areas))
+    norm = np.tile(sides, 2)
+    shared = np.abs(a-b) / norm <= .12
+    stable = np.maximum(np.abs(a-previous), np.abs(b-previous)) / norm <= .20
+    # Three stable shared edges distinguish changing extent from a translation.
+    stable_shared_edges = int(np.sum(shared & stable))
+    continuous = gap == 1 and all(m['allowed'] and m['iou'] >= .45 and
+        m['center_distance_box_diagonals'] <= .20 for m in metrics)
+    supported = continuous and containment >= .90 and .40 <= area_ratio <= .85 and stable_shared_edges >= 3
+    return {'supported': bool(supported), 'containment_of_smaller': containment,
+            'smaller_larger_area_ratio': area_ratio, 'stable_shared_edges': stable_shared_edges,
+            'consecutive_track_continuity': bool(continuous)}
+
+
 class CandidateIdentity:
     """One track, no category reacquisition after identity loss.
 
     Costs use IoU, center displacement in previous-box diagonals, log side
     ratios and a small detector-confidence term. Three missed frames may bridge
     occlusion; a fourth, or competing distinct boxes of equal cost, fails closed.
-    Duplicate detector boxes do not count as distinct competing instances.
+    Duplicate boxes and consecutive, nested occlusion-extent alternatives do not
+    alone establish an instance switch. The latter retain explicit uncertainty
+    and still require the same-run SAM2/Astra mask identity/ownership gates.
     """
     def __init__(self):
         self.last = None
@@ -155,7 +184,7 @@ class CandidateIdentity:
 
     def select(self, frame, detections):
         diagnostics = {'frame_idx': frame, 'previous_frame_idx': self.last_frame,
-                       'policy': 'iou_center_log_size_v1', 'candidates': []}
+                       'policy': 'iou_center_log_size_occluded_extent_v2', 'candidates': []}
         if self.failed:
             return None, {**diagnostics, 'state': 'identity_lost'}
         ranked = []
@@ -190,11 +219,26 @@ class CandidateIdentity:
             return None, {**diagnostics, 'state': 'identity_lost' if self.failed else 'occluded_or_out_of_frame'}
         cost, index = ranked[0]
         distinct = [(c, i) for c, i in ranked[1:] if box_iou(detections[index]['bbox_xyxy'], detections[i]['bbox_xyxy']) < .7]
-        margin = None if not distinct else distinct[0][0] - cost
+        raw_margin = None if not distinct else distinct[0][0] - cost
+        extent_alternatives = []
+        unresolved = []
+        for candidate_cost, candidate_index in distinct:
+            extent = None if self.last is None else occluded_extent_alternative(
+                detections[index]['bbox_xyxy'], detections[candidate_index]['bbox_xyxy'],
+                self.last['bbox_xyxy'], frame - self.last_frame,
+                [diagnostics['candidates'][index], diagnostics['candidates'][candidate_index]])
+            if extent is not None and extent['supported']:
+                extent_alternatives.append({'candidate_index': candidate_index, 'cost_margin': candidate_cost-cost, **extent})
+            else:
+                unresolved.append((candidate_cost, candidate_index))
+        margin = None if not unresolved else unresolved[0][0] - cost
+        diagnostics.update({'extent_alternatives': extent_alternatives, 'raw_distinct_cost_margin': raw_margin,
+            'association_uncertainty': 'occluded_extent_ambiguity' if extent_alternatives else None})
         if margin is not None and margin < (.05 if self.last is None else .12):
             self.failed = True
             return None, {**diagnostics, 'state': 'identity_ambiguous', 'distinct_cost_margin': margin}
-        state = 'initial_category_seed_requires_visual_review' if self.last is None else 'temporally_associated'
+        state = ('initial_category_seed_requires_visual_review' if self.last is None else
+                 'occluded_extent_ambiguity' if extent_alternatives else 'temporally_associated')
         self.last, self.last_frame = detections[index], frame
         return self.last, {**diagnostics, 'state': state, 'selected_candidate_index': index,
             'selected_score': self.last['score'], 'selected_cost': cost, 'distinct_cost_margin': margin}

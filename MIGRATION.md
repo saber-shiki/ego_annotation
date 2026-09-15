@@ -134,6 +134,17 @@ mask gate. CPU regression uses actual mug frame149 detections and frame148 SAM2
 support, labelled as fixture-only; no historical mask is a production input.
 Dense detection increases OWLv2 work relative to sparse keyframes. Lost or
 ambiguous tracks are unsupported, not silently reacquired as another instance.
+Consecutive occluded-extent alternatives now remain associated at the existing
+minimum cost when both candidates pass continuity, largely contain one another
+and share three temporally stable boundaries (thresholds in README). This adds a
+local extent-ambiguity hypothesis, not a global IoU relaxation; true displaced
+competitors and no-track ambiguity retain rejection. Every detection/score is
+unchanged and the report carries `occluded_extent_ambiguity` plus geometry and
+cost margins. Real SAM2 mask identity, ownership and Astra gates remain final
+arbiters. `mug_occluded_extent.json` is a hash-provenanced CPU fixture containing
+all fixed93 detections137–149, no old mask or reusable production prediction.
+It selects lower-score138/149 candidates and retains uncertainty; full fresh
+model execution and mask acceptance remain required.
 
 ### Cold-run compact pose review
 The full refined posterior, repeated source rows and solver traces are no longer

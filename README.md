@@ -263,9 +263,17 @@ camera/world consistency). Raw appearance diagnostics remain in the manifest;
 OWLv2 now detects every frame of the selected active interval, preserving all
 thresholded candidates and image hashes in `candidate_identity.json`. One track
 is seeded once, then associated by IoU, normalized center displacement and log
-side-ratio cost; detector confidence is a minor continuation term. Ambiguous
-instances or more than three missed frames reject explicitly (no category
-re-seeding). Requested keyframes alone seed SAM2. Before visual judgment,
+side-ratio cost; detector confidence is a minor continuation term. Consecutive
+nested extent alternatives can represent one occluded object: both must remain
+inside the existing IoU/center/scale gate, additionally IoU≥0.45 and center motion
+≤0.20 previous-box diagonals, containment≥90%, area ratio0.40–0.85, and three
+shared boundaries (within12% of previous sides) moving no more than20% of those
+sides. The unchanged minimum cost selects a candidate and records
+`occluded_extent_ambiguity`, all alternative costs and association uncertainty.
+This box-only hypothesis permits an occluder-expanded box or visible sub-box; it
+cannot prove identity. Equal-cost translated neighbors, ambiguous initial seeds,
+stale tracks and more than three missed frames still reject explicitly (no
+category re-seeding). Requested keyframes alone seed SAM2. Before visual judgment,
 `candidate_mask_identity.json` checks every associated box against the current
 SAM2 mask in the same pixel plane and binds candidate/track/raw hashes. Astra
 still judges identity against the selected object plan and raw mask overlays.

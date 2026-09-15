@@ -61,6 +61,58 @@ class CandidateIdentityTests(unittest.TestCase):
                 # A lying cached bbox must not hide a switch in the actual mask.
                 self.assertEqual(check_candidate_mask_identity(report,track,[960,960])['status'],expected)
 
+    def test_actual_mug_137_to_149_nested_extent_continues_without_candidate_rewrite(self):
+        from observations.object.owlv2 import CandidateIdentity
+        data = json.loads((FIXTURES / 'mug_occluded_extent.json').read_text())
+        original = copy.deepcopy(data)
+        identity = CandidateIdentity()
+        states = {}
+        for row in data['frames']:
+            selected, diag = identity.select(row['frame_idx'], row['detections'])
+            self.assertIsNotNone(selected, row['frame_idx'])
+            self.assertFalse(identity.failed)
+            self.assertEqual(len(diag['candidates']), len(row['detections']))
+            self.assertIs(selected, row['detections'][diag['selected_candidate_index']])
+            states[row['frame_idx']] = diag
+        self.assertEqual(data, original)
+        self.assertEqual(states[138]['selected_candidate_index'], 1)
+        self.assertEqual(states[138]['state'], 'occluded_extent_ambiguity')
+        self.assertEqual(states[138]['association_uncertainty'], 'occluded_extent_ambiguity')
+        self.assertLess(states[138]['raw_distinct_cost_margin'], .12)
+        self.assertEqual(states[138]['extent_alternatives'][0]['candidate_index'], 0)
+        self.assertEqual(states[149]['selected_candidate_index'], 1)
+
+    def test_nested_extent_needs_track_and_three_stable_boundaries(self):
+        from observations.object.owlv2 import CandidateIdentity
+        prior = {'bbox_xyxy': [100, 100, 200, 200], 'score': .8}
+        narrow = {'bbox_xyxy': [125, 100, 200, 200], 'score': .7}
+        wide = {'bbox_xyxy': [70, 100, 200, 200], 'score': .9}
+        identity = CandidateIdentity(); identity.select(0, [prior])
+        selected, diag = identity.select(1, [wide, narrow])
+        self.assertIsNotNone(selected)
+        self.assertEqual(diag['association_uncertainty'], 'occluded_extent_ambiguity')
+        # Nesting without established history cannot resolve equal class scores.
+        fresh = CandidateIdentity()
+        self.assertIsNone(fresh.select(0, [{**wide, 'score': .8}, {**narrow, 'score': .8}])[0])
+        self.assertTrue(fresh.failed)
+        # Similar-area translated objects on opposite sides are competing tracks,
+        # even though both individually pass the old continuity gate.
+        identity = CandidateIdentity(); identity.select(0, [prior])
+        left = {'bbox_xyxy': [80, 100, 180, 200], 'score': .8}
+        right = {'bbox_xyxy': [120, 100, 220, 200], 'score': .8}
+        selected, diag = identity.select(1, [left, right])
+        self.assertIsNone(selected)
+        self.assertEqual(diag['state'], 'identity_ambiguous')
+        self.assertTrue(all(c['allowed'] for c in diag['candidates']))
+        self.assertEqual(diag['extent_alternatives'], [])
+        # Nested shapes after a gap or displaced from the prior's shared edges
+        # must not acquire the occlusion exception.
+        from observations.object.owlv2 import occluded_extent_alternative
+        metrics = [{'allowed': True, 'iou': .6, 'center_distance_box_diagonals': .1}]*2
+        self.assertFalse(occluded_extent_alternative(narrow['bbox_xyxy'], wide['bbox_xyxy'], prior['bbox_xyxy'], 2, metrics)['supported'])
+        shifted = [[v+50 for v in d['bbox_xyxy']] for d in (narrow, wide)]
+        self.assertFalse(occluded_extent_alternative(*shifted, prior['bbox_xyxy'], 1, metrics)['supported'])
+
     def test_occlusion_cannot_reseed_other_instance_and_ambiguity_fails(self):
         from observations.object.owlv2 import CandidateIdentity
         target = {'bbox_xyxy': [10, 10, 110, 110], 'score': .8}

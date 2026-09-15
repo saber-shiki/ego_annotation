@@ -98,6 +98,45 @@ class AdaptiveReviewTests(unittest.TestCase):
                     encode_astra_request(PROMPT, SCHEMA, altered, images,
                         max_request_bytes=MAX_REQUEST_BYTES, adaptive_review_images=True)
 
+    def test_root_main_ask_executes_budgeted_judge_and_binds_policy(self):
+        import ast
+        import importlib
+        from unittest.mock import Mock
+        import main
+        from utils.state import planned_stage_contract
+        # Execute the actual nested main.ask, isolating only its stage/ledger
+        # surroundings. No copied request logic or disconnected helper path.
+        tree = ast.parse(Path(main.__file__).read_text())
+        annotate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'annotate')
+        ask = next(n for n in ast.walk(annotate) if isinstance(n, ast.FunctionDef) and n.name == 'ask')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            evidence, images = fixture(root)
+            evidence['fixture_padding'] = ''
+            initial, _ = encode_astra_request(PROMPT, SCHEMA, evidence, images)
+            evidence['fixture_padding'] = 'x' * (2037316-len(initial))
+            recovery = Mock(); recovery.run.side_effect = lambda name, execute, **kw: execute()
+            namespace = {'verify_code': lambda: None, 'importlib': importlib, 'ids': evidence['frame_ids'],
+                'object_id': evidence['object_id'], 'planned_stage_contract': planned_stage_contract,
+                'astra_stage_inputs': astra_stage_inputs, 'process_execution': {}, 'recovery': recovery,
+                'ledger': Mock(), 'root': root, 'json': json}
+            exec(compile(ast.Module(body=[ask], type_ignores=[]), main.__file__, 'exec'), namespace)
+            result = {'object_id': 'fixture', 'trajectory_consistent': False, 'flagged_intervals': [], 'evidence_frames': [149]}
+            raw = {'model': 'gpt-6-astra', 'status': 'completed', 'id': 'cpu-only', 'output': [
+                {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps(result)}]}]}
+            class Response(io.BytesIO):
+                headers = {'x-litellm-model-group': 'gpt-6-astra'}
+            credential = root/'credential'; credential.write_text('fixture-only'); credential.chmod(0o600)
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', return_value=Response(json.dumps(raw).encode())) as send:
+                actual = namespace['ask']('pose_trajectory', evidence, images, root/'state/judgment.json')
+            self.assertFalse(actual['trajectory_consistent'])
+            self.assertEqual(actual['judgment_provenance']['encoding_attempts'][-1]['encoding_level'], 'jpeg_q80')
+            self.assertLessEqual(len(send.call_args.args[0].data), MAX_REQUEST_BYTES)
+            self.assertEqual(send.call_args.args[0].data, (root/'state/judgment.request/effective_payload.json').read_bytes())
+            planned = recovery.run.call_args.kwargs['contract']
+            self.assertIn('full_sheet_budget_v1', json.dumps(planned))
+            self.assertIn('2000000', json.dumps(planned))
+
     def test_high_entropy_all_150_frames_exhausts_ladder_and_never_sends(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
