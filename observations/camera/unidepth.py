@@ -110,11 +110,16 @@ def run(args: argparse.Namespace) -> dict:
             depth = metric_radius_to_camera_z(radius_output, output_camera_intrinsics)
             (fx, fy, cx, cy) = output_camera_intrinsics.tolist()
         else:
-            depth = resize_depth(depth_raw, (int(args.source_height), int(args.source_width)))
-            fx = float(intrinsics[0, 0]) * (int(args.source_width) / float(depth_raw.shape[1]))
-            fy = float(intrinsics[1, 1]) * (int(args.source_height) / float(depth_raw.shape[0]))
-            cx = float(intrinsics[0, 2]) * (int(args.source_width) / float(depth_raw.shape[1]))
-            cy = float(intrinsics[1, 2]) * (int(args.source_height) / float(depth_raw.shape[0]))
+            scale_x = int(args.source_width) / float(depth_raw.shape[1])
+            scale_y = int(args.source_height) / float(depth_raw.shape[0])
+            fx = float(intrinsics[0, 0]) * scale_x
+            fy = float(intrinsics[1, 1]) * scale_y
+            cx = (float(intrinsics[0, 2]) + 0.5) * scale_x - 0.5
+            cy = (float(intrinsics[1, 2]) + 0.5) * scale_y - 0.5
+            if radius_raw is None:
+                raise RuntimeError(f'UniDepth frame {frame_idx} returned no metric radius for inferred-ray reprojection')
+            radius_output = resize_depth(radius_raw, (int(args.source_height), int(args.source_width)))
+            depth = metric_radius_to_camera_z(radius_output, np.asarray([fx, fy, cx, cy]))
             model_camera_head_intrinsics_stack.append([fx, fy, cx, cy])
         focal = float(np.sqrt(max(1e-09, fx * fy)))
         if confidence_raw is None:
@@ -227,13 +232,77 @@ def to_numpy(value: object, name: str) -> np.ndarray:
         raise RuntimeError(f'UniDepth {name} contains non-finite values')
     return arr.astype(np.float32)
 
+def _unidepth_resize_geometry(model: object, shape: tuple[int, int]) -> tuple[float, float, float, int, int]:
+    """Mirror the audited deployed infer shape policy, not its erroneous K scale."""
+    import inspect
+    from math import ceil
+
+    try:
+        inspect.signature(model.infer).bind(None, camera=None)
+        inspect.signature(model.encode_decode).bind(inputs={}, image_metas=[])
+        constraints = model.shape_constraints
+        low_ratio, high_ratio = constraints['ratio_bounds']
+        low_pixels, high_pixels = constraints['pixels_min'], constraints['pixels_max']
+        values = np.asarray([low_ratio, high_ratio, low_pixels, high_pixels], dtype=np.float64)
+        if (not np.isfinite(values).all() or np.any(values <= 0)
+                or low_ratio > high_ratio or low_pixels > high_pixels
+                or constraints.get('shape_mult', 14) != 14
+                or model.interpolation_mode != 'bilinear'):
+            raise ValueError('unsupported shape constraints or interpolation')
+        if hasattr(model, 'resolution_level'):
+            level = model.resolution_level
+            if not np.isfinite(level) or not 0 <= level < 10:
+                raise ValueError('resolution_level must be in [0, 10)')
+            interval = (high_pixels - low_pixels) / 10
+            low_pixels, high_pixels = low_pixels + level * interval, low_pixels + (level + 1) * interval
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f'unsupported UniDepthV2 infer/encode_decode interface: {exc}') from exc
+
+    height, width = shape
+    if height < 2 or width < 2:
+        raise ValueError(f'UniDepth image dimensions must be at least 2: {shape}')
+    ratio = min(high_ratio, max(low_ratio, width / height))
+    if width / height > ratio:
+        padded_h, padded_w = int(width / ratio), width
+    else:
+        padded_h, padded_w = height, int(height * ratio)
+    left, top = (padded_w - width) // 2, (padded_h - height) // 2
+    pixels = padded_h * padded_w
+    nominal = (min(high_pixels, max(low_pixels, pixels)) / pixels) ** 0.5
+    resized_h = ceil(int(padded_h * nominal) / 14) * 14
+    resized_w = ceil(int(padded_w * nominal) / 14) * 14
+    if min(resized_h, resized_w) <= 0:
+        raise RuntimeError('unsupported UniDepthV2 zero-sized resized image')
+    return nominal, resized_w / padded_w, resized_h / padded_h, left, top
+
+
+def _validated_pinhole_K(camera_K: np.ndarray) -> np.ndarray:
+    K = np.array(camera_K, dtype=np.float64, copy=True)
+    if (K.shape != (3, 3) or not np.isfinite(K).all()
+            or K[0, 0] <= 0 or K[1, 1] <= 0
+            or not np.array_equal(K[2], [0, 0, 1])
+            or K[0, 1] != 0 or K[1, 0] != 0):
+        raise ValueError('UniDepth camera K must be a finite zero-skew pinhole 3x3 matrix with positive focal lengths')
+    return K
+
+
 def infer_unidepth(model: object, image: Image.Image, device: torch.device, camera_K: np.ndarray | None=None) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     import torch
     rgb = np.asarray(image.convert('RGB'), dtype=np.uint8).copy()
+    nominal, scale_x, scale_y, left, top = _unidepth_resize_geometry(model, rgb.shape[:2])
     image_t = torch.from_numpy(rgb).permute(2, 0, 1).to(device)
     camera_t = None
     if camera_K is not None:
-        camera_t = torch.as_tensor(camera_K, dtype=torch.float32, device=device)
+        K = _validated_pinhole_K(camera_K)
+        # infer adds padding then multiplies by nominal. Precompensate so the
+        # depth head gets the actual rounded image scale and half-center K.
+        K[0, 0] *= scale_x / nominal
+        K[1, 1] *= scale_y / nominal
+        K[0, 2] = (K[0, 2] + left + 0.5) * scale_x / nominal - left
+        K[1, 2] = (K[1, 2] + top + 0.5) * scale_y / nominal - top
+        camera_t = torch.tensor(K, dtype=torch.float32, device=device)
+        if not torch.isfinite(camera_t).all() or torch.any(camera_t.diag()[:2] <= 0):
+            raise ValueError('UniDepth camera K cannot be represented in float32')
     with torch.no_grad():
         prediction = model.infer(image_t, camera=camera_t)
     if not isinstance(prediction, dict):
@@ -254,6 +323,15 @@ def infer_unidepth(model: object, image: Image.Image, device: torch.device, came
             if candidate.size == 9:
                 intrinsics = candidate.reshape(3, 3).astype(np.float64)
                 break
+    if intrinsics is None:
+        raise RuntimeError('unsupported UniDepthV2 output: missing camera-head intrinsics')
+    # This is the independently predicted camera-head K, NOT the supplied K.
+    # Undo upstream's nominal inverse, then invert the true image transform.
+    intrinsics[0, 0] *= nominal / scale_x
+    intrinsics[1, 1] *= nominal / scale_y
+    intrinsics[0, 2] = (intrinsics[0, 2] + left) * nominal / scale_x - left - 0.5
+    intrinsics[1, 2] = (intrinsics[1, 2] + top) * nominal / scale_y - top - 0.5
+    intrinsics = _validated_pinhole_K(intrinsics)
     rays = None
     if 'rays' in prediction:
         candidate = to_numpy(prediction['rays'], 'rays')
