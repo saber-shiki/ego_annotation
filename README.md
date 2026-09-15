@@ -4,6 +4,12 @@ The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain
 separate from candidate estimates.
 
+Astra supplies the thirteen judgments and text prompts; SAM3D generates the
+complete object surface in the cold pipeline. The separate Astra point-cloud
+completion experiment and its dedicated generation, ICP and rendering entrypoints
+have been retired. Existing experiment outputs remain historical artifacts;
+SAM3D/TRELLIS shape workers and the Astra-only judgment transport are unchanged.
+
 ## Cold raw-video entry
 
 ```bash
