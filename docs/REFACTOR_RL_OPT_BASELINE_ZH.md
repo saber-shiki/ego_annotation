@@ -2,7 +2,9 @@
 
 > **基线日期**：2026-09-15
 > **上游分支**：[`DexGEM-Lab/ego_annotation@refactor/rl-opt`](https://github.com/DexGEM-Lab/ego_annotation/tree/refactor/rl-opt)
-> **不可变源码基线**：`3d63360f17044772abd26e867747b45b7a340502`
+> **不可变源码基线**：远端 `8b17958a0bccfba4b2951ce50fc9c8bc60a24c31`
+> **本地集成节点**：`bf54d0a`（合入远端 HOT3D evaluator）
+> **本地可行性修复**：`76b8bcd`（打包 `hot3d_eval`、补 namespace package、修复 SciPy batch test）
 > **对比起点**：`12aede8eaa2a945150b3de9bd3d0f81461d408b4`
 > **最新基线提交内容**：在 input identity 中记录原始 source video 与 sensor calibration 的解析后 NAS/源路径；上一提交已在 standalone `annotation.json` 中加入每侧 21×3 `joints_world`。
 > **用途**：这是后续修改、优化、消融和回归比较的默认源码基线；分支名会移动，比较时必须引用上述 commit SHA。
@@ -17,7 +19,7 @@
 4. 正式物理候选走另一条 prepared `formal-tail`：正式 object pose、signed geometry、formal MANO、acceptance、shared render。它与 cold visual fit 不能混为一谈。
 5. 当前 HEAD 的 CPU contract 已较完整，但 README/MIGRATION 明确说明：**该 checkpoint 尚无完整 fresh production model run，也不能据此声称三个案例完成**。
 6. `config.yaml` 目前不是 cold CLI 的实际配置入口；`main.py annotate` 直接读取 `--assets-manifest`，并在代码中固定或显式传入大量参数。后续调参必须先区分“声明值”和“实际生效值”。
-7. `docs/ego_annotation_pipeline_optimization_and_losses.md` 主要是旧 V19/TRELLIS 冻结运行审计，不能作为当前 `3d63360` 默认数值管线说明；本文才是当前源码基线索引。
+7. `docs/ego_annotation_pipeline_optimization_and_losses.md` 主要是旧 V19/TRELLIS 冻结运行审计，不能作为当前 `8b17958` 默认数值管线说明；本文才是当前源码基线索引。
 
 ---
 
@@ -25,7 +27,7 @@
 
 发生冲突时，按以下顺序判断当前行为：
 
-1. `3d63360` 的实际源码；
+1. 远端 `8b17958` 源码与本地 `76b8bcd` 修复；
 2. 同一 commit 的测试；
 3. `MIGRATION.md`、`migration-map.json`、`README.md` 中明确标注的 retained/retired 边界；
 4. 旧版本设计文档与历史 frozen-run 记录。
@@ -642,7 +644,21 @@ source_sensor_calibration_path   # 未提供 sensor 时为 null
 
 这些字段保留原始 NAS/源路径，但不是内容身份替代品：真正的恢复校验仍使用 run内 `input/raw.mp4`、sensor副本及SHA256。字段目前只校验为非空字符串（若非 null），不会验证原路径在 replay机器上仍存在。
 
-### 9.4 readiness
+### 9.4 HOT3D 评估入口
+
+远端新增 `hot3d_eval/`，用于 prediction 冻结后的 CPU-only HOT3D 评估，不进入 `main.py annotate` 推理链：
+
+```bash
+python -m hot3d_eval.run_eval \
+  --annotations RUN/final/annotation.json \
+  --model-config MODEL_ENVS.json \
+  --dataset-root HOT3D_DATASET \
+  --output EVALUATION_REPORT.md
+```
+
+它读取 `joints_world`（旧 annotation 可只读回退到同 run 的 `demo_state.npz`），验证 TIME_CODE/FISHEYE624/GT projection gate，并报告 MANO、相机和覆盖率指标。评估不应修改 prediction run；输出必须放在独立 evaluation 目录。当前合并后的 `76b8bcd` 已把该 namespace 纳入 wheel，并修复 SciPy 1.17 的测试批量角度形状兼容性。
+
+### 9.5 readiness
 
 cold export固定：
 
@@ -706,14 +722,14 @@ python main.py resume \
 
 ## 11.1 规模
 
-`12aede8..3d63360`：
+`12aede8..8b17958`：
 
-- 35 commits；
-- 943 files changed；
-- 31,921 insertions；
+- 37 commits；
+- 954 files changed；
+- 33,453 insertions；
 - 417,996 deletions；
-- 78新增、859删除、2重命名、4修改；
-- tracked Python文本行约从 314,470降到 27,623（约减少91.2%）；
+- 78新增、870删除、2重命名、4修改；
+- tracked Python文本行约从 314,470降到 28,853（约减少90.8%）；
 - 旧 `scripts/` 700 files、`experiments/` 95 files、`tests/` 42 files和旧 runtime入口均从 active checkout退休。
 
 ## 11.2 提交阶段
@@ -727,7 +743,7 @@ python main.py resume \
 | 合同收束 | `002d6a7`–`7393d8b` | tokenizer、role binding、utils去重、console/prepare修复 |
 | 同 run恢复 | `12b372e`、`a99b059` | receipts、rewind/quarantine、pre-execution contracts |
 | cold身份/QC | `8252d0a`–`59cb75a` | rigidity、P11 hash、P09 eligibility、dense identity、review budget |
-| 文档与最新输出/身份 | `563b581`、`210b27b`、`3d63360` | 退休 Astra geometry实验入口；JSON加入21 MANO joints；input identity保留原始video/sensor路径 |
+| 文档与最新输出/身份 | `563b581`、`210b27b`、`3d63360`、`8b17958` | 退休 Astra geometry实验入口；JSON加入21 MANO joints；input identity保留原始video/sensor路径；增加HOT3D评估 |
 
 ## 11.3 保留并迁移
 
@@ -739,6 +755,7 @@ python main.py resume \
 - observed-derived signed geometry与local face authority；
 - full-MANO acceptance；
 - JSON/RRD/MP4；
+- HOT3D CPU-only hand/camera evaluator，作为 prediction freeze 后的独立评估工具；
 - box/MANO/object evaluation。
 
 `migration-map.json`记录抽取符号的最终 owner，但它不是“所有旧功能仍保留”的证明。
@@ -797,26 +814,31 @@ python -m unittest \
   observations.test_cold_contracts \
   observations.test_mask_identity_review \
   observations.test_review_encoding -v
+
+python -m unittest hot3d_eval.test_hot3d_eval -v
+
+python -m pip wheel --no-deps --no-build-isolation . -w /tmp/ego_annotation_wheel_check
 ```
 
-在本文建立过程中，对最新 source HEAD `3d63360` 的实际验证记录为：
+在本文建立过程中，对当前集成源码（远端 `8b17958` + 本地修复 `76b8bcd`）的实际验证记录为：
 
 - grouped suite：138 tests，4 skipped；
 - supplementary cold/review suite：17 tests，1 skipped；
-- 合计：155 tests，150 pass，5 skip；
-- skip项依赖 licensed MANO、真实 OWLv2 tokenizer/model、PyTorch3D解释器或可选历史 diagnostic root。
+- HOT3D evaluator suite：27 tests，0 skipped；
+- 合计：182 tests，177 pass，5 skip；
+- `compileall`、CLI help和wheel内容检查通过，`hot3d_eval` 已实际包含在 wheel；
+- 使用实际部署路径修正后的 assets manifest 执行 provider preflight：6/6 provider import 通过；
 
-> 上述测试结果来自 `3d63360` 加本文档变更的工作树。测试通过只证明CPU/合同机制，
+> 上述测试结果来自当前集成源码加本文档变更的工作树。测试通过只证明CPU/合同机制，
 > 不代表真实模型精度。
 
 未执行：
 
-- 针对目标服务器真实 assets manifest 的 `main.py preflight`；
-- 任何本地GPU/model inference；
-- 当前 commit 的完整 cold raw-video production run；
+- 针对当前集成 manifest 的完整 `main.py annotate` cold production run；
 - 当前 commit 的完整 formal/shared real-data run。
 
-本次使用的现有 venv中 `rerun` 为0.37.0，而 `pyproject.toml` 的 visual extra要求 `rerun-sdk==0.37.2`；尽管当前 CPU RRD tests可运行，正式基线环境仍应按声明版本重新验证。
+provider preflight 使用的临时 manifest 基于现有部署配置，修正了 HaWoR consumer root 为实际 `.../HaWoR` 子目录；该预检只做解释器/源码 import，不加载模型、不占用 GPU。真实 cold run仍需使用保存到独立 runtime 目录的 immutable manifest。
+
 
 ---
 
@@ -824,7 +846,7 @@ python -m unittest \
 
 | 优先级 | 缺口 | 影响 | 建议验证/修改 |
 |---|---|---|---|
-| P0 | 当前 checkpoint无完整 fresh production model run | 不能确认端到端可运行、性能和视觉质量 | 冻结 snapshot，在A800用新run root跑代表视频 |
+| P0 | 当前集成源码尚无本次 fresh production model run | 不能确认端到端可运行、性能和视觉质量 | 在A800用新run root跑代表视频；保留所有stage receipt和完整MP4 |
 | P0 | formal/shared tail无当前 real-data完整验收 | signed/MANO acceptance只由合同与局部测试支撑 | 先跑prepared integration，再做完整render视觉核查 |
 | P1 | `config.yaml`未接入CLI | 调参易出现“文件变了但行为没变” | 接入并写入planned contract，或明确改名为example |
 | P1 | 旧 optimization/loss文档与当前实现脱节 | 容易把TRELLIS/P14/P18历史结论当现状 | 以本文为当前入口，旧文档保留historical banner |
@@ -888,7 +910,7 @@ python -m unittest \
 
 ## 15. 推荐的后续改动流程
 
-1. **锁基线**：记录 `3d63360`、输入video SHA、assets manifest SHA、model asset manifest和GPU UUID；
+1. **锁基线**：记录集成源码提交（当前为 `76b8bcd` 及其父 merge `bf54d0a`）、输入video SHA、assets manifest SHA、model asset manifest和GPU UUID；
 2. **分类改动**：明确属于 observation、factor、gate、solver、render、runtime/recovery还是evaluation；
 3. **写因果假设**：指出当前最终视频/几何的具体缺陷、错误变量、拟议机制以及可能结果的解释；
 4. **保持单变量可审计**：参数变更必须进入typed config/planned contract，不做隐藏默认替换；

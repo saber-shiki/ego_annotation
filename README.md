@@ -3,7 +3,7 @@
 > **Current source baseline:** [`docs/REFACTOR_RL_OPT_BASELINE_ZH.md`](docs/REFACTOR_RL_OPT_BASELINE_ZH.md)
 > records the code-verified pipeline, effective settings, migration delta,
 > acceptance boundaries, validation evidence, and future-change checklist for
-> `refactor/rl-opt` at commit `3d63360`.
+> `refactor/rl-opt` integrated baseline: remote `8b17958` plus local feasibility fixes `76b8bcd`.
 
 The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain
