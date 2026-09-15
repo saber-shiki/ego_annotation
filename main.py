@@ -373,6 +373,8 @@ def annotate(args):
             sensor=root/'input/sensor_calibration.json';shutil.copyfile(args.sensor_calibration,sensor)
         contract={'schema':'rgb_scene_input_v1','run_id':str(uuid.uuid4()),'case':args.case,
             'run_root':str(root),'input_video':str(raw),'input_video_sha256':sha(raw),
+            'source_video_path':str(Path(args.video).resolve()),
+            'source_sensor_calibration_path':str(Path(args.sensor_calibration).resolve()) if args.sensor_calibration is not None else None,
             'bundle_manifest_sha256':sha(code_manifest),'sensor_calibration_metadata':str(sensor) if sensor else None,
             'sensor_calibration_sha256':sha(sensor) if sensor else None,'source_timing':timing.report(),
             'target_description':args.target_description,'assets_manifest_sha256':sha(args.assets_manifest),

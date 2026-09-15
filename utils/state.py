@@ -104,6 +104,8 @@ class InputIdentity:
     candidate_id: str | None = None
     candidate_contract_sha256: str | None = None
     native_reuse_provenance_json: str | None = None
+    source_video_path: str | None = None
+    source_sensor_calibration_path: str | None = None
 
     def __post_init__(self):
         try:
@@ -129,6 +131,9 @@ class InputIdentity:
                 raise ValueError('invalid candidate identity')
             if self.candidate_contract_sha256 is not None:
                 digest(self.candidate_contract_sha256)
+            for original in (self.source_video_path, self.source_sensor_calibration_path):
+                if original is not None and (not isinstance(original, str) or not original.strip()):
+                    raise ValueError('invalid source input path')
             timing = json.loads(self.source_timing_json)
             if type(timing['frame_count']) is not int or timing['frame_count'] <= 0 or Fraction(timing['fps_ratio']) <= 0 or (Fraction(timing['time_base_s']) <= 0) or any((type(timing[k]) not in (int, float) for k in ('first_pts_s', 'duration_s', 'max_cfr_grid_error_s'))) or (not math.isfinite(timing['first_pts_s'])) or (not math.isfinite(timing['duration_s'])) or (timing['duration_s'] <= 0) or (not math.isfinite(timing['max_cfr_grid_error_s'])) or (timing['max_cfr_grid_error_s'] < 0) or (not timing['fps_source_field']) or (not timing['validation']):
                 raise ValueError('invalid source timing')
@@ -172,7 +177,7 @@ def input_identity(contract_path, run_root, bundle_manifest, recovery=None):
     sensor = contract.get('sensor_calibration_metadata')
     if 'sensor_calibration_sha256' not in contract or (sha(in_run(sensor, run_root)) if sensor else None) != contract['sensor_calibration_sha256']:
         raise ValueError('sensor calibration identity changed')
-    identity = InputIdentity(contract['run_id'], contract['case'], contract['input_video_sha256'], contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'], sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False), contract.get('target_description'), recovery_json)
+    identity = InputIdentity(contract['run_id'], contract['case'], contract['input_video_sha256'], contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'], sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False), contract.get('target_description'), recovery_json, source_video_path=contract.get('source_video_path'), source_sensor_calibration_path=contract.get('source_sensor_calibration_path'))
     stages_path = Path(run_root) / 'state/recovery/stages.json'
     if stages_path.exists():
         journal = load(stages_path)
