@@ -1,7 +1,7 @@
 runtime:
   skrl_version: "2.1.0"
   dataset_class: "data.dataset:ObservationDataset"
-  environment_class: "envs.annotation:AnnotationEnv"
+  environment_class: "envs.annotation_env:AnnotationEnv"
 
 environment:
   # These slots define environment packing and action-space size dynamically.
