@@ -608,6 +608,9 @@ def annotate(args):
         completion_payload=load(completion_path)
         completion_outputs=completion_payload.get('outputs') if isinstance(completion_payload.get('outputs'),dict) else {}
         mesh_path=Path(completion_outputs.get('pose_hypothesis_mesh_labeled') or completion_outputs.get('completed_mesh_labeled'))
+        collision_mesh_path=Path(completion_outputs.get('collision_eligible_mesh_labeled') or mesh_path)
+        if not collision_mesh_path.is_file():
+            raise ValueError('completion report lacks a readable collision mesh for the source-observation contract')
         artifacts={
             'runtime_input_contract':(root/'input/runtime_input_contract.json','runtime_input_contract'),
             'code_manifest':(code_manifest,'code_manifest'),
@@ -627,6 +630,7 @@ def annotate(args):
             'surface_report':(visible/'v19_visible_geometry_adapter_report.json','visible_surface_report'),
             'completion_report':(completion_path,'reconstructed_shape_contract'),
             'reconstructed_mesh':(mesh_path,'reconstructed_object_mesh'),
+            'collision_mesh':(collision_mesh_path,'collision_object_mesh'),
             'appearance_masks':(appearance,'appearance_mask_observations'),
             'appearance_anchor_decision':(choice_path,'appearance_anchor_decision'),
             'interaction_judgments':(judgments,'contact_visibility_occlusion_evidence'),

@@ -68,6 +68,7 @@ def build_source_observation_manifest(
         "visible_annotations",
         "completion_report",
         "reconstructed_mesh",
+        "collision_mesh",
         "appearance_anchor_decision",
         "interaction_judgments",
         "interaction_factors",
@@ -87,6 +88,12 @@ def build_source_observation_manifest(
         "annotations": records["visible_annotations"],
         "mano_archive": records["hawor_world"],
         "object_mesh": records["reconstructed_mesh"],
+        "object_assets": {
+            str(object_id): {
+                "pose_mesh": records["reconstructed_mesh"],
+                "collision_mesh": records["collision_mesh"],
+            }
+        },
         "mano_bridge": records["mano_bridge"],
         "contact_factors": records["interaction_factors"],
         "completion_report": records["completion_report"],

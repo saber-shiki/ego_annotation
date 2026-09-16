@@ -31,6 +31,7 @@ class SourceObservationManifestTests(unittest.TestCase):
             "visible_annotations": "visible_metric_annotations",
             "completion_report": "reconstructed_shape_contract",
             "reconstructed_mesh": "reconstructed_object_mesh",
+            "collision_mesh": "collision_object_mesh",
             "raw_object_masks": "raw_object_masks",
             "owned_object_masks": "depth_order_owned_object_masks",
             "metric_eligibility": "metric_surface_eligibility",
@@ -69,6 +70,8 @@ class SourceObservationManifestTests(unittest.TestCase):
             self.assertFalse(manifest["contains_optimized_state"])
             self.assertFalse(manifest["contains_policy_results"])
             self.assertEqual(load_source_observation_manifest(output), manifest)
+            self.assertEqual(manifest["sources"]["object_assets"]["object"]["collision_mesh"],
+                             manifest["artifacts"]["collision_mesh"])
             from data.bundle import EpisodeBundle
             self.assertEqual(EpisodeBundle.open(output).bundle_id, "fixture-run")
             self.assertTrue(all(not Path(record["path"]).is_absolute() for record in manifest["artifacts"].values()))
