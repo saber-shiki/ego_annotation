@@ -87,13 +87,13 @@ class RewardEvaluator:
 
     def objective(self, state: AnnotationState, end_position: int) -> FactorLedger:
         import torch
-        from factors.hand.priors import formal_translation, formal_root_orientation, formal_articulation
-        from factors.hand.observation import joint_pixel_deadband, joint_depth_deadband
-        from factors.motion.temporal import parameter_velocity, parameter_acceleration
-        from factors.object.pose import object_translation_prior, source_pose_rotation
-        from factors.common import magnitude_hinge
-        from factors.interaction.contact import contact_state_prior, normal_deadband
-        from factors.interaction.physics import signed_active_penetration, signed_dense_penetration
+        from rewards.terms.hand.priors import formal_translation, formal_root_orientation, formal_articulation
+        from rewards.terms.hand.observation import joint_pixel_deadband, joint_depth_deadband
+        from rewards.terms.motion.temporal import parameter_velocity, parameter_acceleration
+        from rewards.terms.object.pose import object_translation_prior, source_pose_rotation
+        from rewards.terms.common import magnitude_hinge
+        from rewards.terms.interaction.contact import contact_state_prior, normal_deadband
+        from rewards.terms.interaction.physics import signed_active_penetration, signed_dense_penetration
 
         end = int(end_position)
         if end < 0 or end > state.episode.frame_count:
@@ -196,7 +196,7 @@ class RewardEvaluator:
                     selected_surface = surface_depth[order]
                     candidate_depth = _project(state.hand_vertices[side][i, selected_ids], episode.T_world_camera[i], episode.intrinsics[i])[1]
                     residual = np.maximum(0.0, selected_surface - margin - candidate_depth)
-                    from factors.interaction.physics import visible_surface_depth_order
+                    from rewards.terms.interaction.physics import visible_surface_depth_order
                     term = visible_surface_depth_order(_tensor(candidate_depth, self.device),
                         _tensor(selected_surface, self.device), margin,
                         float(_cfg(self.cfg, "visible_surface_depth_order_weight", 20000.0)))
@@ -350,10 +350,10 @@ class RewardEvaluator:
     def _object_observation_terms(self, state: AnnotationState, end: int, slot_name: str,
                                   add: Any, activation: dict[str, Any]) -> None:
         from utils.data import PoseNode, SolverConfig
-        from optimization.common.correspondences import build_observed_point_factors
-        from factors.object.geometry import observed_point_to_plane, observed_point_to_point
+        from utils.candidate_geometry import build_observed_point_factors
+        from rewards.terms.object.geometry import observed_point_to_plane, observed_point_to_point
         from utils.geometry import inverse_pose
-        from factors.common import robust_cost
+        from rewards.terms.common import robust_cost
         obj = state.episode.objects[slot_name]
         nodes = []
         poses = {}

@@ -78,7 +78,7 @@ class RealPreparedBottleSmokeTest(unittest.TestCase):
             self.assertIn("object/object:0/observed_point_to_point", info["factor_ledger"]["terms"])
             exported = env.export_annotation(Path(directory) / "policy_rollout.json")
             with np.load(exported["npz"], allow_pickle=False) as archive:
-                from gates.output.acceptance import timeline
+                from envs.qualification.output import timeline
                 timeline(dict(archive))
                 self.assertEqual(archive["left_vertices_world"].shape, (3, 778, 3))
                 self.assertEqual(archive["left_faces"].shape, (1538, 3))

@@ -32,7 +32,8 @@ def _load_mano_models(bundle: EpisodeBundle, cfg: Mapping[str, Any] | Any, devic
     if not isinstance(assets, Mapping):
         raise RuntimeError("present hand slots require real MANO models or a manifest mano_assets binding")
     asset_root = Path(assets["path"])
-    wilor_root = Path(_cfg(cfg, "wilor_root", asset_root.parent))
+    default_wilor_root = assets.get("wilor_root") or asset_root.parent
+    wilor_root = Path(_cfg(cfg, "wilor_root", default_wilor_root))
     # Baseline import; migration rewrite is listed in the integration report.
     import inspect
     for name, value in (("bool", np.bool_), ("int", int), ("float", float), ("complex", complex),
@@ -41,7 +42,7 @@ def _load_mano_models(bundle: EpisodeBundle, cfg: Mapping[str, Any] | Any, devic
             setattr(np, name, value)
     if not hasattr(inspect, "getargspec"):
         inspect.getargspec = inspect.getfullargspec
-    from optimization.hand.mano import load_wilor_mano_class
+    from utils.mano import load_wilor_mano_class
     mano_cls = load_wilor_mano_class(wilor_root)
     models = {}
     for side in ("left", "right"):
@@ -130,7 +131,7 @@ def _model_forward(model: Any, root: np.ndarray, pose: np.ndarray, betas: np.nda
     joints = output.joints
     # Standard MANO exposes 16 joints. Match the established 21-joint order using real tips.
     if joints.shape[1] < 21 and vertices.shape[1] == 778:
-        from optimization.hand.mano import JOINT_ORDER, TIP_VERTICES
+        from utils.mano import JOINT_ORDER, TIP_VERTICES
         joints = torch.cat([joints[:, :16], vertices[:, TIP_VERTICES]], dim=1)[:, JOINT_ORDER]
     elif joints.shape[1] > 21:
         joints = joints[:, :21]
@@ -298,7 +299,7 @@ def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str, Any] | Any
         result["signed"][slot_name] = signed_entry
         if signed_eligible:
             from types import SimpleNamespace
-            from optimization.common.correspondences import (make_scene, active_constraints_from_vertices,
+            from utils.candidate_geometry import (make_scene, active_constraints_from_vertices,
                 dense_observed_surface_constraints_from_vertices)
             scene = make_scene(obj["vertices_canonical"], obj["faces"])
             for side in episode.layout.hand_slots:
@@ -341,7 +342,7 @@ def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str, Any] | Any
     if not active_sides:
         return result
     try:
-        from optimization.common.correspondences import make_scene, contact_patch_targets_from_vertices
+        from utils.candidate_geometry import make_scene, contact_patch_targets_from_vertices
         scene = make_scene(obj["vertices_canonical"], obj["faces"])
         triangles = np.asarray(obj["vertices_canonical"])[np.asarray(obj["faces"], dtype=np.int64)]
         normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])

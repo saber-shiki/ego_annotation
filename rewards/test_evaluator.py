@@ -7,8 +7,8 @@ import numpy as np
 class SharedFactorReductionTest(unittest.TestCase):
     def test_interval_and_positive_count_normalizers_match_legacy_helpers(self):
         import torch
-        from factors.hand.priors import formal_translation, formal_root_orientation, formal_articulation
-        from factors.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
+        from rewards.terms.hand.priors import formal_translation, formal_root_orientation, formal_articulation
+        from rewards.terms.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
         translation = torch.tensor([[1., 2., 3.], [4., 5., 6.]])
         visibility = torch.tensor([1., .25])
         expected_translation = 2.0 * (translation.square() * visibility[:, None]).sum() / (3 * visibility.sum())
