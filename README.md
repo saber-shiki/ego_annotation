@@ -138,7 +138,12 @@ python rollout.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.j
 
 The training checkpoint records stable dataset/environment/model compatibility
 separately from the training-index identity, so a new compatible index can be
-rolled out without pretending it is the training set. The data index is
+rolled out without pretending it is the training set. `reward_profile` selects a
+reviewed mathematical composition (`formal_annotation` by default; also
+`formal_interval`, `formal_object`, or `visual_joint`). `reward_scale` is a single
+post-objective PPO return scale; it does not alter any selected factor ratio,
+normalizer, unit, activation condition, or SciPy robust-loss convention. The data
+index is
 source-video-disjoint. Its episode manifests are read-only
 `ego.annotation.observation_bundle.v1` bundles from main or the prepared-source
 adapter; they do not name legacy optimizer results. Each episode JSON plus

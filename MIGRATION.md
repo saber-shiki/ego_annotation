@@ -81,6 +81,9 @@ schema, path containment, roles, and hashes.
 
 - Reward terms are mathematical costs. Legacy optimization reuses those costs but
   never imports RL episode accounting or reward normalization.
+- `rewards/profiles.py` selects one reviewed formal or visual composition;
+  `reward_scale` is a single post-objective PPO-return scale and never changes
+  selected factor ratios, normalizers, units, activation, or robust loss.
 - Soft magnitude hinges remain soft; no new hard clipping replaces them.
 - Candidate-dependent correspondence and active-set refresh remains live.
 - Generated faces do not gain signed/contact/collision authority through relocation.
