@@ -313,6 +313,19 @@ class TrainRolloutContractTest(unittest.TestCase):
                     provenance_path=provenance,
                     output_path=root / "bad.manifest.json",
                 )
+            stochastic = fixture_config()
+            stochastic["rollout"]["stochastic_evaluation"] = True
+            stochastic_path = root / "stochastic.yaml"
+            stochastic_path.write_text(yaml.safe_dump(stochastic, sort_keys=True))
+            with self.assertRaisesRegex(ValueError, "stochastic_evaluation=false"):
+                rollout(
+                    config_path=stochastic_path,
+                    dataset_path=training_index,
+                    split="test",
+                    checkpoint_path=checkpoint,
+                    provenance_path=provenance,
+                    output_path=root / "stochastic.manifest.json",
+                )
             warmup = fixture_config()
             warmup["ppo"]["random_timesteps"] = 1
             warmup_path = root / "warmup.yaml"

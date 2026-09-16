@@ -150,6 +150,10 @@ def _run_episode(env, agent, *, episode_index: int, output: Path, global_timeste
         next_observations, rewards, terminated, truncated, info = env.step(actions)
         _require_finite(rewards, "reward")
         _require_finite(next_observations, "next observation")
+        for name in ("raw_action", "executed_action"):
+            if name in info:
+                value = torch.as_tensor(info[name])
+                _require_finite(value, name)
         frame_count += 1
         global_timestep += 1
         if bool(truncated.any()):
@@ -189,6 +193,9 @@ def rollout(
     output = Path(output_path)
     if output.exists():
         raise FileExistsError(f"rollout manifest is create-only: {output}")
+    rollout_cfg = cfg.get("rollout", {})
+    if isinstance(rollout_cfg, Mapping) and bool(rollout_cfg.get("stochastic_evaluation", False)):
+        raise ValueError("annotation rollout requires stochastic_evaluation=false and uses Gaussian mean_actions")
     episodes_root = output.parent / f"{output.stem}.episodes"
     if episodes_root.exists():
         raise FileExistsError(f"rollout episode directory is create-only: {episodes_root}")
