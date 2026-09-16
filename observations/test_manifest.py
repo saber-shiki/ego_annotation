@@ -68,6 +68,8 @@ class SourceObservationManifestTests(unittest.TestCase):
             self.assertFalse(manifest["contains_optimized_state"])
             self.assertFalse(manifest["contains_policy_results"])
             self.assertEqual(load_source_observation_manifest(output), manifest)
+            from data.bundle import EpisodeBundle
+            self.assertEqual(EpisodeBundle.open(output).bundle_id, "fixture-run")
             self.assertTrue(all(not Path(record["path"]).is_absolute() for record in manifest["artifacts"].values()))
             artifacts["hawor_world"][0].write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "missing or changed"):
