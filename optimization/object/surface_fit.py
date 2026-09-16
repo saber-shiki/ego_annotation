@@ -427,6 +427,9 @@ def fit_surface(problem):
             annotation_ready=False, physical_authority=False,
             **{f'generated_faces_{role}_eligible': False for role in ('contact', 'collision', 'sign', 'sdf', 'nonpenetration')}),
         render_mesh_contract=dict(required_mesh_path=str(mesh_path), required_mesh_sha256=sha(mesh_path), renderer_must_match=True))
+    for key in ('case', 'track_id', 'canonical_gauge'):
+        if key in p.source['binding']:
+            binding[key] = copy.deepcopy(p.source['binding'][key])
     from gates.object.surface_candidate import validate_surface_candidate
     validate_surface_candidate(binding, object_id=problem.object_id, run_root=root)
     with (output / 'pose_mesh.json').open('x') as handle:

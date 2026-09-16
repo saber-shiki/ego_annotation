@@ -11,12 +11,18 @@ from observations.common import pose_from_values
 from gates.output.acceptance import mesh, timeline
 from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
 
-def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, raw_source=None, mode='complete', calibration=None, visibility=None, provenance=None, identity=None, visual_review=None):
+def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, raw_source=None, mode='complete', calibration=None, visibility=None, provenance=None, identity=None, visual_review=None, run_root=None):
     """All backing arrays are embedded in RRD or numeric JSON, never NPZ/PLY refs."""
     for value in (case, object_id, track_id):
         if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]*', value):
             raise ValueError('unsafe scene identity')
-    if binding.get('object_id') != object_id or binding.get('schema') != 'rgb_scene_visual_refined_binding_v1':
+    candidate = binding.get('schema') == 'object_surface_candidate_binding_v1'
+    if candidate:
+        from gates.object.surface_candidate import validate_surface_state
+        if run_root is None:
+            raise ValueError('candidate export requires current run root')
+        validate_surface_state(z, binding, run_root=run_root)
+    if binding.get('object_id') != object_id or binding.get('schema') not in {'rgb_scene_visual_refined_binding_v1', 'object_surface_candidate_binding_v1'}:
         raise ValueError('typed selected-object binding required')
     if output.exists():
         raise ValueError('final directory already exists')
@@ -32,6 +38,7 @@ def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, ra
             raise ValueError('fitted display validity/policy differs from judgment')
     poses = indexed(binding['pose_rows'])
     source = indexed(binding['source_pose_rows'])
+    refined = indexed(binding['source_refined_pose_rows']) if candidate else poses
     if set(poses) != set(ids.tolist()):
         raise ValueError('binding/full timeline mismatch')
     for (i, idx) in enumerate(ids):
@@ -115,12 +122,19 @@ def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, ra
                 joints_key = side + '_joints_world'
                 joints_world = np.asarray(z[joints_key][i]).tolist() if joints_key in z and bool(z[side + '_valid'][i]) else None
                 handstates[side] = {'id': side, 'surface_valid': hv, 'source_surface_valid': bool(z[side + '_valid'][i]), 'surface': ref(path, ['Mesh3D:vertex_positions', 'Mesh3D:triangle_indices']) if hv else None, 'visibility': visibility[idx][side], 'joints_world': joints_world, 'parameters': params, 'semantics': 'MANO LBS with fixed beta; world wrist-root rotation, then camera-origin exp(log_scale) similarity and camera translation', 'uncertainty': 'visual similarity changes metric depth/extent; occluded states are uncertain', 'interaction': str(z['interaction_states'][i, si]) if 'interaction_states' in z else 'unresolved'}
-            frames.append({'frame_idx': idx, 'time_s': stamp, 'decode_position': decode_position, 'camera': {'T_world_camera': T[i].tolist(), 'intrinsics_fx_fy_cx_cy': K[i].tolist(), 'image_size_wh': size.tolist(), 'entity': ref('/world/camera', ['Transform3D']), 'uncertainty': 'prediction-side calibrated or estimated camera; see calibration provenance'}, 'object': {'id': object_id, 'track_id': track_id, 'source_prior': source.get(idx), 'refined_graph_pose': {RKEY: poses[idx][RKEY], TKEY: poses[idx][TKEY]}, 'visual_fitted_pose': {RKEY: np.asarray(z['object_rotation'][i]).tolist(), TKEY: np.asarray(z['object_translation_world'][i]).tolist()} if z['object_pose_valid'][i] else None, 'geometry': ref(objpath, ['Mesh3D:vertex_positions', 'Mesh3D:triangle_indices', 'Transform3D']) if valid[i] else None, 'fitted_pose_valid': bool(z['object_pose_valid'][i]), 'display_valid': bool(valid[i]), 'metric_observation': poses[idx].get('metric_observation', False), 'uncertainty': poses[idx].get('uncertainty', 1.0), 'visibility': visibility[idx]['object']}, 'hands': handstates})
+            frames.append({'frame_idx': idx, 'time_s': stamp, 'decode_position': decode_position, 'camera': {'T_world_camera': T[i].tolist(), 'intrinsics_fx_fy_cx_cy': K[i].tolist(), 'image_size_wh': size.tolist(), 'entity': ref('/world/camera', ['Transform3D']), 'uncertainty': 'prediction-side calibrated or estimated camera; see calibration provenance'}, 'object': {'id': object_id, 'track_id': track_id, 'source_prior': source.get(idx), 'refined_graph_pose': {RKEY: refined[idx][RKEY], TKEY: refined[idx][TKEY]}, **({'surface_candidate_pose': {RKEY: poses[idx][RKEY], TKEY: poses[idx][TKEY]}} if candidate else {}), 'visual_fitted_pose': {RKEY: np.asarray(z['object_rotation'][i]).tolist(), TKEY: np.asarray(z['object_translation_world'][i]).tolist()} if z['object_pose_valid'][i] else None, 'geometry': ref(objpath, ['Mesh3D:vertex_positions', 'Mesh3D:triangle_indices', 'Transform3D']) if valid[i] else None, 'fitted_pose_valid': bool(z['object_pose_valid'][i]), 'display_valid': bool(valid[i]), 'metric_observation': poses[idx].get('metric_observation', False), 'uncertainty': poses[idx].get('uncertainty', 1.0), 'visibility': visibility[idx]['object']}, 'hands': handstates})
         recording.flush()
     finally:
         recording.disconnect()
     document = {'schema': 'rgb_scene_annotation_v1' if mode == 'complete' else 'rgb_scene_geometry_debug_v1', 'partial': mode != 'complete', 'annotation_ready': False, 'physical_contact_authority': False, 'physical_acceptance': {'accepted': False, 'scope': 'standalone_visual_candidate'}, 'visual_acceptance': visual_review or {'status': 'pending_visual_review', 'accepted': False}, 'raw_frame_provenance': raw_provenance, 'scene_id': case, 'object_id': object_id, 'track_id': track_id, 'input_identity': identity.document(), 'display_visibility_policy': POLICY, 'units': 'meters', 'transform_convention': 'column vectors; world_from_camera and world_from_object; left SO3 plus additive world translation', 'canonical_gauge': binding['canonical_gauge'], 'shape_provenance': binding.get('visual_mesh_receipt', {}), 'calibration': calibration or {'source': 'estimated', 'uncertainty': 'unresolved'}, 'geometry_authority': 'native_reconstructed_complete_triangles; unsigned visual proximity only', 'hand_model_provenance': provenance, 'source_prior_sha256': binding['source_prior']['sha256'], 'refined_posterior_sha256': binding['refined_posterior']['sha256'], 'recording': {'file': 'world.rrd', 'sha256': sha(staging / 'world.rrd'), 'recording_id': recording_id, 'application_id': 'rgb_scene_annotation'}, 'frames': frames}
 
+    if candidate:
+        document['surface_candidate'] = {'profile':binding['profile'],
+            'generated_mesh_used_as_residual_model':True, 'physical_contact_authority':False,
+            'collision_authority':False, 'signed_distance_authority':False,
+            'source_binding_sha256':binding['source_binding']['sha256'],
+            'surface_fit_report_sha256':binding['surface_fit_report']['sha256'],
+            'envelope_report_sha256':binding['envelope_report']['sha256']}
     def portable(value):
         if isinstance(value, dict):
             return {k: portable(v) for (k, v) in value.items() if not (isinstance(v, str) and v.startswith('/'))}
@@ -153,7 +167,15 @@ def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_man
     reference = binding['refined_posterior']
     if sha(in_run(reference['path'], root)) != reference['sha256']:
         raise ValueError('refined state changed before export')
-    validate_posterior(load(reference['path']), binding['object_id'], root)
+    posterior = validate_posterior(load(reference['path']), binding['object_id'], root)
+    candidate = binding.get('schema') == 'object_surface_candidate_binding_v1'
+    if candidate:
+        from gates.object.surface_candidate import validate_surface_candidate
+        validate_surface_candidate(binding, object_id=binding['object_id'], run_root=root)
+        if fit.get('object_profile') != binding['profile'] or fit.get('object_frozen') is not True:
+            raise ValueError('candidate export requires matching frozen visual fit')
+    elif binding.get('schema') != 'rgb_scene_visual_refined_binding_v1' or binding['pose_rows'] != posterior['pose_rows']:
+        raise ValueError('export binding discarded refined trajectory')
     if fit['input_hashes']['pose_report'] != sha(binding_path):
         raise ValueError('fitter consumed another pose binding')
     mesh_contract = binding['render_mesh_contract']
@@ -170,7 +192,7 @@ def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_man
         raise ValueError('interaction judgment changed since fit')
     identity = input_identity(root / 'input/runtime_input_contract.json', root, bundle_manifest)
     raw = indexed(load(root / 'input/raw_frame_manifest/manifest.json')['frames'])
-    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'recovery': recovery_provenance(root), 'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
+    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), run_root=root, raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'recovery': recovery_provenance(root), 'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
 
 def main(argv=None):
     import argparse
@@ -218,7 +240,7 @@ def mesh_overlay(state, position, image):
         result[selected] = 0.35 * result[selected] + 0.65 * color * shading[selected, None]
     return np.clip(result, 0, 255).astype('uint8')
 
-def render_video(state_path, raw_manifest_path, output):
+def render_video(state_path, raw_manifest_path, output, *, binding_path=None, run_root=None):
     """Full-timeline MP4 driven by complete triangles, not 2-D proxy boxes."""
     import cv2
     output = Path(output)
@@ -226,6 +248,13 @@ def render_video(state_path, raw_manifest_path, output):
         raise ValueError('video output must be new')
     with np.load(state_path, allow_pickle=False) as archive:
         state = dict(archive)
+    if binding_path is not None:
+        binding = load(binding_path)
+        if binding.get('schema') == 'object_surface_candidate_binding_v1':
+            from gates.object.surface_candidate import validate_surface_state
+            if run_root is None:
+                raise ValueError('candidate video requires current run root')
+            validate_surface_state(state, binding, run_root=run_root)
     (ids, times, order, *_) = timeline(state)
     raw = indexed(load(raw_manifest_path)['frames'])
     if set(raw) != set(map(int, ids)):

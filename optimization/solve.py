@@ -29,7 +29,9 @@ def solve(problem):
     if isinstance(problem, StandaloneShape):
         from optimization.object.shape import bind
         return bind(problem.posterior,problem.annotations,problem.appearance,problem.decision,
-                    problem.native_qc,problem.output,problem.object_id,problem.run_root)
+                    problem.native_qc,problem.output,problem.object_id,problem.run_root,
+                    object_profile=problem.object_profile, geometry_profile=problem.geometry_profile,
+                    pointmap_receipt=problem.pointmap_receipt)
     if isinstance(problem, FormalObjectTrajectory):
         from optimization.object.pose import fit_formal_object
         return fit_formal_object(problem.arguments())

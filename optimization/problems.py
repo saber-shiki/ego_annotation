@@ -47,6 +47,7 @@ class PreparedVisualFit:
     render_width: int | None = None
     object_profile: str = 'legacy'
     freeze_object: bool = False
+    run_root: object | None = None
 
     def __post_init__(self):
         aliases = {'prepared_surface_no_box':'surface_no_box', 'prepared_surface_weak_box':'surface_weak_box'}

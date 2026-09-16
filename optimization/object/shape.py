@@ -28,7 +28,14 @@ from gates.object.observation import retained_metric_alignment
 from observations.object.shape import AUTHORITY, record, mesh_arrays, write_mesh, scene_similarity
 from optimization.common.variables import canonical_gauge
 
-def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_path, output, object_id, root):
+def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_path, output, object_id, root,
+         *, object_profile='none', geometry_profile='legacy_internal_moge', pointmap_receipt=None):
+    if object_profile not in {'none', 'surface_no_box', 'surface_weak_box'}:
+        raise ValueError('unreviewed shape object profile')
+    if geometry_profile == 'shared_metric_pointmap' and pointmap_receipt is None:
+        raise ValueError('shared pointmap shape requires the selected producer receipt')
+    if object_profile != 'none' and (geometry_profile != 'shared_metric_pointmap' or pointmap_receipt is None):
+        raise ValueError('surface shape initializer requires shared metric pointmap')
     if output.exists():
         raise ValueError('create-only shape binding required')
     posterior = validate_posterior(load(posterior_path), object_id, root)
@@ -72,6 +79,9 @@ def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_pa
     qc = load(qc_path)
     if qc.get('status') != 'ok' or Path(qc['image']).resolve() != rgb or Path(qc['mask']).resolve() != mask_path:
         raise ValueError('native reconstruction conditioning mismatch')
+    from observations.object.shape import validate_pointmap_conditioning
+    conditioning = validate_pointmap_conditioning(qc, rgb, mask_path, expected_frame_idx=idx,
+        expected_geometry_profile=geometry_profile, expected_pointmap_receipt=pointmap_receipt)
     (raw, faces) = mesh_arrays(in_run(qc['mesh'], root))
     from utils.geometry import apply_native_pose
     p = qc['pose']
@@ -92,13 +102,20 @@ def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_pa
         obs['K'] = resized_K(obs['K'], [w, h], size)
         obs['mask'] = cv2.resize(obs['mask'].astype('uint8'), tuple(size), interpolation=cv2.INTER_NEAREST_EXACT) > 0
         observations.append(obs)
-    image_scale = estimate_scale(canonical, faces, observations, samples=21)
+    if object_profile == 'none':
+        image_scale = estimate_scale(canonical, faces, observations, samples=21)
+    else:
+        image_scale = {'uniform_scale': 1., 'pivot_canonical_m': canonical.mean(axis=0).tolist(),
+            'selection_source': 'native_metric_canonical_initializer_no_image_scale_search',
+            'static_across_timeline': True, 'object_profile': object_profile}
     pivot = np.asarray(image_scale['pivot_canonical_m'])
     scaled = (canonical - pivot) * image_scale['uniform_scale'] + pivot
     output.mkdir(parents=True)
     mesh = output / 'object_canonical.ply'
     topology = write_mesh(mesh, scaled, faces)
     receipt = {**AUTHORITY, 'output_mesh_path': str(mesh), 'output_mesh_sha256': sha(mesh), 'topology': topology, 'native_qc': record(qc_path), 'native_gauge': gauge, 'scene_similarity': depth_report, 'static_image_scale': image_scale}
+    receipt.update(object_profile=object_profile, geometry_profile=geometry_profile,
+                   pointmap_conditioning=conditioning)
     binding = {**copy.deepcopy(posterior), 'schema': 'rgb_scene_visual_refined_binding_v1', 'refined_posterior': record(posterior_path), 'appearance_mask_manifest': record(appearance_path), 'appearance_decision': record(decision_path), 'visual_mesh_receipt': receipt, 'render_mesh_contract': {'required_mesh_path': str(mesh), 'required_mesh_sha256': sha(mesh), 'renderer_must_match': True}}
     if binding['pose_rows'] != posterior['pose_rows']:
         raise ValueError('posterior reset during shape binding')

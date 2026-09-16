@@ -22,6 +22,9 @@ def validate_surface_candidate(binding, *, object_id, run_root):
         'appearance_mask_manifest', 'source_prior', 'envelope_report', 'surface_fit_report')}
     check_references(refs, root)
     source = load(refs['source_binding']['path'])
+    for key in ('case', 'track_id', 'canonical_gauge'):
+        if (key in source) != (key in binding) or binding.get(key) != source.get(key):
+            raise ValueError('candidate source identity/gauge changed')
     posterior = validate_posterior(load(refs['refined_posterior']['path']), object_id, root)
     if (source.get('schema') != 'rgb_scene_visual_refined_binding_v1' or source.get('object_id') != object_id or
             source.get('pose_rows') != posterior['pose_rows'] or
@@ -78,3 +81,28 @@ def validate_surface_candidate(binding, *, object_id, run_root):
     if report.get('scale') != scale or report.get('pivot_canonical_m') != pivot.tolist():
         raise ValueError('candidate scale/report mismatch')
     return binding
+
+
+def validate_surface_state(state, binding, *, run_root):
+    """The frozen visual tail must replay the selected mesh/poses, scale baked once."""
+    validate_surface_candidate(binding, object_id=binding['object_id'], run_root=run_root)
+    ids = np.asarray(state['frame_idx'])
+    poses = indexed(binding['pose_rows'])
+    if len(ids) != len(poses) or len(set(ids.tolist())) != len(ids) or set(ids.tolist()) != set(poses):
+        raise ValueError('candidate state timeline mismatch')
+    rotations = np.asarray([poses[int(idx)][RKEY] for idx in ids])
+    translations = np.asarray([poses[int(idx)][TKEY] for idx in ids])
+    if not np.array_equal(state['time_s'], [poses[int(idx)]['time_s'] for idx in ids]):
+        raise ValueError('candidate state timestamps changed')
+    for key, expected in (('object_rotation', rotations), ('base_object_rotation', rotations),
+                          ('object_translation_world', translations), ('base_object_translation_world', translations)):
+        if not np.array_equal(state[key], expected):
+            raise ValueError('frozen candidate pose changed: ' + key)
+    delta = np.asarray(state.get('object_delta'))
+    if delta.shape != (len(ids), 6) or not np.array_equal(delta, np.zeros_like(delta)):
+        raise ValueError('frozen candidate object delta must be zero')
+    vertices, faces = mesh_arrays(binding['render_mesh_contract']['required_mesh_path'])
+    if (not np.array_equal(state['object_faces'], faces) or
+            not np.array_equal(state['object_vertices_canonical'], vertices)):
+        raise ValueError('candidate state full mesh changed or scale baked twice')
+    return state

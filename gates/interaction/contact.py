@@ -195,12 +195,19 @@ def visual_proximity_weights(inside, image_distances, triangle_gaps, *, state='l
             result[finger] = 1.0 if expanded else strengths[finger]
     return result
 
-def validate_visual_proximity_contract(rep, appearance_manifest_path):
+def validate_visual_proximity_contract(rep, appearance_manifest_path, *, run_root=None):
     embedded = rep.get('appearance_mask_manifest')
     receipt = rep.get('visual_mesh_receipt')
     if appearance_manifest_path is not None and (not isinstance(embedded, dict) or Path(embedded.get('path', '')).resolve() != appearance_manifest_path.resolve() or embedded.get('sha256') != sha(appearance_manifest_path)):
         raise ValueError('appearance manifest does not match pose binding identity')
-    if not isinstance(receipt, dict) or receipt.get('demo_visual_proximity_fit_eligible') is not True or receipt.get('physical_contact_authority_eligible') is not False or any((receipt.get(key) is not False for key in ('generated_faces_contact_eligible', 'generated_faces_collision_eligible', 'generated_faces_sign_eligible', 'generated_faces_sdf_eligible', 'generated_faces_nonpenetration_eligible'))):
+    if rep.get('schema') == 'object_surface_candidate_binding_v1':
+        from gates.object.surface_candidate import validate_surface_candidate
+        if run_root is None:
+            raise ValueError('surface candidate proximity requires current run root')
+        validate_surface_candidate(rep, object_id=rep['object_id'], run_root=run_root)
+        # This branch uses the disclosed generated residual mesh only for unsigned
+        # visual fitting; it never grants contact/collision/sign authority.
+    elif not isinstance(receipt, dict) or receipt.get('demo_visual_proximity_fit_eligible') is not True or receipt.get('physical_contact_authority_eligible') is not False or any((receipt.get(key) is not False for key in ('generated_faces_contact_eligible', 'generated_faces_collision_eligible', 'generated_faces_sign_eligible', 'generated_faces_sdf_eligible', 'generated_faces_nonpenetration_eligible'))):
         raise ValueError('visual mesh lacks demo visual-proximity-only role contract')
     mesh_contract = rep.get('render_mesh_contract') or {}
     if not receipt.get('output_mesh_path') or not mesh_contract.get('required_mesh_path') or Path(receipt['output_mesh_path']).resolve() != Path(mesh_contract['required_mesh_path']).resolve() or (receipt.get('output_mesh_sha256') != mesh_contract.get('required_mesh_sha256')):

@@ -113,13 +113,28 @@ def fit_prepared(problem, run_root):
     from gates.object.geometry import validate_posterior
     from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
     binding=load(problem.pose_report)
-    if binding.get('schema')!='rgb_scene_visual_refined_binding_v1':
-        raise ValueError('typed visual-refined binding required')
+    candidate = binding.get('schema') == 'object_surface_candidate_binding_v1'
+    if candidate:
+        from dataclasses import replace
+        from gates.object.surface_candidate import validate_surface_candidate
+        from observations.object.shape import record
+        validate_surface_candidate(binding, object_id=problem.object_id, run_root=run_root)
+        if problem.object_profile != binding['profile'] or not problem.freeze_object:
+            raise ValueError('surface candidate requires matching frozen visual profile')
+        fit_inputs = load(binding['surface_fit_report']['path'])['inputs']
+        if (fit_inputs['annotations'] != record(problem.annotations) or
+                binding['appearance_mask_manifest'] != record(problem.appearance_mask_manifest)):
+            raise ValueError('surface candidate visual inputs changed')
+        problem = replace(problem, run_root=Path(run_root))
+    elif binding.get('schema') != 'rgb_scene_visual_refined_binding_v1':
+        raise ValueError('typed visual-refined or surface candidate binding required')
+    elif getattr(problem, 'object_profile', 'legacy') != 'legacy':
+        raise ValueError('surface visual profile requires a surface candidate')
     reference=binding['refined_posterior']
     if sha(reference['path'])!=reference['sha256']:
         raise ValueError('refined posterior changed')
     posterior=validate_posterior(load(reference['path']),problem.object_id,run_root)
-    if binding['pose_rows']!=posterior['pose_rows']:
+    if not candidate and binding['pose_rows']!=posterior['pose_rows']:
         raise ValueError('binding discarded refined trajectory')
     judgment=load(problem.interaction_judgments)
     validate_visibility(judgment,[r['frame_idx'] for r in binding['pose_rows']],problem.object_id)
@@ -127,6 +142,9 @@ def fit_prepared(problem, run_root):
     path=problem.output_dir/'demo_state.npz'
     with np.load(path,allow_pickle=False) as archive:
         state=apply_display_visibility(dict(archive),judgment,problem.object_id)
+    if candidate:
+        from gates.object.surface_candidate import validate_surface_state
+        validate_surface_state(state, binding, run_root=run_root)
     np.savez_compressed(path,**state)
     path=problem.output_dir/'fit_report.json'
     report=load(path)
@@ -343,7 +361,7 @@ def annotate(args):
     from observations.object import surface, shape
     from gates.camera.calibration import load_contract, plane_intrinsics
     from gates.object.geometry import normalize_completion
-    from optimization.problems import ObservedObjectPose, StandaloneShape
+    from optimization.problems import ObservedObjectPose, StandaloneShape, ObjectSurfaceEnvelope
     from render import render_video, export_scene
     from utils.config import preflight_providers
     from utils.state import StageRecovery, planned_stage_contract
@@ -432,7 +450,7 @@ def annotate(args):
             verify_code()
             return ledger.record(stage,outputs,object_id=object_id,frame_ids=ids,command=command)
         gpu_uuid=args.gpu_uuid
-        def worker(stage_name,python,module,argv,outputs,overlay=None):
+        def worker(stage_name,python,module,argv,outputs,overlay=None,*,input_contract=None):
             nonlocal gpu_uuid
             verify_code()
             command=[str(python),'-m',module,*map(str,argv)]
@@ -440,7 +458,7 @@ def annotate(args):
             executable=Path(shutil.which(str(python),path=worker_environment.get('PATH')) or python).absolute()
             planned=planned_stage_contract(module,'subprocess',
                 parameters={'command':command,'outputs':outputs,'object_id':object_id,'frame_ids':ids,'profiles':profiles},
-                inputs={'argv':command[3:]},execution={'executable':executable,
+                inputs={'argv':command[3:],'producer_inputs':input_contract},execution={'executable':executable,
                     'resolved_executable':executable.resolve(),'executable_sha256':sha(executable),
                     'argv':command[1:],'cwd':code_root,
                     'environment':stage_environment(worker_environment,(overlay or {}).keys()),
@@ -680,7 +698,9 @@ def annotate(args):
         evidence, geometry, native_input, conditioning = _stage_metric_inputs
         def native_job(stage,image,mask,out,frame,pointmap_receipt=None):
             name=f'{args.case}_{object_id}_frame_{frame}'
-            profile = 'shared_metric_pointmap' if pointmap_receipt is not None else 'legacy_internal_moge'
+            profile = profiles['geometry_profile']
+            if (profile == 'shared_metric_pointmap') != (pointmap_receipt is not None):
+                raise ValueError('native job profile/pointmap producer mismatch')
             argv=['--repo',assets['sam3d_repo'],'--config',assets['sam3d_config'],
                 '--moge-checkpoint',assets['sam3d_moge_checkpoint'],'--dinov2-repo',assets['sam3d_dinov2_repo'],
                 '--dinov2-checkpoint',assets['sam3d_dinov2_checkpoint'],'--geometry-profile',profile,
@@ -688,7 +708,9 @@ def annotate(args):
             if pointmap_receipt is not None:
                 argv += ['--pointmap-case', f'{name}|{frame}|{pointmap_receipt}']
             qc=out/name/'qc_sam3d_objects_mesh_v7.json'
-            worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}))
+            worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}),
+                input_contract={'frame_idx':frame,'geometry_profile':profile,
+                    'pointmap_receipt':({'path':str(pointmap_receipt),'sha256':sha(pointmap_receipt)} if pointmap_receipt else None)})
             return name,qc,argv
         from observations.object.pointmap import build_pointmap
         metric_pointmap = root/'measurements/geometry_completion'/('pointmap_metric_'+object_id)
@@ -705,10 +727,12 @@ def annotate(args):
             return receipt
         metric_pointmap_receipt = _stage_metric_pointmap
         name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor,metric_pointmap_receipt)
-        @stage('metric_geometry', inputs={'qc':qc,'name':name,'conditioning':conditioning,'command':command,'native_input':native_input,'evidence':evidence,'annotations':ann},
+        @stage('metric_geometry', inputs={'pointmap_receipt':metric_pointmap_receipt,'qc':qc,'name':name,'conditioning':conditioning,'command':command,'native_input':native_input,'evidence':evidence,'annotations':ann},
             parameters={'geometry':geometry,'observed_band_scale':float(np.sqrt(3.)),'silhouette_free_space_filter':True,'planar_slab_support_filter':True})
         def _stage_metric_geometry():
-            candidate=shape.sam3d_candidate_record(qc,name,Path(conditioning['image']),Path(conditioning['mask']),{'mode':'fresh_native_SAM3D_only','command':list(map(str,command))})
+            candidate=shape.sam3d_candidate_record(qc,name,Path(conditioning['image']),Path(conditioning['mask']),{'mode':'fresh_native_SAM3D_only','command':list(map(str,command))},
+                expected_frame_idx=anchor, expected_geometry_profile=profiles['geometry_profile'],
+                expected_pointmap_receipt=metric_pointmap_receipt)
             prior=geometry/'sam3d_prior_report.json';prior.write_text(json.dumps({'schema':'v19_sam3d_only_prior_v1','status':'ok',
                 'candidates':{'sam3d_objects':candidate},'gt_consumed':False,'native_input_report':str(native_input)},indent=2))
             shape.bind_sam3d_metric(shape.native_bridge_parse_args(list(map(str,['--evidence-report',evidence,'--p12-report',prior,'--output-dir',geometry/'metric_bridge']))))
@@ -777,19 +801,50 @@ def annotate(args):
         _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
             root/'measurements/scene_native'/object_id,selected,appearance_receipt)
         binding_dir=root/'measurements/scene_shape'/object_id
-        @stage('shape_binding', inputs={'posterior':posterior,'annotations':ann,'appearance':appearance,'choice':choice_path,'native_qc':native_qc},
+        @stage('shape_binding', inputs={'posterior':posterior,'annotations':ann,'appearance':appearance,'choice':choice_path,'native_qc':native_qc,'pointmap_receipt':appearance_receipt},
             parameters={'binding_dir':binding_dir,'object_id':object_id,'root':root})
         def _stage_shape_binding():
-            solve(StandaloneShape(posterior,ann,appearance,choice_path,native_qc,binding_dir,object_id,root))
+            solve(StandaloneShape(posterior,ann,appearance,choice_path,native_qc,binding_dir,object_id,root,
+                object_profile=profiles['object_profile'], geometry_profile=profiles['geometry_profile'],
+                pointmap_receipt=appearance_receipt))
             binding=binding_dir/'pose_mesh.json'
+            record('shape_binding',[(binding,'shape_binding'),(binding_dir/'object_canonical.ply','shape_mesh')])
             return binding
-        binding = _stage_shape_binding
+        source_binding = _stage_shape_binding
+        binding = source_binding
+        if profiles['object_profile'] != 'none':
+            envelope = root/'measurements/surface_envelopes'/object_id/'envelope.json'
+            @stage('surface_envelopes', inputs={'annotations':ann,'source_binding':source_binding,'posterior':posterior,
+                'metric_pointmap':metric_pointmap_receipt,'appearance_pointmap':appearance_receipt},
+                parameters={'object_id':object_id,'output':envelope})
+            def _stage_surface_envelopes():
+                from observations.object.envelope import build_envelopes
+                build_envelopes(annotations=ann, mesh_binding=source_binding, refined_posterior=posterior,
+                    run_root=root, object_id=object_id, output=envelope)
+                record('surface_envelopes',[(envelope,'surface_envelopes')])
+                return envelope
+            envelope = _stage_surface_envelopes
+            candidate_dir = root/'measurements/surface_candidate'/object_id
+            @stage('surface_candidate', inputs={'annotations':ann,'source_binding':source_binding,'posterior':posterior,
+                'envelope':envelope,'appearance':appearance,'metric_pointmap':metric_pointmap_receipt,
+                'appearance_pointmap':appearance_receipt}, parameters={'output':candidate_dir,'object_id':object_id})
+            def _stage_surface_candidate():
+                candidate = solve(ObjectSurfaceEnvelope(ann,posterior,source_binding,envelope,appearance,
+                    object_id,root,candidate_dir,profile=profiles['object_profile']))
+                path = candidate_dir/'pose_mesh.json'
+                record('surface_candidate',[(path,'surface_candidate_binding'),
+                    (candidate_dir/'surface_fit_report.json','surface_fit_report'),
+                    (Path(candidate['render_mesh_contract']['required_mesh_path']),'surface_candidate_mesh')])
+                return path
+            binding = _stage_surface_candidate
         from render import pose_review_images
         from observations.judgments.judge_pose_trajectory import compact_trajectory_evidence, trajectory_review_sheets
         @stage('pose_review', inputs={'annotations':ann,'binding':binding,'hawor':hawor,'posterior':posterior,'manifest':manifest},
             parameters={'output_dir':root/'renders/refined_pose','compact_schema':'trajectory_review_compact_v1'})
         def _stage_pose_review():
-            evidence=compact_trajectory_evidence(posterior)
+            evidence=compact_trajectory_evidence(binding if profiles['object_profile'] != 'none' else posterior)
+            evidence['pose_evidence_role'] = ('generated_mesh_conditioned_surface_candidate' if profiles['object_profile'] != 'none'
+                                              else 'original_observed_RGB_refined_posterior')
             overlays=pose_review_images(load(ann),load(binding),hawor,evidence['review_frame_ids'],root/'renders/refined_pose')
             sheets,sources=trajectory_review_sheets(evidence,raw_by_id,overlays,root/'renders/trajectory_sheets')
             evidence['review_images']=sheets
@@ -861,11 +916,12 @@ def annotate(args):
         worker('visual_fit',assets['demo_python'],'main',['fit-visual','--run-root',root,'--annotations',ann,
             '--pose-report',binding,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',assets['mano_models'],
             '--object-id',object_id,'--appearance-mask-manifest',appearance,'--interaction-judgments',judgments,
-            '--device','cuda:0','--output-dir',fit],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
-        @stage('render_video', inputs={'state':fit/'demo_state.npz','manifest':manifest},
+            '--device','cuda:0','--output-dir',fit,
+            *(['--object-profile',profiles['object_profile'],'--freeze-object'] if profiles['object_profile'] != 'none' else [])],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
+        @stage('render_video', inputs={'state':fit/'demo_state.npz','manifest':manifest,'binding':binding},
             parameters={'output':root/'renders/annotation.mp4'})
         def _stage_render_video():
-            reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4')
+            reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4',binding_path=binding,run_root=root)
             return reviews
         reviews = _stage_render_video
         review_images=[Path(r['path']) for r in reviews]

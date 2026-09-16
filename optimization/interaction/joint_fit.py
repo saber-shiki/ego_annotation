@@ -35,7 +35,10 @@ def fit_visual(args):
     rep = load(args.pose_report)
     assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id,
                            allow_annotation_ready=True, allow_nondiagnostic_prediction=True)
-    validate_visual_proximity_contract(rep, args.appearance_mask_manifest)
+    validate_visual_proximity_contract(rep, args.appearance_mask_manifest, run_root=getattr(args, 'run_root', None))
+    if rep.get('schema') == 'object_surface_candidate_binding_v1':
+        if (getattr(args, 'object_profile', None) != rep['profile'] or not getattr(args, 'freeze_object', False)):
+            raise ValueError('surface candidate requires matching frozen visual profile')
     meshpath = Path(rep["render_mesh_contract"]["required_mesh_path"])
     if sha(meshpath) != rep["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("mesh identity mismatch")
