@@ -98,6 +98,134 @@ def parse_case(raw: str) -> tuple[str, Path, Path, int]:
         raise RuntimeError('case name is empty')
     return (name.strip(), Path(image), Path(mask), int(seed))
 
+def infer_shared_pointmap(inference, image, mask, seed, *, receipt_path, frame_idx, image_path, mask_path):
+    """Arm B: official API, observational guards only; never substitute a K adapter."""
+    import inspect
+    import torch
+    from observations.object.pointmap import load_pointmap, array_sha, file_record
+    points, receipt = load_pointmap(receipt_path, frame_idx=frame_idx, image_path=image_path, mask_path=mask_path)
+    if not np.array_equal(image, load_rgb(image_path)) or not np.array_equal(mask, load_mask(mask_path)):
+        raise ValueError('pointmap decoded RGB/mask changed before inference')
+    pipe = inference._pipeline
+    if pipe.clip_pointmap_beyond_scale is not None:
+        raise ValueError('pointmap clipping is not part of the proven arm B profile')
+    names = ('run', 'compute_pointmap', 'preprocess_image', 'sample_sparse_structure', 'pose_decoder', 'depth_model')
+    originals = {name: getattr(pipe, name) for name in names}
+    run_signature = inspect.signature(originals['run'])
+    counts = dict(run=0, compute=0, preprocess=0, sample=0, pose=0)
+    conditions = {}
+    state = {'schema': 'sam3d_pointmap_consumption_v1', 'profile': 'shared_metric_pointmap',
+        'frame_idx': frame_idx, 'receipt': file_record(receipt_path),
+        'pointmap': receipt['pointmap'], 'pointmap_array_sha256': array_sha(points),
+        'units': 'meters', 'coordinate_frame': receipt['coordinate_frame'],
+        'source_depth_correlation': receipt['depth_correlation'], 'depth_model_calls': 0,
+        'with_layout_postprocess': False, 'independent_exact_K_conditioning': False,
+        'inferred_K_role': 'diagnostic_only_never_active_camera', 'inferred_K_read_by_generation': False}
+
+    def snapshot(value):
+        a = as_numpy(value)
+        if not np.isfinite(a).all():
+            raise ValueError('nonfinite pointmap conditioning')
+        return {'shape': list(a.shape), 'dtype': str(a.dtype), 'sha256': array_sha(a)}
+
+    def same(value, expected, label):
+        if value is None or not np.array_equal(as_numpy(value), expected):
+            raise ValueError('pointmap omitted/replaced at ' + label)
+
+    class DiagnosticIntrinsics(dict):
+        def __getitem__(self, key):
+            if key == 'intrinsics':
+                raise ValueError('inferred K is diagnostic only, never an active camera')
+            return super().__getitem__(key)
+
+        def get(self, key, default=None):
+            if key == 'intrinsics':
+                raise ValueError('inferred K is diagnostic only, never an active camera')
+            return super().get(key, default)
+
+    def guarded_run(*args, **kwargs):
+        bound = run_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        if bound.arguments.get('with_layout_postprocess') is not False or bound.arguments.get('estimate_plane', False):
+            raise ValueError('pointmap-only requires disabled layout/plane estimation')
+        same(bound.arguments.get('pointmap'), points, 'official pipeline.run')
+        counts['run'] += 1
+        return originals['run'](*args, **kwargs)
+
+    def compute(image_arg, pointmap=None):
+        same(pointmap, points, 'official compute_pointmap input')
+        if not np.array_equal(image_arg[..., :3], image) or not np.array_equal(image_arg[..., 3] > 0, mask):
+            raise ValueError('pointmap official RGB/mask source mismatch')
+        data = originals['compute_pointmap'](image_arg, pointmap)
+        same(data['pointmap'], points.transpose(2, 0, 1), 'official compute_pointmap output')
+        k = as_numpy(data['intrinsics'])
+        state['inferred_K_diagnostic'] = k.tolist() if np.isfinite(k).all() else None
+        state['inferred_K_finite'] = bool(np.isfinite(k).all())
+        state['inferred_K_positive_focal'] = bool(k.shape == (3, 3) and np.isfinite(k).all() and k[0, 0] > 0 and k[1, 1] > 0)
+        counts['compute'] += 1
+        return DiagnosticIntrinsics(data)
+
+    def preprocess(image_arg, preprocessor, *args, **kwargs):
+        if preprocessor is pipe.ss_preprocessor:
+            same(kwargs.get('pointmap'), points.transpose(2, 0, 1), 'official sparse preprocessor')
+            counts['preprocess'] += 1
+        return originals['preprocess_image'](image_arg, preprocessor, *args, **kwargs)
+
+    def sample(input_dict, *args, **kwargs):
+        for key in ('pointmap', 'rgb_pointmap', 'pointmap_scale', 'pointmap_shift', 'rgb_pointmap_scale', 'rgb_pointmap_shift'):
+            if key not in input_dict or input_dict[key] is None:
+                raise ValueError('pointmap missing normalized conditioning: ' + key)
+            conditions[key] = np.array(as_numpy(input_dict[key]), copy=True)
+        state['normalized_conditioning'] = {key: snapshot(value) for key, value in conditions.items()}
+        counts['sample'] += 1
+        return originals['sample_sparse_structure'](input_dict, *args, **kwargs)
+
+    def pose(*args, **kwargs):
+        for key, source in (('scene_scale', 'pointmap_scale'), ('scene_shift', 'pointmap_shift')):
+            if source not in conditions:
+                raise ValueError('pointmap pose decoded before normalization')
+            same(kwargs.get(key), conditions[source], 'pose decoder ' + key)
+        state['pose_decoder'] = {key: as_numpy(kwargs[key]).tolist() for key in ('scene_scale', 'scene_shift')}
+        counts['pose'] += 1
+        return originals['pose_decoder'](*args, **kwargs)
+
+    def no_internal_depth(*args, **kwargs):
+        raise ValueError('pointmap-only must not call internal MoGe')
+
+    replacements = dict(run=guarded_run, compute_pointmap=compute, preprocess_image=preprocess,
+        sample_sparse_structure=sample, pose_decoder=pose, depth_model=no_internal_depth)
+    try:
+        for name, method in replacements.items():
+            setattr(pipe, name, method)
+        with torch.no_grad():
+            output = inference(image, mask, seed=int(seed), pointmap=torch.from_numpy(points.copy()))
+        if any(value != 1 for value in counts.values()):
+            raise ValueError(f'pointmap official consumption incomplete: {counts}')
+        # Revalidate immutable sources and payload after the provider returns.
+        load_pointmap(receipt_path, frame_idx=frame_idx, image_path=image_path, mask_path=mask_path)
+    finally:
+        for name, method in originals.items():
+            setattr(pipe, name, method)
+    state['calls'] = counts
+    state['pointmap_preserved_exactly'] = True
+    return output, state
+
+
+def pointmap_case_bindings(args):
+    profile = getattr(args, 'geometry_profile', 'legacy_internal_moge')
+    rows = getattr(args, 'pointmap_case', []) or []
+    bindings = {}
+    for row in rows:
+        parts = row.split('|')
+        if len(parts) != 3 or not parts[0] or parts[0] in bindings:
+            raise ValueError('--pointmap-case must be unique NAME|FRAME_IDX|RECEIPT_PATH')
+        bindings[parts[0]] = (int(parts[1]), Path(parts[2]))
+    if profile == 'legacy_internal_moge' and bindings:
+        raise ValueError('legacy profile cannot consume external pointmaps')
+    if profile == 'shared_metric_pointmap' and not bindings:
+        raise ValueError('shared_metric_pointmap requires per-case pointmap receipts')
+    return bindings
+
 def run_one_case(inference, output_root: Path, name: str, image_path: Path, mask_path: Path, seed: int, args: argparse.Namespace) -> dict:
     case_dir = output_root / name
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +235,17 @@ def run_one_case(inference, output_root: Path, name: str, image_path: Path, mask
         raise RuntimeError(f'{name}: image shape {image.shape[:2]} differs from mask shape {mask.shape}')
     if int(mask.sum()) < int(args.min_mask_pixels):
         raise RuntimeError(f'{name}: mask has too few foreground pixels: {int(mask.sum())}')
-    output = inference(image, mask, seed=int(seed))
+    profile = getattr(args, 'geometry_profile', 'legacy_internal_moge')
+    consumption = None
+    bindings = pointmap_case_bindings(args)
+    if profile == 'shared_metric_pointmap':
+        if name not in bindings:
+            raise ValueError(f'pointmap receipt missing for case {name}')
+        frame_idx, receipt_path = bindings[name]
+        output, consumption = infer_shared_pointmap(inference, image, mask, seed,
+            receipt_path=receipt_path, frame_idx=frame_idx, image_path=image_path, mask_path=mask_path)
+    else:
+        output = inference(image, mask, seed=int(seed))
     mesh_list = output.get('mesh')
     if not mesh_list:
         raise RuntimeError(f'{name}: SAM3D returned no mesh output')
@@ -137,6 +275,8 @@ def run_one_case(inference, output_root: Path, name: str, image_path: Path, mask
         gs_path = case_dir / args.gaussian_name
         output['gs'].save_ply(str(gs_path))
     report = {'status': 'ok', 'name': name, 'image': str(image_path), 'mask': str(mask_path), 'seed': int(seed), 'mask_pixels': int(mask.sum()), 'image_shape_h_w': [int(image.shape[0]), int(image.shape[1])], 'mesh': str(mesh_path), 'native_pose_mesh_pytorch3d_camera': str(native_p3d_path), 'native_pose_mesh_opencv_camera': str(native_opencv_path), 'glb': str(glb_path), 'gaussian': str(gs_path) if gs_path else None, 'mesh_stats': mesh_stats, 'pose': {'rotation': rotation, 'translation': translation, 'scale': scale}, 'native_pose_contract': {**pose_contract, 'raw_mesh_frame': 'native local generator frame shared with Gaussian local coordinates', 'glb_frame': 'standalone presentation frame; official to_glb applies a separate z-up-to-y-up rotation and must not be fed back into native pose', 'native_pose_mesh_pytorch3d_camera': str(native_p3d_path), 'native_pose_mesh_opencv_camera': str(native_opencv_path), 'native_pose_mesh_pytorch3d_camera_stats': native_p3d_stats, 'native_pose_mesh_opencv_camera_stats': native_opencv_stats, 'metric_bridge_requirement': 'scale the complete camera-origin scene similarity (native translation and object scale together) using prediction-side sensor depth; never treat native units as meters'}, 'moge_offline': args.offline_asset_binding['moge_offline'], 'dinov2_offline': args.offline_asset_binding['dinov2_offline'], 'huggingface_offline': args.offline_asset_binding['huggingface_offline']}
+    report['geometry_profile'] = profile
+    report['external_pointmap'] = consumption
     (case_dir / 'qc_sam3d_objects_mesh_v7.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     return report
 
@@ -154,6 +294,9 @@ def run(args: argparse.Namespace) -> dict:
     sys.path.insert(0, str(args.repo / 'notebook'))
     from inference import Inference
     cases = [parse_case(raw) for raw in args.case]
+    bindings = pointmap_case_bindings(args)
+    if getattr(args, 'geometry_profile', 'legacy_internal_moge') == 'shared_metric_pointmap' and set(bindings) != {case[0] for case in cases}:
+        raise ValueError('SAM3D cases and pointmap case names differ')
     args.output_dir.mkdir(parents=True, exist_ok=True)
     inference = Inference(str(args.config), compile=bool(args.compile))
     case_reports = [run_one_case(inference, args.output_dir, name, image, mask, seed, args) for (name, image, mask, seed) in cases]
@@ -178,6 +321,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--gaussian-name', default='sam3d_gaussian.ply')
     parser.add_argument('--min-mask-pixels', type=int, default=100)
     parser.add_argument('--min-native-positive-depth-fraction', type=float, default=0.99)
+    parser.add_argument('--geometry-profile', choices=('legacy_internal_moge', 'shared_metric_pointmap'), default='legacy_internal_moge')
+    parser.add_argument('--pointmap-case', action='append', default=[], help='NAME|FRAME_IDX|RECEIPT_PATH; one per shared-pointmap case')
     parser.add_argument('--compile', action='store_true')
     args = parser.parse_args()
     if args.dinov2_checkpoint is None:
