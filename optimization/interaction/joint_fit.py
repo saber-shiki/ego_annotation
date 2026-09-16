@@ -127,7 +127,9 @@ def fit_visual(args):
             base_joint_pixel=to(jpix),
             patch=sample,
         )
-    # Convex silhouette SUPPORT of the actual mesh, used only as an image loss
+    freeze_object = bool(getattr(args, 'freeze_object', False) or getattr(args, 'object_profile', '') == 'prepared_surface_no_box' or getattr(args, 'object_profile', '') == 'prepared_surface_weak_box')
+    if freeze_object:
+        obj_delta.requires_grad_(False)
     # (not substituted for object reconstruction). Full triangles are rendered.
     mask_contours = []
     contact_gate = np.zeros((B, 2, 5), np.float32)

@@ -1,11 +1,22 @@
 """Sole numerical dispatch; results remain candidates, never physical acceptance."""
-from optimization.problems import StandaloneScene, PreparedVisualFit, FormalManoInterval, ObservedObjectPose, StandaloneShape, FormalObjectTrajectory
+from optimization.problems import StandaloneScene, PreparedVisualFit, ObjectSurfaceEnvelope, FormalManoInterval, ObservedObjectPose, StandaloneShape, FormalObjectTrajectory
 from optimization.object.pose import solve_scene_pose
 
 def solve(problem):
     if isinstance(problem, StandaloneScene):
         return solve_scene_pose(problem.nodes, problem.times, problem.edges, problem.anchor,
                                 problem.config, problem.reprojections)
+    if isinstance(problem, ObjectSurfaceEnvelope):
+        from optimization.object.surface_fit import SurfaceProblem, fit_surface
+        from gates.object.surface_candidate import validate_surface_candidate
+        candidate = fit_surface(SurfaceProblem(
+            annotations=problem.annotations, refined_posterior=problem.refined_posterior,
+            mesh_binding=problem.mesh_binding, envelope_report=problem.envelope_report,
+            appearance=problem.appearance, run_root=problem.run_root,
+            object_id=problem.object_id, output_dir=problem.output,
+            profile=problem.profile))
+        validate_surface_candidate(candidate, object_id=problem.object_id, run_root=problem.run_root)
+        return candidate
     if isinstance(problem, PreparedVisualFit):
         from optimization.interaction.joint_fit import fit_visual
         return fit_visual(problem)

@@ -16,6 +16,22 @@ class StandaloneScene:
     reprojections: Sequence[RGBReprojectionFactor] = ()
 
 @dataclass(frozen=True)
+class ObjectSurfaceEnvelope:
+    """Typed post-shape full-mesh candidate; source posterior remains immutable."""
+    annotations: object
+    refined_posterior: object
+    mesh_binding: object
+    envelope_report: object
+    appearance: object
+    object_id: str
+    run_root: object
+    output: object
+    profile: str = 'surface_no_box'
+    def __post_init__(self):
+        if self.profile not in {'surface_no_box', 'surface_weak_box'}:
+            raise ValueError('unreviewed object surface profile')
+
+@dataclass(frozen=True)
 class PreparedVisualFit:
     annotations: object
     pose_report: object
@@ -29,6 +45,8 @@ class PreparedVisualFit:
     device: str = 'cpu'
     iterations: int = 240
     render_width: int | None = None
+    object_profile: str = 'legacy'
+    freeze_object: bool = False
 
     def __post_init__(self):
         if self.appearance_mask_manifest is None or self.interaction_judgments is None:

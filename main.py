@@ -151,7 +151,8 @@ def main(argv=None):
     visual.add_argument('--object-id',required=True)
     visual.add_argument('--device',default='cpu')
     visual.add_argument('--iterations',type=int,default=240)
-    visual.add_argument('--render-width',type=int)
+    visual.add_argument('--object-profile',choices=('legacy','prepared_surface_no_box','prepared_surface_weak_box'),default='legacy')
+    visual.add_argument('--freeze-object',action='store_true')
     judgment=commands.add_parser('judge',help='run one independent Astra image judgment')
     judgment.add_argument('name',choices=('object','mask_track','pose_anchor','rigidity','appearance_anchor',
         'pose_trajectory','contact','contact_pads','occlusion','depth_reliability','visibility',
@@ -238,6 +239,8 @@ def main(argv=None):
                       args.object_id,args.anchor,args.output,args.run_root)
     from optimization.problems import PreparedVisualFit
     values=vars(args).copy();values.pop('command');run_root=values.pop('run_root')
+    values['object_profile'] = values.pop('object_profile', 'legacy')
+    values['freeze_object'] = values.pop('freeze_object', False)
     return fit_prepared(PreparedVisualFit(**values),run_root)
 
 
