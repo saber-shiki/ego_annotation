@@ -86,7 +86,7 @@ def judge(evidence, images):
         elif isinstance(value, list):
             for child in value:check_frames(child)
     check_frames(result)
-    from gates.interaction.visibility import validate_visibility
+    from actions.filters.visibility import validate_visibility
     validate_visibility(result, evidence['frame_ids'], evidence['object_id'])
     result['judgment_provenance'] = {'kind':'current_run_visual_judgment','judgment':'visibility',**provenance}
     return result

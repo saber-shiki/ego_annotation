@@ -2,7 +2,7 @@ from __future__ import annotations
 from utils.data import read_json
 from utils.data import write_json_payload
 from utils.data import list_or_empty
-from gates.object.observation import conservative_mask_on_depth
+from envs.qualification.object_observation import conservative_mask_on_depth
 'Extracted formal interval mechanisms; no historical script imports.'
 
 def classify_object_vertices_against_depth(*, frame: dict[str, Any], vertices_object: np.ndarray, pose: tuple[np.ndarray, np.ndarray], depth_row: dict[str, Any] | None, support_margin_m: float, free_space_margin_m: float) -> tuple[np.ndarray, dict[str, Any]]:
@@ -216,12 +216,12 @@ from pathlib import Path
 from typing import Any
 import cv2
 import numpy as np
-from gates.camera.calibration import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
-from gates.camera.calibration import load_contract as load_camera_contract_v2
-from gates.camera.calibration import plane_intrinsics as camera_contract_plane_intrinsics
-from gates.camera.calibration import resize_affine as camera_contract_resize_affine
-from gates.camera.calibration import sha256_file as camera_contract_sha256_file
-from gates.camera.calibration import summarize_contract as summarize_camera_contract_v2
+from envs.qualification.camera import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
+from envs.qualification.camera import load_contract as load_camera_contract_v2
+from envs.qualification.camera import plane_intrinsics as camera_contract_plane_intrinsics
+from envs.qualification.camera import resize_affine as camera_contract_resize_affine
+from envs.qualification.camera import sha256_file as camera_contract_sha256_file
+from envs.qualification.camera import summarize_contract as summarize_camera_contract_v2
 
 def safe_name(value: str) -> str:
     return re.sub('[^A-Za-z0-9_.-]+', '_', value).strip('_') or 'object'
@@ -1032,7 +1032,7 @@ def remove_existing_object(objects: list[Any], object_id: str, track_id: str) ->
     return out
 
 def build_visible_geometry(args: argparse.Namespace) -> dict[str, Any]:
-    from gates.camera.calibration import validate_depth_camera_contract_binding
+    from envs.qualification.camera import validate_depth_camera_contract_binding
     (raw_frames, raw_payload) = raw_frame_map(args.raw_frame_manifest)
     depth = load_depth_npz(args.depth_npz)
     (calibration_intrinsics, calibration_source, calibration_summary, camera_contract_v2) = load_calibration_contract(args.calibration_contract, frame_ids=sorted(raw_frames))
@@ -1318,9 +1318,9 @@ from pathlib import Path
 from typing import Any
 import cv2
 import numpy as np
-from gates.camera.calibration import K_from_intrinsics
-from gates.camera.calibration import load_contract
-from gates.camera.calibration import plane_intrinsics
+from envs.qualification.camera import K_from_intrinsics
+from envs.qualification.camera import load_contract
+from envs.qualification.camera import plane_intrinsics
 depth_order_SCHEMA = 'rgb_scene_depth_order_owned_sam2_v1'
 
 def depth_order_sha256(path: Path) -> str:
@@ -1457,9 +1457,9 @@ def hand_geometry(frame: dict[str, Any], bridge: Any, hawor: Any, bridge_path: P
     return (geometry, identities)
 
 def build_depth_order(args: argparse.Namespace) -> dict[str, Any]:
-    from gates.object.observation import classify_native_depth
-    from optimization.common.correspondences import nearest_hand_first_hits
-    from gates.camera.calibration import validate_depth_camera_contract_binding
+    from envs.qualification.object_observation import classify_native_depth
+    from utils.candidate_geometry import nearest_hand_first_hits
+    from envs.qualification.camera import validate_depth_camera_contract_binding
     output_dir = args.output_dir.expanduser().resolve()
     if output_dir.exists():
         raise ValueError(f'depth-order output must be new: {output_dir}')

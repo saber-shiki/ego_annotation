@@ -9,7 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 from utils.data import PoseNode, indexed, RKEY, TKEY
 from utils.geometry import valid_rotation
-from gates.object.observation import p09_geometry_validation
+from envs.qualification.object_observation import p09_geometry_validation
 
 def pose_from_values(rotation, translation):
     if rotation is None and translation is None:
@@ -97,10 +97,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 import numpy as np
-from gates.camera.calibration import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
-from gates.camera.calibration import load_contract as load_camera_contract_v2
-from gates.camera.calibration import plane_intrinsics as camera_contract_plane_intrinsics
-from gates.camera.calibration import summarize_contract as summarize_camera_contract_v2
+from envs.qualification.camera import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
+from envs.qualification.camera import load_contract as load_camera_contract_v2
+from envs.qualification.camera import plane_intrinsics as camera_contract_plane_intrinsics
+from envs.qualification.camera import summarize_contract as summarize_camera_contract_v2
 FULL_K_RECTIFIED_MODE = 'explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam'
 
 def aggregate_file_sha256(paths: list[Path]) -> str:

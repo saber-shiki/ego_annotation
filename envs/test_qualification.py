@@ -2,9 +2,9 @@
 from pathlib import Path
 import tempfile
 import unittest
-from gates.hand.observation import translation_support_gate_applies
-from gates.object.geometry import load_signed_face_authority
-from gates.object.trajectory import pose_graph_readiness
+from envs.qualification.hand_observation import translation_support_gate_applies
+from envs.qualification.object_geometry import load_signed_face_authority
+from envs.qualification.object_trajectory import pose_graph_readiness
 
 class FormalAuthorityTests(unittest.TestCase):
     def test_zero_support_is_not_translation_authority(self):

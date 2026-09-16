@@ -1,5 +1,33 @@
-"""Extracted formal interval mechanisms; no historical script imports."""
+"""Trajectory evidence qualification without solver ownership."""
 from __future__ import annotations
+from typing import Any
+import numpy as np
+
+CORRECTED_POSE_STATUS = 'corrected_temporal_rigid_pose_graph'
+COMPLETED_POSE_STATUS = 'completed_temporal_rigid_pose_uncertain'
+STRICT_ROTATION_STEP_DEG = 15.0
+CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS = {'max_rotation_step_deg': 18.0, 'max_count': 2, 'max_fraction': 0.015, 'max_translation_step_m': 0.02, 'max_endpoint_observability_score': 0.03}
+
+def formal_object_numeric_summary(values: list[float] | np.ndarray) -> dict[str, float | int | None]:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return {'count': 0, 'median': None, 'p90': None, 'p95': None, 'max': None, 'mean': None}
+    return {'count': int(arr.size), 'median': float(np.median(arr)), 'p90': float(np.percentile(arr, 90.0)), 'p95': float(np.percentile(arr, 95.0)), 'max': float(np.max(arr)), 'mean': float(np.mean(arr))}
+
+def formal_object_rotation_observability_summary(observations: list[PoseObservation], minimum_score: float) -> dict[str, Any]:
+    from utils.data import PoseObservation
+    rows = []
+    for observation in observations:
+        centered = observation.observed_points_world - observation.observed_points_world.mean(axis=0, keepdims=True)
+        covariance = centered.T @ centered / max(1, len(centered) - 1)
+        eigenvalues = np.linalg.eigvalsh(covariance)[::-1]
+        largest = max(float(eigenvalues[0]), 1e-12)
+        normalized = eigenvalues / largest
+        score = float(min(normalized[0] - normalized[1], normalized[1] - normalized[2]))
+        rows.append({'frame_idx': int(observation.frame_idx), 'normalized_covariance_eigenvalues': normalized.astype(float).tolist(), 'rotation_observability_score': score, 'observable': bool(score >= float(minimum_score))})
+    observable_count = int(sum((row['observable'] for row in rows)))
+    return {'minimum_score': float(minimum_score), 'observable_frame_count': observable_count, 'observation_frame_count': int(len(rows)), 'observable_fraction': float(observable_count / max(1, len(rows))), 'score_summary': formal_object_numeric_summary([row['rotation_observability_score'] for row in rows]), 'rows': rows, 'interpretation': 'Conservative covariance-eigenvalue proxy; symmetric, line-like, or near-planar-isotropic visible support cannot establish all rotation axes.'}
 
 def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
     from typing import Any
@@ -18,12 +46,9 @@ def sparse_conditional_rotation_tail_decision(*, step_rows: list[dict[str, Any]]
     or generated-geometry rows, and every excess transition must be sparse,
     translation-continuous, and weakly or marginally rotation-observable.
     """
-    from optimization.object.pose import STRICT_ROTATION_STEP_DEG
     import math
-    from optimization.object.pose import CORRECTED_POSE_STATUS
     import numpy as np
     import argparse
-    from optimization.object.pose import CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS
     from typing import Any
     strict_limit = float(args.max_rotation_step_deg)
     enabled = bool(getattr(args, 'allow_sparse_conditional_rotation_tail', False))
@@ -66,14 +91,10 @@ def sparse_conditional_rotation_tail_decision(*, step_rows: list[dict[str, Any]]
     return {'strict_max_rotation_step_deg': strict_limit, 'strict_gate_passed': not excess, 'conditional_tier_enabled': enabled, 'conditional_max_rotation_step_deg': conditional_limit, 'conditional_max_rotation_step_count': maximum_count, 'conditional_max_rotation_step_fraction': maximum_fraction, 'conditional_max_translation_step_m': maximum_translation_m, 'conditional_max_endpoint_rotation_observability_score': maximum_endpoint_observability, 'immutable_policy_ceilings': dict(CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS), 'strict_exceedance_count': int(len(excess)), 'strict_exceedance_fraction': excess_fraction, 'conditional_tier_applied': accepted, 'gate_passed': bool(not excess or accepted), 'acceptance_mode': 'strict_max_rotation_step' if not excess else 'conditional_sparse_underobservable_rotation_tail' if accepted else 'failed_rotation_step_gate', 'population_criteria': population_criteria, 'conditional_transitions': evaluated, 'trajectory_values_modified_or_clipped': False, 'generated_geometry_pose_evidence_consumed': False, 'uncertainty': 'A sparse direct observed-metric rotation tail exceeds the strict 15-degree tier but remains at or below the bounded 18-degree conditional tier. The original trajectory is preserved without clipping; these transitions are explicitly low confidence.' if accepted else None}
 
 def temporal_readiness_diagnostics(*, pose_rows: list[dict[str, Any]], annotations: dict[str, Any], observations: list[PoseObservation], full_timeline_completion: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    from optimization.object.pose import CORRECTED_POSE_STATUS
     from utils.data import PoseObservation
     from scipy.spatial.transform import Rotation
-    from optimization.object.pose import formal_object_numeric_summary
     import numpy as np
     import argparse
-    from optimization.object.pose import COMPLETED_POSE_STATUS
-    from optimization.object.pose import formal_object_rotation_observability_summary
     from typing import Any
     timeline = sorted((int(frame['frame_idx']) for frame in annotations.get('frames', []) if isinstance(frame, dict) and frame.get('frame_idx') is not None and (args.frame_start is None or int(frame['frame_idx']) >= int(args.frame_start)) and (args.frame_end is None or int(frame['frame_idx']) <= int(args.frame_end))))
     timeline_set = set(timeline)

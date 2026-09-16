@@ -532,7 +532,7 @@ def load_hand_ray_shift_priors(path: Path | None) -> dict[tuple[int, str], float
 def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
     from typing import Any
     import numpy as np
-    from gates.hand.observation import active_frame_intrinsics
+    from envs.qualification.hand_observation import active_frame_intrinsics
     from utils.geometry import frame_camera_pose, project_world_intrinsics
     intr = active_frame_intrinsics(frame, side)
     (r_c2w, t_c2w) = frame_camera_pose(frame)
@@ -805,10 +805,10 @@ def make_review(raw_path: Path, object_mask: np.ndarray, hand_mask: np.ndarray, 
     cv2.imwrite(str(out), overlay, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
 def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
-    from optimization.problems import combine_contact_prior
-    from gates.interaction.contact import contact_row_state_from_judgment
-    from gates.interaction.contact import load_agent_interaction_judgments
-    from gates.interaction.visibility import ownership_quarantine_mode
+    from actions.filters.contact import combine_contact_prior
+    from actions.filters.contact import contact_row_state_from_judgment
+    from actions.filters.contact import load_agent_interaction_judgments
+    from actions.filters.visibility import ownership_quarantine_mode
     payload = load_json(args.annotations)
     frames = list_or_empty(payload.get('frames')) if isinstance(payload, dict) else []
     (start, end) = [int(x) for x in args.frame_span]
@@ -938,7 +938,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import LinearConstraint, minimize
 from scipy.spatial import cKDTree
-from gates.object.geometry import load_signed_face_authority
+from envs.qualification.object_geometry import load_signed_face_authority
 
 def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
     """Treat an explicit unready/support-false P15 report as a physical-factor quarantine.
@@ -1071,7 +1071,7 @@ def signed_geometry_source_readiness(completion_readiness: dict[str, Any], sign_
     return {'source': None, 'signed_geometry_ready': None, 'legacy_readiness_fields_missing': True, 'reason': 'explicit sign mesh lacks --sign-mesh-source-report; watertightness alone cannot establish physical sign readiness'}
 
 def build_geometric_constraints(argv=None) -> None:
-    from optimization.common.solvers import least_norm_halfspace_escape
+    from utils.numerics import least_norm_halfspace_escape
     import trimesh
     import open3d as o3d
     parser = argparse.ArgumentParser()

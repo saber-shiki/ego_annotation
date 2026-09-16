@@ -234,7 +234,7 @@ def correspondence_state(source: np.ndarray, target: np.ndarray, rotation: np.nd
     import numpy as np
     from scipy.spatial import cKDTree
     import math
-    from optimization.object.pose import apply_pose
+    from utils.geometry import apply_pose
     transformed = apply_pose(source, rotation, translation)
     target_tree = cKDTree(target)
     (distances, target_indices) = target_tree.query(transformed, k=1, workers=-1)

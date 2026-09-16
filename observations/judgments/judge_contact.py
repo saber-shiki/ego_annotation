@@ -60,7 +60,7 @@ def judge(evidence, images):
         elif isinstance(value, list):
             for child in value:check_frames(child)
     check_frames(result)
-    from gates.interaction.contact import interaction_states
+    from actions.filters.contact import interaction_states
     interaction_states(result, evidence['frame_ids'], evidence['object_id'])
     result['judgment_provenance'] = {'kind':'current_run_visual_judgment','judgment':'contact',**provenance}
     return result

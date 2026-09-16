@@ -14,7 +14,7 @@ from utils.geometry import (
 )
 
 
-from optimization.common.correspondences import make_scene, closest
+from utils.candidate_geometry import make_scene, closest
 
 class DemoGeometry(unittest.TestCase):
     def test_camera_roundtrip_and_halfpixel(self):
@@ -91,11 +91,11 @@ from pathlib import Path
 import unittest
 import numpy as np
 import torch
-from gates.interaction.contact import primary_contact_pads
-from gates.interaction.contact import (visual_proximity_weights, primary_similarity_reachable,
+from actions.filters.contact import primary_contact_pads
+from actions.filters.contact import (visual_proximity_weights, primary_similarity_reachable,
     HAND_SCALE_BOUNDS, HAND_TRANSLATION_BOUND_M)
 from rewards.terms.interaction.contact import unsigned_pad_loss
-from optimization.common.correspondences import make_scene, closest
+from utils.candidate_geometry import make_scene, closest
 from utils.geometry import project
 
 

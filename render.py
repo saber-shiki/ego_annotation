@@ -8,8 +8,8 @@ import numpy as np
 from utils.data import indexed, RKEY, TKEY, load, RawFrameSource
 from utils.state import sha, InputIdentity
 from observations.common import pose_from_values
-from gates.output.acceptance import mesh, timeline
-from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
+from envs.qualification.output import mesh, timeline
+from actions.filters.visibility import validate_visibility, apply_display_visibility, POLICY
 
 def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, raw_source=None, mode='complete', calibration=None, visibility=None, provenance=None, identity=None, visual_review=None):
     """All backing arrays are embedded in RRD or numeric JSON, never NPZ/PLY refs."""
@@ -142,7 +142,7 @@ def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, ra
 def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_manifest, output, *, visual_review=None):
     """Validate an actual fitted archive and publish complete JSON/RRD geometry."""
     from utils.state import in_run, input_identity, recovery_provenance
-    from gates.object.geometry import validate_posterior
+    from envs.qualification.object_geometry import validate_posterior
     from observations.object.shape import mesh_arrays
     root = Path(run_root).resolve()
     for path in (state_path, binding_path, fit_report_path):
@@ -260,7 +260,7 @@ def pose_review_images(annotations, binding, hand_archive, frame_ids, output):
     """Project the actual refined full mesh and immutable source MANO for pose review."""
     import cv2
     from observations.object.shape import mesh_arrays
-    from optimization.hand.mano import hand_validity
+    from utils.mano import hand_validity
     frames = indexed(annotations['frames'])
     poses = indexed(binding['pose_rows'])
     ids = list(frames)

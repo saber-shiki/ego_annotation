@@ -8,11 +8,11 @@ from scipy.spatial import cKDTree
 from utils.data import load, render_size
 from utils.state import sha, assert_prediction_only
 from utils.geometry import camera, project, resized_K, torch_project, torch_rodrigues
-from optimization.hand.mano import JOINT_ORDER, TIP_VERTICES, mano_models, hand_validity, fit_keyframes, interpolate_supported
-from optimization.common.correspondences import make_scene, closest
+from utils.mano import JOINT_ORDER, TIP_VERTICES, mano_models, hand_validity, fit_keyframes, interpolate_supported
+from utils.candidate_geometry import make_scene, closest
 from observations.common import annotation_timeline
 from observations.interaction.evidence import appearance_mask_rows
-from gates.interaction.contact import (interaction_states, primary_contact_pads, PRIMARY_DIGITS,
+from actions.filters.contact import (interaction_states, primary_contact_pads, PRIMARY_DIGITS,
     primary_similarity_reachable, visual_proximity_weights, validate_visual_proximity_contract,
     HAND_TRANSLATION_BOUND_M, HAND_SCALE_BOUNDS, PRIMARY_PROXIMITY_MAX_GAP_M)
 from rewards.terms.interaction.contact import unsigned_pad_loss

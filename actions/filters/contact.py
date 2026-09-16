@@ -482,3 +482,19 @@ def contact_row_state_from_judgment(judgment: dict[str, Any] | None, *, image_ca
     if image_candidate:
         return (True, 'active_contact_patch')
     return (True, 'inactive_unresolved_contact_by_agent_judgment')
+
+def combine_contact_prior(image_prior: float, judgment: dict[str, Any] | None) -> float:
+    from typing import Any
+    import numpy as np
+    image_prior = float(np.clip(image_prior, 0.0, 1.0))
+    if not isinstance(judgment, dict):
+        return image_prior
+    agent_prior = float(np.clip(float(judgment['contact_prior_probability']), 0.0, 1.0))
+    state = str(judgment.get('contact_state') or 'unresolved')
+    if state == 'likely_contact':
+        return max(image_prior, agent_prior)
+    if state == 'possible_contact':
+        return max(min(image_prior, 0.65), agent_prior)
+    if state == 'no_contact':
+        return min(image_prior, agent_prior)
+    return agent_prior

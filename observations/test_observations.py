@@ -9,7 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 from utils.data import PoseNode, RGBEdge, RGBReprojectionFactor, PointFactor
 from observations.object.rgb_tracking import local_rotation_evidence, observed_rotation_authority
-from optimization.object.pose import solve_scene_pose as solve, GraphConfig, residual_blocks
+from legacy_optimize.object.pose import solve_scene_pose as solve, GraphConfig, residual_blocks
 
 def fixture(count=9, ids=None):
     ids = ids or [17 + 31 * i for i in range(count)]
@@ -212,7 +212,7 @@ import observations.object.surface as ownership
 import observations.object.surface as visible_geometry
 from observations.object.surface import CLASS_CODES as CLASS_CODES
 from observations.object.surface import MetricEligibility as MetricEligibility
-from gates.object.observation import classify_native_depth as classify_native_depth
+from envs.qualification.object_observation import classify_native_depth as classify_native_depth
 from observations.object.shape import build_appearance as build_appearance
 
 def digest(path):
@@ -555,7 +555,7 @@ class RGBInitializer(unittest.TestCase):
     def test_direct_and_latent_rows_survive_P14b_P15_without_promotion(self):
         from types import SimpleNamespace
         from observations.object.signed_geometry import trusted_pose_rows
-        from optimization.object.pose import build_pose_rows
+        from legacy_optimize.object.pose import build_pose_rows
         (base, ann, arrays, q, _, _) = self.fixture()
         base['pose_rows'][-1].update(status='interpolated', rigid_pose_observation_eligible=False)
         ann['frames'].append({'frame_idx': 8, 'objects': []})
@@ -623,7 +623,7 @@ class RGBMetricReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'eligibility is required'):
                 reproduce_source_depth_support(obj, mask, depth, np.ones_like(depth), intr, parameters)
 
-from optimization.common.correspondences import first_hit_z, nearest_hand_first_hits
+from utils.candidate_geometry import first_hit_z, nearest_hand_first_hits
 
 
 class Owlv2TokenBudgetTests(unittest.TestCase):
@@ -680,8 +680,8 @@ class Owlv2TokenBudgetTests(unittest.TestCase):
 class OptionalFactorProducerTests(unittest.TestCase):
     def test_visibility_producer_flows_into_formal_loader_and_weight_consumer(self):
         from observations.interaction.evidence import build_hand_visibility,hand_visibility_parse_args
-        from gates.interaction.contact import load_generic_factor_reports
-        from gates.hand.observation import hand_observation_visibility_for_row
+        from actions.filters.contact import load_generic_factor_reports
+        from envs.qualification.hand_observation import hand_observation_visibility_for_row
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/'ownership.json'
@@ -702,7 +702,7 @@ class OptionalFactorProducerTests(unittest.TestCase):
 class PrepareCLITests(unittest.TestCase):
     def test_visibility_cli_publishes_loadable_report(self):
         import subprocess,sys
-        from gates.interaction.contact import load_generic_factor_reports
+        from actions.filters.contact import load_generic_factor_reports
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/'ownership.json'
             source.write_text(json.dumps({'ownership_rows':[{'frame_idx':7,'hand_side':'left',
@@ -804,7 +804,7 @@ class RigidityMotionEvidenceTests(unittest.TestCase):
         from unittest.mock import patch
         from observations.object.surface import build_rigidity_motion_evidence
         from observations.judgments.judge_rigidity import judge,SCHEMA
-        from gates.object.geometry import require_rigid_tracked_whole
+        from envs.qualification.object_geometry import require_rigid_tracked_whole
         import jsonschema
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory).resolve();paths=self.fixture(root)
@@ -877,7 +877,7 @@ class CompletionProducerContractTests(unittest.TestCase):
     def test_producer_binds_consumed_p11_bytes_and_preserves_geometry_roles(self):
         import tempfile
         from utils.state import sha
-        from gates.object.geometry import normalize_completion
+        from envs.qualification.object_geometry import normalize_completion
         with tempfile.TemporaryDirectory() as directory:
             evidence,completion,annotations=self.produce(Path(directory))
             original=copy.deepcopy(completion);bound=normalize_completion(completion,annotations,'item')
@@ -894,7 +894,7 @@ class CompletionProducerContractTests(unittest.TestCase):
 
     def test_completion_gate_keeps_missing_hash_identity_anchor_surfel_and_gt_rejections(self):
         import tempfile
-        from gates.object.geometry import normalize_completion
+        from envs.qualification.object_geometry import normalize_completion
         with tempfile.TemporaryDirectory() as directory:
             evidence,completion,annotations=self.produce(Path(directory))
             for field in ('missing_hash','wrong_hash','object','case','anchor','surfels','gt','alias'):

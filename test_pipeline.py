@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import numpy as np
-from optimization.problems import StandaloneScene
-from optimization.solve import solve
+from legacy_optimize.problems import StandaloneScene
+from legacy_optimize.solve import solve
 from utils.data import PoseNode
 
 class GroupedContractTests(unittest.TestCase):
@@ -149,7 +149,7 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 from render import export,timeline
-from gates.interaction.visibility import apply_display_visibility, validate_visibility
+from actions.filters.visibility import apply_display_visibility, validate_visibility
 from utils.state import InputIdentity, input_identity
 from utils.data import RKEY,TKEY
 from utils.state import sha
@@ -329,9 +329,9 @@ import os
 class RealManoOptimizerTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('EGO_MANO_MODELS'), 'set EGO_MANO_MODELS to licensed MANO assets')
     def test_real_mano_forward_fit_and_replay(self):
-        from optimization.hand.mano import mano_models, TIP_VERTICES, JOINT_ORDER
-        from optimization.problems import PreparedVisualFit
-        from optimization.solve import solve
+        from utils.mano import mano_models, TIP_VERTICES, JOINT_ORDER
+        from legacy_optimize.problems import PreparedVisualFit
+        from legacy_optimize.solve import solve
         from observations.object.shape import AUTHORITY
         import torch, trimesh, cv2
         model_path=Path(os.environ['EGO_MANO_MODELS'])
@@ -1356,7 +1356,7 @@ def _cpu_resume_cli_fixture():
     import main
     from observations.judgments import judge_object
     from observations.camera import calibration
-    from gates.camera import calibration as camera_gate
+    from envs.qualification import camera as camera_gate
     control=Path(os.environ['EGO_TEST_RECOVERY_CONTROL'])
     def count(name):
         values=json.loads(control.read_text())
@@ -1398,8 +1398,8 @@ def _cpu_resume_cli_fixture():
             ('observations.judgments.judge_object.judge',object_judge),
             ('observations.camera.calibration.resolve_camera',camera),
             ('observations.camera.calibration.bind_depth_contract',bind),
-            ('gates.camera.calibration.load_contract',lambda *a,**k:({},{})),
-            ('gates.camera.calibration.plane_intrinsics',lambda *a,**k:([100.,100.,32.,32.],None))]:
+            ('envs.qualification.camera.load_contract',lambda *a,**k:({},{})),
+            ('envs.qualification.camera.plane_intrinsics',lambda *a,**k:([100.,100.,32.,32.],None))]:
             stack.enter_context(patch(target,value))
         main.main(sys.argv[1:])
 

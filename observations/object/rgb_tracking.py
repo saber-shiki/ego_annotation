@@ -215,7 +215,7 @@ def valid_initial_poses(report: dict[str, Any]) -> dict[int, tuple[np.ndarray, n
 
 def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict) -> str | None:
     """A target need not have depth/pose; a source must have accepted P09 and P14."""
-    from gates.object.observation import p09_geometry_validation as p09_geometry_validation
+    from envs.qualification.object_observation import p09_geometry_validation as p09_geometry_validation
     obj = object_for_frame(frame, object_id)
     geom = obj.get('visible_geometry_candidate') if obj else None
     if not isinstance(geom, dict):
@@ -671,7 +671,7 @@ from scipy.spatial.transform import Rotation
 from typing import Mapping
 from utils.geometry import valid_rotation
 from observations.common import pose_from_values
-from gates.object.observation import p09_geometry_validation
+from envs.qualification.object_observation import p09_geometry_validation
 
 def initialize(base, annotations, object_id, edge_arrays, edge_rows, anchor):
     original = _timeline_rows(base)
@@ -847,14 +847,14 @@ from utils.geometry import interpolate_se3_pose
 
 def select_flow_seed_points(frame: dict[str, Any], obj: dict[str, Any], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, *, max_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     import cv2
-    from optimization.object.pose import read_gray
+    from observations.object.pose import read_gray
     from pathlib import Path
     from typing import Any
     import numpy as np
-    from optimization.object.pose import frame_camera_for_raster
-    from optimization.object.pose import numeric_summary
-    from optimization.object.pose import apply_pose
-    from optimization.object.pose import read_mask_at_size
+    from observations.object.pose import frame_camera_for_raster
+    from observations.object.pose import numeric_summary
+    from observations.object.pose import apply_pose
+    from observations.object.pose import read_mask_at_size
     raw_path = Path(str(frame.get('raw_frame_path') or ''))
     mask_path = Path(str(obj.get('mask_path') or ''))
     if not raw_path.is_file() or not mask_path.is_file():
@@ -887,16 +887,16 @@ def select_flow_seed_points(frame: dict[str, Any], obj: dict[str, Any], observed
     return (gray, uv[selected].astype(np.float32), canonical[selected].astype(float), {'raw_frame': str(raw_path), 'object_owned_mask': str(mask_path), 'projected_owned_seed_count': int(len(uv)), 'selected_seed_count': int(len(selected)), 'selected_gradient_summary': numeric_summary(scores[selected]), 'camera_raster_contract': raster_contract})
 
 def estimate_optical_flow_pnp_bridge(*, source_idx: int, target_idx: int, frames: dict[int, dict[str, Any]], objects: dict[int, dict[str, Any]], observed_world: np.ndarray, source_rotation: np.ndarray, source_translation: np.ndarray, max_seed_points: int, min_tracked_points: int, min_pnp_inliers: int, min_inlier_fraction: float, max_reprojection_median_px: float, max_reprojection_p95_px: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, Any]]:
-    from optimization.object.pose import numeric_summary
+    from observations.object.pose import numeric_summary
     import cv2
-    from optimization.object.pose import read_gray
-    from optimization.object.pose import rotation_observability_summary
+    from observations.object.pose import read_gray
+    from observations.object.pose import rotation_observability_summary
     import numpy as np
-    from optimization.object.pose import apply_pose
+    from observations.object.pose import apply_pose
     from pathlib import Path
     from typing import Any
-    from optimization.object.pose import frame_camera_for_raster
-    from optimization.object.pose import read_mask_at_size
+    from observations.object.pose import frame_camera_for_raster
+    from observations.object.pose import read_mask_at_size
     if source_idx == target_idx:
         raise RuntimeError('optical-flow bridge source and target must differ')
     direction = 1 if target_idx > source_idx else -1

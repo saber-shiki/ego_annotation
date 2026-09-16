@@ -8,10 +8,10 @@ from scipy.spatial.transform import Rotation
 from utils.data import PoseNode,RGBEdge,RGBReprojectionFactor,PointFactor,SolverConfig
 from rewards.terms.object.pose import rgb_edge_residual
 from rewards.terms.object.image import rgb_reprojection_residual
-from optimization.object.pose import solve_scene_pose as solve,GraphConfig,residual_blocks
+from legacy_optimize.object.pose import solve_scene_pose as solve,GraphConfig,residual_blocks
 from observations.common import build_nodes
 from utils.data import time_source_pairs,time_keyframes,RKEY,TKEY
-from optimization.object.shape import rebind_canonical
+from legacy_optimize.object.shape import rebind_canonical
 
 
 def fixture(ids=None):
@@ -128,7 +128,7 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 from utils.data import PoseNode, RGBEdge, RGBReprojectionFactor
-from optimization.object.pose import GraphConfig, solve_scene_pose as solve, residual_blocks, reprojection_depths, depth_state
+from legacy_optimize.object.pose import GraphConfig, solve_scene_pose as solve, residual_blocks, reprojection_depths, depth_state
 
 
 def node(i, z=0):
@@ -218,7 +218,7 @@ class CorrectionTests(unittest.TestCase):
 
 class FormalProblemTests(unittest.TestCase):
     def problem(self, **kwargs):
-        from optimization.problems import FormalManoInterval
+        from legacy_optimize.problems import FormalManoInterval
         from pathlib import Path
         p=Path('fixture')
         return FormalManoInterval('case','object',p,p,p,p,[p],p,p,p,0,2,**kwargs)
@@ -241,7 +241,7 @@ class FormalProblemTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.problem(numeric_options={'optimize_object_translation':True}).arguments()
 
     def test_empty_formal_interval_does_not_invent_geometry(self):
-        from optimization.hand.fit import optimize_rows
+        from legacy_optimize.hand.fit import optimize_rows
         result,states,archive=optimize_rows([],None,None,None,None)
         self.assertEqual(result['status'],'no_rows');self.assertEqual(states,[])
         self.assertEqual(archive['vertices_world_m'].shape,(0,778,3))
@@ -254,8 +254,8 @@ class FormalFactorConsumerTests(unittest.TestCase):
         from types import SimpleNamespace
         import torch, trimesh
         from utils.data import FrameHandRow
-        from optimization.hand.fit import formal_interval_arguments
-        from optimization.common.correspondences import make_scene
+        from legacy_optimize.hand.fit import formal_interval_arguments
+        from utils.candidate_geometry import make_scene
         torch.set_num_threads(2)
         class ArticulatedFixture:
             def __init__(self):
@@ -317,7 +317,7 @@ class FormalFactorConsumerTests(unittest.TestCase):
     def test_solver_consumes_named_factors_and_disabling_them_changes_candidate(self):
         from contextlib import ExitStack
         from unittest.mock import patch
-        from optimization.hand.fit import optimize_rows
+        from legacy_optimize.hand.fit import optimize_rows
         import rewards.terms.interaction.physics as physics
         import rewards.terms.hand.observation as observation
         import rewards.terms.hand.priors as priors

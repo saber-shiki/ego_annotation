@@ -9,15 +9,15 @@ def fit_formal_interval(args) -> None:
     import numpy as np
     import torch
     from utils.data import load_mesh
-    from gates.object.trajectory import pose_graph_readiness
-    from gates.object.geometry import resolve_physical_surface_contract
-    from gates.output.acceptance import reject_rejected_annotation_path
-    from gates.object.geometry import completion_report_completed_mesh
-    from optimization.hand.mano import load_models
-    from gates.hand.observation import validate_interval_camera_mano_contract
+    from envs.qualification.object_trajectory import pose_graph_readiness
+    from envs.qualification.object_geometry import resolve_physical_surface_contract
+    from envs.qualification.output import reject_rejected_annotation_path
+    from envs.qualification.object_geometry import completion_report_completed_mesh
+    from utils.mano import load_models
+    from envs.qualification.hand_observation import validate_interval_camera_mano_contract
     from utils.data import load_json
     from utils.data import write_json
-    from gates.object.geometry import load_signed_face_authority
+    from envs.qualification.object_geometry import load_signed_face_authority
     reject_rejected_annotation_path(args.annotations)
     pose_report = load_json(args.pose_report)
     pose_readiness = pose_graph_readiness(pose_report)
@@ -89,21 +89,21 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     import torch
     from collections import Counter
     from utils.geometry import frame_camera_pose
-    from optimization.common.correspondences import dense_observed_surface_constraints_from_vertices
-    from gates.hand.observation import active_frame_intrinsics
+    from utils.candidate_geometry import dense_observed_surface_constraints_from_vertices
+    from envs.qualification.hand_observation import active_frame_intrinsics
     from utils.data import numeric_summary
-    from optimization.common.correspondences import merge_constraints
-    from gates.hand.observation import translation_support_gate_applies
-    from optimization.hand.mano import rotvec_to_matrix
+    from utils.candidate_geometry import merge_constraints
+    from envs.qualification.hand_observation import translation_support_gate_applies
+    from utils.mano import rotvec_to_matrix
     from observations.interaction.evidence import project_world
     from observations.interaction.evidence import sample_ids
     from utils.geometry import world_to_camera
-    from gates.interaction.contact import contact_patch_anchor_coherence
+    from actions.filters.contact import contact_patch_anchor_coherence
     from utils.data import FrameHandRow
     from observations.interaction.evidence import full_signed_topology_measure
     from observations.interaction.evidence import full_observed_surface_measure
     from observations.interaction.evidence import OPENPOSE_FINGER_GROUPS
-    from optimization.common.correspondences import active_constraints_from_vertices
+    from utils.candidate_geometry import active_constraints_from_vertices
     from observations.interaction.evidence import inactive_signed_surface_measure
     from rewards.terms.hand.priors import formal_translation, formal_root_orientation, formal_articulation
     from rewards.terms.interaction.contact import contact_state_prior, contact_geometry_likelihood, contact_state_continuity, normal_deadband, normal_scaled_attraction
@@ -616,7 +616,7 @@ def infer_pose_joint_finger_groups(model: Any, base_root_mat: torch.Tensor, base
     from typing import Any
     import numpy as np
     import torch
-    from optimization.hand.mano import rotvec_to_matrix
+    from utils.mano import rotvec_to_matrix
     from observations.interaction.evidence import OPENPOSE_FINGER_GROUPS
     device = base_pose_mat.device
     out_groups: list[int] = []
@@ -646,34 +646,34 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     from observations.interaction.evidence import load_binary_mask
     from utils.data import pose_map
     from utils.geometry import finite_image_affine
-    from gates.object.geometry import validate_completed_mesh_contract
+    from envs.qualification.object_geometry import validate_completed_mesh_contract
     from observations.interaction.evidence import load_visible_object_mask_paths
     from observations.interaction.evidence import visible_object_mask_face_gate
-    from gates.hand.observation import joint_visibility_from_metric_depth
+    from envs.qualification.hand_observation import joint_visibility_from_metric_depth
     from observations.interaction.evidence import hand_owned_object_depth_quarantine
     from observations.interaction.evidence import load_depth_order_first_surface_for_row
-    from gates.interaction.contact import load_surface_eligibility_rows
-    from optimization.hand.mano import source_npz_for_hand
+    from actions.filters.contact import load_surface_eligibility_rows
+    from utils.mano import source_npz_for_hand
     from observations.object.surface import load_depth_sources
-    from gates.interaction.contact import load_visible_surface_track_rows
+    from actions.filters.contact import load_visible_surface_track_rows
     from observations.interaction.evidence import surface_eligibility_mask_for_row
-    from gates.interaction.contact import contact_patch_for_row
+    from actions.filters.contact import contact_patch_for_row
     from observations.object.surface import face_provenance
     from observations.interaction.evidence import observed_constraints_for_hand
-    from gates.interaction.contact import load_generic_factor_reports
-    from gates.interaction.contact import merge_factor_row_maps
+    from actions.filters.contact import load_generic_factor_reports
+    from actions.filters.contact import merge_factor_row_maps
     from observations.interaction.evidence import visible_surface_depth_order_constraints
     from observations.interaction.evidence import visible_ownership_quarantine_faces
     from observations.object.surface import classify_object_vertices_against_depth
-    from optimization.hand.mano import bridge_vertices_and_joints
-    from optimization.hand.mano import similarity_from_to
+    from utils.mano import bridge_vertices_and_joints
+    from utils.mano import similarity_from_to
     from observations.interaction.evidence import visible_surface_track_mask_for_row
     from observations.interaction.evidence import hand_depth_shift_prior_for_row
-    from gates.interaction.contact import load_visible_ownership_rows
-    from optimization.common.correspondences import contact_patch_targets_from_vertices
-    from optimization.hand.mano import load_source_arrays
+    from actions.filters.contact import load_visible_ownership_rows
+    from utils.candidate_geometry import contact_patch_targets_from_vertices
+    from utils.mano import load_source_arrays
     from utils.data import load_json
-    from gates.hand.observation import hand_observation_visibility_for_row
+    from envs.qualification.hand_observation import hand_observation_visibility_for_row
     from observations.interaction.evidence import visible_ownership_masks_for_row
     from utils.data import FrameHandRow
     from observations.interaction.evidence import inactive_signed_surface_measure

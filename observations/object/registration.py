@@ -2,12 +2,12 @@ from __future__ import annotations
 
 def register_adjacent_observed_surfaces(source: np.ndarray, target: np.ndarray, *, frame_gap: int, iterations: int, trim_fraction: float, max_correspondence_m: float, min_matches: int, max_median_residual_m: float) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Estimate a world-to-world rigid delta using only accepted observed surfels."""
-    from optimization.common.correspondences import correspondence_state
+    from utils.candidate_geometry import correspondence_state
     from typing import Any
     import numpy as np
-    from optimization.object.pose import rotation_angle_deg
-    from optimization.object.pose import numeric_summary
-    from optimization.common.solvers import rigid_umeyama
+    from observations.object.pose import rotation_angle_deg
+    from observations.object.pose import numeric_summary
+    from utils.numerics import rigid_umeyama
     rotation = np.eye(3, dtype=float)
     translation = target.mean(axis=0) - source.mean(axis=0)
     trace: list[dict[str, Any]] = []
@@ -31,8 +31,8 @@ def refine_translation_from_observed_anchor(anchor_canonical_points: np.ndarray,
     from typing import Any
     import numpy as np
     from scipy.spatial import cKDTree
-    from optimization.object.pose import nearest_summary
-    from optimization.object.pose import apply_pose
+    from observations.object.pose import nearest_summary
+    from observations.object.pose import apply_pose
     translation = np.asarray(initial_translation, dtype=float).copy()
     trace: list[dict[str, Any]] = []
     for iteration in range(iterations):
@@ -54,9 +54,9 @@ def refine_pose_from_observed_anchor(anchor_canonical_points: np.ndarray, observ
     from typing import Any
     import numpy as np
     from scipy.spatial import cKDTree
-    from optimization.object.pose import nearest_summary
-    from optimization.object.pose import apply_pose
-    from optimization.common.solvers import rigid_umeyama
+    from observations.object.pose import nearest_summary
+    from observations.object.pose import apply_pose
+    from utils.numerics import rigid_umeyama
     rotation = np.asarray(initial_rotation, dtype=float).copy()
     translation = np.asarray(initial_translation, dtype=float).copy()
     trace: list[dict[str, Any]] = []
@@ -102,7 +102,7 @@ def rotation_candidates(obs_basis: np.ndarray, model_basis: np.ndarray) -> list[
     return candidates
 
 def align_trellis_to_observed(trellis: trimesh.Trimesh, observed_points: np.ndarray, max_samples: int=20000) -> dict[str, Any]:
-    from optimization.common.solvers import umeyama_similarity
+    from utils.numerics import umeyama_similarity
     from observations.object.shape import nearest_stats
     import trimesh
     from typing import Any

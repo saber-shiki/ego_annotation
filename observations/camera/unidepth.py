@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from gates.camera.calibration import K_from_intrinsics, load_contract, plane_intrinsics, sha256_file
+from envs.qualification.camera import K_from_intrinsics, load_contract, plane_intrinsics, sha256_file
 
 def camera_ray_angular_error_deg(rays: np.ndarray, camera_K: np.ndarray) -> dict:
     rays = np.asarray(rays, dtype=np.float64)

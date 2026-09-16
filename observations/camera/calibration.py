@@ -205,19 +205,19 @@ import json
 from pathlib import Path
 from typing import Any
 import numpy as np
-from gates.camera.calibration import SCHEMA
-from gates.camera.calibration import K_from_intrinsics
-from gates.camera.calibration import finite_affine
-from gates.camera.calibration import finite_intrinsics
-from gates.camera.calibration import fov_degrees
+from envs.qualification.camera import SCHEMA
+from envs.qualification.camera import K_from_intrinsics
+from envs.qualification.camera import finite_affine
+from envs.qualification.camera import finite_intrinsics
+from envs.qualification.camera import fov_degrees
 from utils.data import read_json_mapping as camera_load_json
-from gates.camera.calibration import normalize_authority
-from gates.camera.calibration import plane_record
-from gates.camera.calibration import resize_affine
-from gates.camera.calibration import sha256_file
-from gates.camera.calibration import size_wh
-from gates.camera.calibration import transform_intrinsics
-from gates.camera.calibration import validate_contract
+from envs.qualification.camera import normalize_authority
+from envs.qualification.camera import plane_record
+from envs.qualification.camera import resize_affine
+from envs.qualification.camera import sha256_file
+from envs.qualification.camera import size_wh
+from envs.qualification.camera import transform_intrinsics
+from envs.qualification.camera import validate_contract
 
 def parse_affine(values: list[float] | None, label: str) -> np.ndarray | None:
     if values is None:
@@ -474,10 +474,10 @@ import json
 from pathlib import Path
 from typing import Any
 import numpy as np
-from gates.camera.calibration import load_contract
-from gates.camera.calibration import plane_intrinsics
-from gates.camera.calibration import sha256_file as depth_sha256_file
-from gates.camera.calibration import summarize_contract
+from envs.qualification.camera import load_contract
+from envs.qualification.camera import plane_intrinsics
+from envs.qualification.camera import sha256_file as depth_sha256_file
+from envs.qualification.camera import summarize_contract
 
 def array_sha256(array: np.ndarray) -> str:
     contiguous = np.ascontiguousarray(array)

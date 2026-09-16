@@ -8,7 +8,7 @@ FIXTURES = Path(__file__).with_name('fixtures')
 
 class RetainedAppearanceTests(unittest.TestCase):
     def test_can_105_rejected_106_retained_by_producer_and_options(self):
-        from gates.object.observation import retained_metric_alignment
+        from envs.qualification.object_observation import retained_metric_alignment
         from observations.object.shape import metric_alignment
         from main import appearance_candidate_ids
         data = json.loads((FIXTURES / 'can_retained_metric.json').read_text())

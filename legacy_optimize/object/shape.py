@@ -23,10 +23,10 @@ import cv2
 from utils.data import load, indexed
 from utils.state import sha, in_run
 from utils.geometry import resized_K
-from gates.object.geometry import validate_posterior
-from gates.object.observation import retained_metric_alignment
+from envs.qualification.object_geometry import validate_posterior
+from envs.qualification.object_observation import retained_metric_alignment
 from observations.object.shape import AUTHORITY, record, mesh_arrays, write_mesh, scene_similarity
-from optimization.common.variables import canonical_gauge
+from utils.candidate_state import canonical_gauge
 
 def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_path, output, object_id, root):
     if output.exists():

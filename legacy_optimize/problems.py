@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 import numpy as np
 from utils.data import PoseNode, RGBEdge, RGBReprojectionFactor
-from optimization.object.pose import GraphConfig
+from legacy_optimize.object.pose import GraphConfig
 
 @dataclass(frozen=True)
 class StandaloneScene:
@@ -58,7 +58,7 @@ class FormalManoInterval:
     numeric_options: dict = field(default_factory=dict)
 
     def arguments(self):
-        from optimization.hand.fit import formal_interval_arguments
+        from legacy_optimize.hand.fit import formal_interval_arguments
         profiles = {'formal': {}, 'hot3d_shared': {'require_active_full_K_mano_contract': True, 'visible_surface_depth_order_term': True, 'freeze_translation_without_visible_surface_support': True, 'gate_translation_with_visible_surface_support': True, 'optimize_object_translation': False}, 'contact_geometry': {'contact_state_geometry_likelihood': True}, 'object_delta': {'optimize_object_translation': True}, 'hand_ray_prior': {'use_hand_ray_shift_prior': True}, 'no_dense_barrier': {'dense_observed_surface_barrier': False}, 'visible_depth_order': {'visible_surface_depth_order_term': True}, 'support_scaled_attraction': {'contact_patch_residual_mode': 'support_scaled_attraction'}, 'visibility_weighted': {'visibility_weighted_hand_observation': True}, 'similarity_mapped_raw': {'zero_surface_mode': 'similarity_mapped_raw'}}
         if self.profile not in profiles:
             raise ValueError('unreviewed formal MANO profile')
@@ -117,7 +117,7 @@ class FormalObjectTrajectory:
     nonpenetration_targets: object | None = None
 
     def arguments(self):
-        from optimization.object.pose import formal_object_parse_args
+        from legacy_optimize.object.pose import formal_object_parse_args
         if self.profile not in {'observed_only', 'image_assisted', 'nonpenetration_assisted'}:
             raise ValueError('unreviewed formal object composition')
         argv = ['--annotations', str(self.annotations), '--pose-report', str(self.source_pose), '--completion-report', str(self.completion_report), '--object-id', self.object_id, '--output-dir', str(self.output)]
@@ -134,19 +134,3 @@ class FormalObjectTrajectory:
         elif self.nonpenetration_targets is not None:
             raise ValueError('pressure targets require nonpenetration_assisted problem')
         return formal_object_parse_args(argv)
-
-def combine_contact_prior(image_prior: float, judgment: dict[str, Any] | None) -> float:
-    from typing import Any
-    import numpy as np
-    image_prior = float(np.clip(image_prior, 0.0, 1.0))
-    if not isinstance(judgment, dict):
-        return image_prior
-    agent_prior = float(np.clip(float(judgment['contact_prior_probability']), 0.0, 1.0))
-    state = str(judgment.get('contact_state') or 'unresolved')
-    if state == 'likely_contact':
-        return max(image_prior, agent_prior)
-    if state == 'possible_contact':
-        return max(min(image_prior, 0.65), agent_prior)
-    if state == 'no_contact':
-        return min(image_prior, agent_prior)
-    return agent_prior

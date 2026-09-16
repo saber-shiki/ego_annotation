@@ -6,8 +6,8 @@ import numpy as np
 from utils.data import RGBEdge, RGBReprojectionFactor, indexed, RKEY, TKEY, load
 from utils.state import sha, in_run, assert_prediction_only, require_run_artifact
 from observations.common import build_nodes, pose_from_values
-from optimization.problems import StandaloneScene
-from optimization.solve import solve
+from legacy_optimize.problems import StandaloneScene
+from legacy_optimize.solve import solve
 
 
 def load_edges(npz_path, report_path, source_path, annotations_path, nodes, root):
@@ -110,8 +110,8 @@ def refine(annotations_path, source_path, edge_path, edge_report, object_id, anc
 
 
 def fit_prepared(problem, run_root):
-    from gates.object.geometry import validate_posterior
-    from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
+    from envs.qualification.object_geometry import validate_posterior
+    from actions.filters.visibility import validate_visibility, apply_display_visibility, POLICY
     binding=load(problem.pose_report)
     if binding.get('schema')!='rgb_scene_visual_refined_binding_v1':
         raise ValueError('typed visual-refined binding required')
@@ -215,7 +215,7 @@ def main(argv=None):
         from observations.object.rgb_tracking import build_rgb_edges
         return build_rgb_edges(args.arguments)
     if args.command=='fit-formal':
-        from optimization.problems import FormalManoInterval
+        from legacy_optimize.problems import FormalManoInterval
         values=load(args.problem)
         for key in ('annotations','pose_report','completed_mesh','completion_report','output_dir','wilor_root','mano_left'):
             values[key]=Path(values[key])
@@ -234,7 +234,7 @@ def main(argv=None):
     if args.command=='refine-pose':
         return refine(args.annotations,args.source_pose,args.rgb_edges,args.rgb_report,
                       args.object_id,args.anchor,args.output,args.run_root)
-    from optimization.problems import PreparedVisualFit
+    from legacy_optimize.problems import PreparedVisualFit
     values=vars(args).copy();values.pop('command');run_root=values.pop('run_root')
     return fit_prepared(PreparedVisualFit(**values),run_root)
 
@@ -320,9 +320,9 @@ def annotate(args):
     from observations.camera import calibration
     from observations.common import build_base_annotations, base_parse_args
     from observations.object import surface, shape
-    from gates.camera.calibration import load_contract, plane_intrinsics
-    from gates.object.geometry import normalize_completion
-    from optimization.problems import ObservedObjectPose, StandaloneShape
+    from envs.qualification.camera import load_contract, plane_intrinsics
+    from envs.qualification.object_geometry import normalize_completion
+    from legacy_optimize.problems import ObservedObjectPose, StandaloneShape
     from render import render_video, export_scene
     from utils.config import preflight_providers
     from utils.state import StageRecovery, planned_stage_contract
@@ -637,7 +637,7 @@ def annotate(args):
                 owned/'sam2_track.json',root/'state/rigidity_evidence')
         rigidity_evidence,rigidity_images=_stage_rigidity_evidence
         rigidity=ask('rigidity',rigidity_evidence,rigidity_images,root/'state/rigidity.json')
-        from gates.object.geometry import require_rigid_tracked_whole
+        from envs.qualification.object_geometry import require_rigid_tracked_whole
         require_rigid_tracked_whole(rigidity)
         @stage('metric_inputs', inputs={'annotations':ann,'visible':visible,'decision':decision},
             parameters={'anchor':anchor,'case':args.case,'object_id':object_id})
@@ -838,10 +838,10 @@ def annotate(args):
 def formal_tail(spec):
     """Prepared formal/shared tail: one physical solve precedes backend display split."""
     from types import SimpleNamespace
-    from optimization.problems import FormalObjectTrajectory, FormalManoInterval
+    from legacy_optimize.problems import FormalObjectTrajectory, FormalManoInterval
     from observations.interaction.evidence import interaction_build, interaction_parse_args, build_geometric_constraints
     from observations.object.signed_geometry import signed_proxy_build, signed_proxy_parse_args
-    from gates.hand.acceptance import accept_mano_surface
+    from envs.qualification.hand_acceptance import accept_mano_surface
     from render import build_formal_render_state, formal_state_parse_args, assemble_formal_layers, render_formal_rrd, render_formal_video
     root=Path(spec['run_root']).resolve();out=Path(spec['output']).resolve()
     in_run(out,root,must_exist=False);out.mkdir(parents=True,exist_ok=False)

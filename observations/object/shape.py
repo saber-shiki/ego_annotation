@@ -169,7 +169,7 @@ def metric_object(row: dict, object_id: str) -> dict | None:
 
 def metric_alignment(obj: dict | None, frame: dict) -> dict | None:
     """Strict retained P09 alignment for appearance anchoring."""
-    from gates.object.observation import retained_metric_alignment
+    from envs.qualification.object_observation import retained_metric_alignment
     (points, reason, _) = retained_metric_alignment(obj, frame)
     if points is None:
         return None
@@ -764,7 +764,7 @@ def native_bridge_convex_projection_and_front_depth(vertices_camera: np.ndarray,
     return {'positive_depth_vertex_fraction': float(np.count_nonzero(valid) / len(vertices)), 'projected_vertices_inside_image': int(len(uv_inside)), 'projected_vertices_inside_owned_mask': int(len(z_owned)), 'owned_zbuffer_pixel_count': int(len(finite_zbuffer)), 'owned_zbuffer_coverage_fraction': float(len(finite_zbuffer) / max(1, np.count_nonzero(target))), 'owned_zbuffer_median_native_depth': float(np.median(finite_zbuffer)), 'convex_projection_iou': iou, 'convex_projection_pixels': int(np.count_nonzero(projected_bool)), 'owned_mask_pixels': int(np.count_nonzero(target))}
 
 def bind_sam3d_metric(args: argparse.Namespace) -> dict[str, Any]:
-    from gates.object.geometry import observed_front_quality_decision
+    from envs.qualification.object_geometry import observed_front_quality_decision
     import trimesh
     evidence_path = native_bridge_require_file(args.evidence_report, 'P11 evidence report')
     p12_path = native_bridge_require_file(args.p12_report, 'P12 parallel report')

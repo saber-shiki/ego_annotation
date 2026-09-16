@@ -174,8 +174,8 @@ def validate_depth_camera_contract_binding(*, depth: dict[str, Any], camera_cont
     from pathlib import Path
     from typing import Any
     import numpy as np
-    from gates.camera.calibration import plane_intrinsics as camera_contract_plane_intrinsics
-    from gates.camera.calibration import sha256_file as camera_contract_sha256_file
+    from envs.qualification.camera import plane_intrinsics as camera_contract_plane_intrinsics
+    from envs.qualification.camera import sha256_file as camera_contract_sha256_file
     if camera_contract_v2 is None:
         return {'status': 'not_required_without_v2_camera_contract', 'archive_binding': depth.get('camera_contract_binding')}
     if calibration_contract_path is None:
