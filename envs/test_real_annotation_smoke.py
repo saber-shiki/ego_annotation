@@ -65,6 +65,9 @@ class RealPreparedBottleSmokeTest(unittest.TestCase):
             self.assertEqual(info0["factor_ledger"]["activation"]["signed/object:0/0"],
                              "inactive_nonwatertight_or_missing_local_face_authority")
             contact = env.state.term_cache[0]["contact"]["left"]
+            frozen = env.state.episode.contacts[(0, "left", "object:bottle_bbq")]
+            self.assertEqual(contact["state"], "active_frozen_source_patch")
+            np.testing.assert_array_equal(contact["vertex_ids"], frozen["vertex_ids"])
             R = env.state.object_rotation["object:0"][0]; t = env.state.object_translation["object:0"][0]
             np.testing.assert_allclose(contact["targets_world"], contact["targets_object"] @ R.T + t, atol=1e-7)
             np.testing.assert_allclose(contact["normals_world"], contact["normals_object"] @ R.T, atol=1e-7)

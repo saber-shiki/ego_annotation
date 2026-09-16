@@ -43,7 +43,8 @@ class AnnotationEnv(gym.Env):
         declared_layout = ActionLayout(object_slots=tuple(f"object:{i}" for i in range(self.max_objects)),
                                        contact_variables_per_hand=self.contact_variables_per_hand)
         declared_obs = ObservationLayout(declared_layout.size, 2, self.max_objects,
-                                         self.contact_variables_per_hand)
+                                         self.contact_variables_per_hand,
+                                         int(self._get("observation_point_samples", 8)))
         self.action_space = action_space(declared_layout)
         self.observation_space = observation_space(declared_obs.size)
         self.state: AnnotationState | None = None
@@ -137,8 +138,10 @@ class AnnotationEnv(gym.Env):
             raise RuntimeError("reset must be called before export")
         state = self.state
         episode = state.episode
-        object_slot = next((name for name in episode.layout.object_slots
-                            if episode.objects[name].get("entity_id") is not None), episode.layout.object_slots[0])
+        object_slots = [name for name in episode.layout.object_slots if episode.objects[name].get("entity_id") is not None]
+        if not object_slots:
+            raise RuntimeError("cannot export episode with no declared object entity")
+        object_slot = object_slots[0]
         obj = episode.objects[object_slot]
         arrays: dict[str, np.ndarray] = {
             "frame_idx": np.asarray(episode.frame_idx, dtype=np.int64),
@@ -152,7 +155,27 @@ class AnnotationEnv(gym.Env):
             "object_translation_world": np.asarray(state.object_translation[object_slot], dtype=np.float64),
             "object_valid": np.asarray(obj["valid"], dtype=bool),
             "object_pose_valid": np.asarray(obj["valid"], dtype=bool),
+            "object_entity_ids": np.asarray([episode.objects[slot]["entity_id"] for slot in object_slots]),
         }
+        object_trajectories: dict[str, Any] = {}
+        for object_index, slot in enumerate(object_slots):
+            value = episode.objects[slot]
+            prefix = f"object_{object_index}"
+            arrays[f"{prefix}_vertices_canonical"] = np.asarray(value["pose_vertices_canonical"], dtype=np.float32)
+            arrays[f"{prefix}_faces"] = np.asarray(value["pose_faces"], dtype=np.int64)
+            arrays[f"{prefix}_rotation"] = np.asarray(state.object_rotation[slot], dtype=np.float64)
+            arrays[f"{prefix}_translation_world"] = np.asarray(state.object_translation[slot], dtype=np.float64)
+            arrays[f"{prefix}_present"] = np.asarray(value.get("present", value["valid"]), dtype=bool)
+            arrays[f"{prefix}_pose_valid"] = np.asarray(value["pose_valid"], dtype=bool)
+            arrays[f"{prefix}_metric_observation_eligible"] = np.asarray(value["metric_observation_eligible"], dtype=bool)
+            rows = [{"frame_idx": int(frame),
+                     "rotation_world_from_completed_canonical_matrix": state.object_rotation[slot][i].astype(float).tolist(),
+                     "translation_world_m": state.object_translation[slot][i].astype(float).tolist(),
+                     "status": "policy_rollout_candidate"}
+                    for i, frame in enumerate(episode.frame_idx)]
+            object_trajectories[value["entity_id"]] = {"object_slot": slot, "array_prefix": prefix,
+                "object_id": value["entity_id"], "pose_rows": rows,
+                "pose_mesh_sha256": value.get("collision_mesh_sha256")}
         per_frame_states = []
         for side in episode.layout.hand_slots:
             arrays[f"{side}_valid"] = np.asarray(episode.hands[side]["valid"], dtype=bool)
@@ -172,12 +195,7 @@ class AnnotationEnv(gym.Env):
                     })
         sources = episode.provenance.get("sources", {})
         annotations = sources.get("annotations", {}).get("path") if isinstance(sources, Mapping) else None
-        pose_rows = [{
-            "frame_idx": int(frame),
-            "rotation_world_from_completed_canonical_matrix": state.object_rotation[object_slot][i].astype(float).tolist(),
-            "translation_world_m": state.object_translation[object_slot][i].astype(float).tolist(),
-            "status": "policy_rollout_candidate",
-        } for i, frame in enumerate(episode.frame_idx)]
+        pose_rows = object_trajectories[obj["entity_id"]]["pose_rows"]
         document: dict[str, Any] = {
             "schema": "ego.annotation.policy_rollout.v1",
             "status": "policy_candidate",
@@ -200,6 +218,7 @@ class AnnotationEnv(gym.Env):
             },
             "per_frame_states": per_frame_states,
             "object_pose_trajectory": {"object_id": obj.get("entity_id"), "pose_rows": pose_rows},
+            "object_pose_trajectories": object_trajectories,
             "uncertainty": {
                 "claim": "policy candidate; downstream acceptance remains separate",
                 "source_geometry": obj.get("geometry_provenance"),

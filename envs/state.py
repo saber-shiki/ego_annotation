@@ -24,6 +24,8 @@ class EpisodeStatic:
     hands: Mapping[str, Mapping[str, Any]]
     objects: Mapping[str, Mapping[str, Any]]
     contact: Mapping[tuple[int, str], Mapping[str, Any]]
+    contacts: Mapping[tuple[int, str, str], Mapping[str, Any]]
+    factor_rows: Mapping[tuple[int, str | None, str | None, str], tuple[Mapping[str, Any], ...]]
     layout: ActionLayout
     mano_models: Mapping[str, Any]
     provenance: Mapping[str, Any]
@@ -82,7 +84,9 @@ def initial_state(episode: EpisodeStatic) -> AnnotationState:
     if contact_count:
         for i, frame in enumerate(episode.frame_idx):
             for side_index, side in enumerate(episode.layout.hand_slots):
-                prior = float(episode.contact.get((int(frame), side), {}).get("prior", 0.5))
+                matches = [row for (row_frame, row_side, _target), row in episode.contacts.items()
+                           if row_frame == int(frame) and row_side == side]
+                prior = float(np.mean([row.get("prior", 0.5) for row in matches])) if matches else 0.5
                 prior = float(np.clip(prior, 1e-4, 1.0 - 1e-4))
                 contact_logits[i, side_index] = np.log(prior / (1.0 - prior))
     return AnnotationState(

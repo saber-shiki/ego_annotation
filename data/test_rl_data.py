@@ -86,9 +86,16 @@ def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_vid
     for i in range(frame_count):
         object_t = np.asarray([0.0 + 0.01 * i, 0.0, 1.04])
         observed = canonical + object_t
+        hand_rows = [{"hand_side": side, "metric_mano_state": {
+            "current_v18_camera_intrinsics_fx_fy_cx_cy": [60, 60, 32, 32],
+            "camera_contract_alignment": {
+                "active_contract_reinference_required": False,
+                "source_hawor_state_intrinsics_match_active_contract": True,
+            },
+        }} for side in ("left", "right")]
         frames.append({"frame_idx": i, "time_s": i / 30.0, "source_width": 64, "source_height": 64,
             "camera": {"T_world_camera": np.eye(4).tolist(), "intrinsics_fx_fy_cx_cy": [60, 60, 32, 32]},
-            "hands": [], "objects": [{"object_id": "object:synthetic", "rigid_pose_observation_eligible": True,
+            "hands": hand_rows, "objects": [{"object_id": "object:synthetic", "rigid_pose_observation_eligible": True,
                 "reconstructed_geometry_pose": {"rotation_world_from_canonical_matrix": np.eye(3).tolist(),
                     "translation_world_m": object_t.tolist()},
                 "visible_geometry_candidate": {"world_vertices_sample_m": observed.tolist()}}]})
