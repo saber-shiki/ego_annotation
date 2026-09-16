@@ -17,6 +17,10 @@ environment:
     object_translation_m: 0.01
     contact_logit: 1.0
   object_translation_frame: world
+  # Preserve formal factor ratios; scale only the scalar RL return to keep PPO
+  # numerical ranges stable under legacy millimeter-weighted penalties.
+  reward_profile: formal_annotation
+  reward_scale: 0.00001
   action_filter:
     # Policy samples and log-probabilities remain raw; AnnotationEnv applies
     # semantic support masks and exports raw/executed action traces.
