@@ -468,7 +468,7 @@ def build_completion_inputs(args: argparse.Namespace) -> dict[str, Any]:
     if args.comparison_mask is not None:
         comparison_path = require_file(args.comparison_mask, 'comparison mask')
         comparison = compare_masks(selected_mask, comparison_path)
-    report = {'schema': conditioning_SCHEMA, 'status': 'ok', 'method': 'build_experimental_p11_dual_geometry_inputs', 'claim_scope': 'additive P11 conditioning split only; canonical evidence and model outputs are read-only', 'source_evidence_report': str(evidence_report_path), 'case': evidence.get('case'), 'object_id': evidence.get('object_id'), 'selected_frame_idx': frame_idx, 'selection_rule': evidence.get('selection_rule'), 'selection_note': evidence.get('selection_note'), 'mask_provenance': mask_provenance, 'selected_input_summary': {'image_shape_h_w': [int(rgb_image.height), int(rgb_image.width)], 'mask_area_px': int(mask.sum()), 'mask_bbox_xyxy': bbox}, 'conditioning_contracts': {'trellis_native': {'input_kind': 'object_isolated_rgba_crop', 'image': str(trellis_copy), 'source_copy': trellis_record, 'external_depth_or_pointmap': None, 'pre_model_transform': 'canonical_P11_crop_only'}, 'sam3d_objects_native': {'input_kind': 'full_scene_rgb_plus_binary_object_owned_mask', 'image': str(rgb_copy), 'mask': str(mask_copy), 'image_source_copy': rgb_record, 'mask_source_copy': mask_record, 'external_pointmap': None, 'pre_model_crop': None, 'pre_model_rotation': None, 'pre_model_rectification': None, 'model_internal_preprocessing': 'unmodified_SAM3D_internal_MoGe_then_joint_mask_crop'}}, 'comparison_mask_diagnostic': comparison, 'review': str(review_path), 'source_artifacts_mutated': False}
+    report = {'schema': conditioning_SCHEMA, 'status': 'ok', 'method': 'build_experimental_p11_dual_geometry_inputs', 'claim_scope': 'additive P11 conditioning split only; canonical evidence and model outputs are read-only', 'source_evidence_report': str(evidence_report_path), 'case': evidence.get('case'), 'object_id': evidence.get('object_id'), 'selected_frame_idx': frame_idx, 'selection_rule': evidence.get('selection_rule'), 'selection_note': evidence.get('selection_note'), 'mask_provenance': mask_provenance, 'selected_input_summary': {'image_shape_h_w': [int(rgb_image.height), int(rgb_image.width)], 'mask_area_px': int(mask.sum()), 'mask_bbox_xyxy': bbox}, 'conditioning_contracts': {'trellis_native': {'input_kind': 'object_isolated_rgba_crop', 'image': str(trellis_copy), 'source_copy': trellis_record, 'external_depth_or_pointmap': None, 'pre_model_transform': 'canonical_P11_crop_only'}, 'sam3d_objects_native': {'input_kind': 'full_scene_rgb_plus_binary_object_owned_mask', 'image': str(rgb_copy), 'mask': str(mask_copy), 'image_source_copy': rgb_record, 'mask_source_copy': mask_record, 'external_pointmap': pointmap_conditioning, 'geometry_profile': case.get('geometry_profile', 'legacy_internal_moge'), 'pre_model_crop': None, 'pre_model_rotation': None, 'pre_model_rectification': None, 'model_internal_preprocessing': 'unmodified_SAM3D_internal_MoGe_then_joint_mask_crop'}}, 'comparison_mask_diagnostic': comparison, 'review': str(review_path), 'source_artifacts_mutated': False}
     report_path = output_dir / 'p11_dual_geometry_inputs_report.json'
     report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps(report, indent=2))
@@ -545,7 +545,51 @@ def validate_input_binding(candidate_report: dict[str, Any], expected_image: Pat
             raise RuntimeError(f'SAM3D {name} report is not bound to the P11 native input')
     return bindings
 
-def sam3d_candidate_record(report_path: Path, expected_name: str | None, expected_image: Path, expected_mask: Path, invocation: dict[str, Any]) -> dict[str, Any]:
+def validate_pointmap_conditioning(case, expected_image, expected_mask, *, expected_frame_idx=None,
+                                    expected_pointmap_receipt=None, expected_geometry_profile=None):
+    """Validate the native worker receipt for either anchor, without granting authority."""
+    from observations.object.pointmap import load_pointmap, file_record, array_sha
+    profile = case.get('geometry_profile', 'legacy_internal_moge')
+    if expected_geometry_profile is not None and profile != expected_geometry_profile:
+        raise ValueError('SAM3D conditioning profile mismatch')
+    conditioning = case.get('external_pointmap')
+    if profile == 'legacy_internal_moge':
+        if conditioning is not None or expected_pointmap_receipt is not None:
+            raise ValueError('SAM3D legacy profile cannot claim external pointmap conditioning')
+        return None
+    if profile != 'shared_metric_pointmap' or not isinstance(conditioning, dict):
+        raise ValueError('SAM3D pointmap conditioning receipt missing')
+    frame = conditioning.get('frame_idx')
+    if expected_frame_idx is not None and frame != expected_frame_idx:
+        raise ValueError('SAM3D pointmap conditioning frame mismatch')
+    ref = conditioning.get('receipt', {})
+    path = Path(ref.get('path', ''))
+    if file_record(path) != ref or (expected_pointmap_receipt is not None and path.resolve() != Path(expected_pointmap_receipt).resolve()):
+        raise ValueError('SAM3D pointmap receipt source/hash mismatch')
+    points, receipt = load_pointmap(path, frame_idx=frame, image_path=expected_image, mask_path=expected_mask)
+    if conditioning.get('schema') != 'sam3d_pointmap_consumption_v1' or conditioning.get('profile') != profile:
+        raise ValueError('SAM3D pointmap consumption schema/profile mismatch')
+    if conditioning.get('pointmap') != receipt['pointmap'] or conditioning.get('pointmap_array_sha256') != array_sha(points):
+        raise ValueError('SAM3D consumed pointmap source/hash mismatch')
+    for key, expected in {'pointmap_preserved_exactly': True, 'with_layout_postprocess': False,
+                          'independent_exact_K_conditioning': False, 'inferred_K_read_by_generation': False}.items():
+        if conditioning.get(key) is not expected:
+            raise ValueError('SAM3D pointmap consumption invariant failed: ' + key)
+    if conditioning.get('depth_model_calls') != 0 or conditioning.get('calls') != dict(run=1, compute=1, preprocess=1, sample=1, pose=1):
+        raise ValueError('SAM3D pointmap consumption incomplete')
+    if conditioning.get('inferred_K_role') != 'diagnostic_only_never_active_camera':
+        raise ValueError('SAM3D inferred K cannot be active')
+    normalized = conditioning.get('normalized_conditioning', {})
+    if set(normalized) != {'pointmap', 'rgb_pointmap', 'pointmap_scale', 'pointmap_shift', 'rgb_pointmap_scale', 'rgb_pointmap_shift'}:
+        raise ValueError('SAM3D pointmap normalization receipt incomplete')
+    for key, source in (('scene_scale', 'pointmap_scale'), ('scene_shift', 'pointmap_shift')):
+        value = np.asarray(conditioning.get('pose_decoder', {}).get(key), dtype=normalized[source]['dtype'])
+        if list(value.shape) != normalized[source]['shape'] or array_sha(value) != normalized[source]['sha256']:
+            raise ValueError('SAM3D pointmap normalization/pose receipt mismatch')
+    return conditioning
+
+
+def sam3d_candidate_record(report_path: Path, expected_name: str | None, expected_image: Path, expected_mask: Path, invocation: dict[str, Any], *, expected_frame_idx=None, expected_pointmap_receipt=None, expected_geometry_profile=None) -> dict[str, Any]:
     payload = completion_load_json(report_path)
     if payload.get('status') != 'ok':
         raise RuntimeError(f'SAM3D runner report is not ok: {report_path}')
@@ -575,7 +619,10 @@ def sam3d_candidate_record(report_path: Path, expected_name: str | None, expecte
         raise RuntimeError('SAM3D runner lacks the verified native pose coordinate contract')
     if native_contract.get('metric_status') != 'native_monocular_scene_units_not_sensor_meters':
         raise RuntimeError('SAM3D runner incorrectly claims native pose is sensor metric')
-    return {'source_model': 'sam3d_objects', 'status': 'generated_native_raw_prior', 'runner_report': str(report_path), 'conditioning': {'input_kind': 'full_scene_rgb_plus_binary_object_owned_mask', 'image': file_record(expected_image, 'P11 SAM3D image'), 'mask': file_record(expected_mask, 'P11 SAM3D mask'), 'external_pointmap': None, 'pre_model_crop': None, 'pre_model_rotation': None, 'pre_model_rectification': None}, 'input_binding': validate_input_binding(case, expected_image, expected_mask), 'offline_asset_binding': {'moge': moge_offline, 'dinov2': dinov2_offline, 'huggingface_offline': hf_offline}, 'native_outputs': {'raw_mesh': file_record(mesh, 'SAM3D raw mesh'), 'glb': file_record(glb, 'SAM3D GLB'), 'gaussian': file_record(gaussian, 'SAM3D Gaussian') if gaussian is not None else None, 'native_pose_mesh_pytorch3d_camera': file_record(native_p3d, 'SAM3D native P3D mesh'), 'native_pose_mesh_opencv_camera': file_record(native_opencv, 'SAM3D native OpenCV mesh'), 'mesh_stats': case.get('mesh_stats'), 'native_pose': case.get('pose'), 'native_pose_contract': native_contract}, 'invocation': invocation, 'semantics': {'mesh_frame': 'sam3d_native_local_generator_frame', 'native_pose_frame': 'verified_pytorch3d_camera_then_explicit_opencv_bridge', 'native_pose_metric_status': 'native_monocular_scene_units_not_sensor_meters', 'metric_scale_ready': False, 'v19_canonical_frame_ready': False, 'collision_surface_ready': False, 'allowed_use': 'raw geometry prior evaluation and later explicit P13 adapter only'}}
+    pointmap_conditioning = validate_pointmap_conditioning(case, expected_image, expected_mask,
+        expected_frame_idx=expected_frame_idx, expected_pointmap_receipt=expected_pointmap_receipt,
+        expected_geometry_profile=expected_geometry_profile)
+    return {'source_model': 'sam3d_objects', 'status': 'generated_native_raw_prior', 'runner_report': str(report_path), 'conditioning': {'input_kind': 'full_scene_rgb_plus_binary_object_owned_mask', 'image': file_record(expected_image, 'P11 SAM3D image'), 'mask': file_record(expected_mask, 'P11 SAM3D mask'), 'external_pointmap': pointmap_conditioning, 'geometry_profile': case.get('geometry_profile', 'legacy_internal_moge'), 'pre_model_crop': None, 'pre_model_rotation': None, 'pre_model_rectification': None}, 'input_binding': validate_input_binding(case, expected_image, expected_mask), 'offline_asset_binding': {'moge': moge_offline, 'dinov2': dinov2_offline, 'huggingface_offline': hf_offline}, 'native_outputs': {'raw_mesh': file_record(mesh, 'SAM3D raw mesh'), 'glb': file_record(glb, 'SAM3D GLB'), 'gaussian': file_record(gaussian, 'SAM3D Gaussian') if gaussian is not None else None, 'native_pose_mesh_pytorch3d_camera': file_record(native_p3d, 'SAM3D native P3D mesh'), 'native_pose_mesh_opencv_camera': file_record(native_opencv, 'SAM3D native OpenCV mesh'), 'mesh_stats': case.get('mesh_stats'), 'native_pose': case.get('pose'), 'native_pose_contract': native_contract}, 'invocation': invocation, 'semantics': {'mesh_frame': 'sam3d_native_local_generator_frame', 'native_pose_frame': 'verified_pytorch3d_camera_then_explicit_opencv_bridge', 'native_pose_metric_status': 'native_monocular_scene_units_not_sensor_meters', 'metric_scale_ready': False, 'v19_canonical_frame_ready': False, 'collision_surface_ready': False, 'allowed_use': 'raw geometry prior evaluation and later explicit P13 adapter only'}}
 
 def trellis_candidate_record(report_path: Path, expected_crop: Path) -> dict[str, Any]:
     report = completion_load_json(report_path)
