@@ -102,13 +102,16 @@ def build_source_observation_manifest(
         asset_root = Path(mano_assets).expanduser().resolve()
         left = asset_root / "MANO_LEFT.pkl"
         right = asset_root / "MANO_RIGHT.pkl"
-        if not left.is_file() or not right.is_file():
-            raise FileNotFoundError(f"MANO asset directory lacks left/right models: {asset_root}")
+        wrapper_root = Path(wilor_root).expanduser().resolve() if wilor_root is not None else asset_root.parent
+        wrapper = wrapper_root / "wilor" / "models" / "mano_wrapper.py"
+        if not left.is_file() or not right.is_file() or not wrapper.is_file():
+            raise FileNotFoundError(f"MANO assets require left/right models and exact WiLoR wrapper: {asset_root}, {wrapper}")
         sources["mano_assets"] = {
             "path": str(asset_root),
             "left_sha256": sha(left),
             "right_sha256": sha(right),
-            "wilor_root": str(Path(wilor_root).expanduser().resolve()) if wilor_root is not None else None,
+            "wrapper_path": str(wrapper),
+            "wrapper_sha256": sha(wrapper),
         }
     return {
         "schema": SCHEMA,

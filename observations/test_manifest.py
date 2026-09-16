@@ -105,6 +105,31 @@ class SourceObservationManifestTests(unittest.TestCase):
                     artifacts=artifacts,
                 )
 
+    def test_main_manifest_binds_exact_mano_and_wilor_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            assets = root / "WiLoR" / "mano_data"
+            wrapper = root / "WiLoR" / "wilor" / "models" / "mano_wrapper.py"
+            assets.mkdir(parents=True)
+            wrapper.parent.mkdir(parents=True)
+            (assets / "MANO_LEFT.pkl").write_bytes(b"left")
+            (assets / "MANO_RIGHT.pkl").write_bytes(b"right")
+            wrapper.write_bytes(b"exact wrapper")
+            output = root / "source_observations.json"
+            manifest = write_source_observation_manifest(
+                output, run_root=root, case="case", object_id="object", track_id="track",
+                frame_ids=[0], time_s=[0.0], source_timing={"frame_count": 1},
+                artifacts=self._artifacts(root), mano_assets=assets, wilor_root=assets.parent,
+            )
+            bound = manifest["sources"]["mano_assets"]
+            self.assertEqual(Path(bound["wrapper_path"]), wrapper)
+            self.assertEqual(len(bound["left_sha256"]), 64)
+            from data.bundle import EpisodeBundle
+            self.assertEqual(EpisodeBundle.open(output).bundle_id, "fixture-run")
+            wrapper.write_bytes(b"changed wrapper")
+            with self.assertRaisesRegex(ValueError, "WiLoR wrapper identity mismatch"):
+                EpisodeBundle.open(output)
+
     def test_main_observe_dispatch_does_not_load_optimizer_or_renderer(self):
         import main
         argv = [

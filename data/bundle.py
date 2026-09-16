@@ -544,7 +544,7 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
 
     # Freeze default contact membership against source MANO and source target mesh once.
     try:
-        from optimization.common.correspondences import make_scene, contact_patch_targets_from_vertices
+        from utils.candidate_geometry import make_scene, contact_patch_targets_from_vertices
         for (frame,side,target),entry in contact.items():
             pos=frame_position[frame]; obj=objects[target]
             if entry["state"]!="active_contact_patch" or not hands[side]["valid"][pos] or not obj["valid"][pos] or not len(obj["collision_faces"]):
