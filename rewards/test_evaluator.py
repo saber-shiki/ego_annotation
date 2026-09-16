@@ -214,14 +214,14 @@ class RewardEvaluatorSemanticsTest(unittest.TestCase):
         self.assertAlmostEqual(ledger.terms["object/object:0/translation_velocity"],
                                scipy_least_squares_cost(velocity, "soft_l1"), places=6)
 
-    def test_visual_profile_selects_unsigned_pad_without_formal_double_counting(self):
+    def test_visual_fixed_scale_profile_selects_unsigned_pad_without_formal_double_counting(self):
         state, _, _, _ = self._state(count=1, object_valid=True, contact=False)
         left = state.episode.hands["left"]
         ids = np.asarray([0, 1, 2], np.int64)
         row = {"frame_idx": 0, "hand_side": "left", "target_entity_id": "object:0",
                "vertex_ids": ids, "targets_object": left["vertices"][0, ids].astype(float), "weight": 2.0}
         state.episode.factor_rows = {(0, "left", "object:0", "visual_unsigned_pad"): (row,)}
-        ledger = RewardEvaluator({"reward_profile": "visual_joint"}, "cpu").objective(state, 1)
+        ledger = RewardEvaluator({"reward_profile": "visual_joint_fixed_scale"}, "cpu").objective(state, 1)
         self.assertIn("visual/unsigned_pad/factor=0", ledger.terms)
         self.assertIn("visual/hand/left/translation_prior", ledger.terms)
         self.assertNotIn("hand/left/translation_prior", ledger.terms)
@@ -286,6 +286,86 @@ class RewardEvaluatorSemanticsTest(unittest.TestCase):
         self.assertEqual(ledger.activation["object/object:0/rgb_edge/factor=0"], "active_declared_rgb_edge")
         self.assertEqual(ledger.activation["object/object:0/rgb_reprojection/factor=0"],
                          "active_declared_rgb_reprojection")
+
+    def test_legacy_visual_profile_name_is_rejected_explicitly(self):
+        with self.assertRaisesRegex(ValueError, "renamed to 'visual_joint_fixed_scale'"):
+            resolve_profile({"reward_profile": "visual_joint"})
+
+    def test_valid_hand_requires_complete_measured_visibility_arrays(self):
+        for name in ("hand_observation_visibility_weight_multiplier", "joint_visibility", "pose_visibility"):
+            state, _, _, _ = self._state(count=2, contact=False)
+            del state.episode.hands["left"][name]
+            with self.subTest(missing=name):
+                with self.assertRaisesRegex(ValueError, name):
+                    RewardEvaluator({"reward_profile": "formal_interval"}, "cpu").objective(state, 2)
+        bad_shapes = {
+            "hand_observation_visibility_weight_multiplier": np.ones(1),
+            "joint_visibility": np.ones((2, 20)),
+            "pose_visibility": np.ones((2, 14)),
+        }
+        for name, bad in bad_shapes.items():
+            state, _, _, _ = self._state(count=2, contact=False)
+            state.episode.hands["left"][name] = bad
+            with self.subTest(malformed=name):
+                with self.assertRaisesRegex(ValueError, name):
+                    RewardEvaluator({"reward_profile": "formal_interval"}, "cpu").objective(state, 2)
+
+    def test_pose_valid_object_keeps_pose_factors_when_metric_surface_is_ineligible(self):
+        state, _, _, _ = self._state(count=2, object_valid=True, contact=False)
+        obj = state.episode.objects["object:0"]
+        obj["present"] = np.asarray([True, True])
+        obj["pose_valid"] = np.asarray([True, True])
+        obj["metric_observation_eligible"] = np.asarray([False, False])
+        obj["translation_sigma_m"] = np.asarray([.02, .02])
+        obj["rotation_sigma_rad"] = np.asarray([.1, .1])
+        state.object_translation["object:0"] = np.asarray([[.01, 0., 0.], [.03, -.01, 0.]])
+        ledger = RewardEvaluator({"reward_profile": "formal_object"}, "cpu").objective(state, 2)
+        self.assertGreater(ledger.terms["object/object:0/translation_sigma_prior"], 0.)
+        self.assertGreater(ledger.terms["object/object:0/translation_velocity"], 0.)
+        self.assertEqual(ledger.activation["object/object:0/observed_nn"],
+                         "inactive_fewer_than_two_metric_eligible_rows")
+
+    def test_sparse_row_sigma_and_nonpenetration_apply_only_declared_pose_rows(self):
+        state, _, _, _ = self._state(count=2, object_valid=True, contact=False)
+        state.object_translation["object:0"] = np.asarray([[.01, 0., 0.], [.03, 0., 0.]])
+        state.episode.factor_rows = {
+            (0, None, "object:0", "object_pose_observation"): ({
+                "frame_idx": 0, "target_entity_id": "object:0",
+                "translation_sigma_m": .02, "rotation_sigma_rad": .1,
+                "nonpenetration_target_world_m": [0., 0., 0.], "nonpenetration_weight": .5,
+            },),
+            (1, None, "object:0", "object_pose_observation"): ({
+                "frame_idx": 1, "target_entity_id": "object:0",
+            },),
+        }
+        ledger = RewardEvaluator({"reward_profile": "formal_object", "object_observed_terms": False}, "cpu").objective(state, 2)
+        expected_sigma = scipy_least_squares_cost(np.asarray([.01, 0., 0.]) / .02, "soft_l1")
+        self.assertAlmostEqual(ledger.terms["object/object:0/translation_sigma_prior"], expected_sigma, places=6)
+        expected_target = scipy_least_squares_cost(np.sqrt(.5) * np.asarray([.01, 0., 0.]) / .03, "soft_l1")
+        self.assertAlmostEqual(ledger.terms["object/object:0/nonpenetration_translation_target"], expected_target, places=6)
+        self.assertGreater(ledger.terms["object/object:0/translation_velocity"], 0.0)
+
+    def test_active_object_image_row_without_subfamily_payload_fails(self):
+        state, _, _, _ = self._state(count=1, object_valid=True, contact=False)
+        obj = state.episode.objects["object:0"]
+        obj["translation_sigma_m"] = np.asarray([.02])
+        obj["rotation_sigma_rad"] = np.asarray([.1])
+        state.episode.factor_rows = {(0, None, "object:0", "object_image"): ({"frame_idx": 0,
+            "target_entity_id": "object:0", "state": "active_object_image"},)}
+        with self.assertRaisesRegex(ValueError, "active object image row requires"):
+            RewardEvaluator({"reward_profile": "formal_object", "object_observed_terms": False}, "cpu").objective(state, 1)
+
+    def test_partial_sigma_and_nonpenetration_declarations_fail(self):
+        state, _, _, _ = self._state(count=1, object_valid=True, contact=False)
+        state.episode.objects["object:0"]["translation_sigma_m"] = np.asarray([.02])
+        with self.assertRaisesRegex(ValueError, "partial sigma declaration"):
+            RewardEvaluator({"reward_profile": "formal_object"}, "cpu").objective(state, 1)
+        state, _, _, _ = self._state(count=1, object_valid=True, contact=False)
+        state.episode.objects["object:0"]["translation_sigma_m"] = np.asarray([.02])
+        state.episode.objects["object:0"]["rotation_sigma_rad"] = np.asarray([.1])
+        state.episode.objects["object:0"]["nonpenetration_target_world_m"] = np.zeros((1, 3))
+        with self.assertRaisesRegex(ValueError, "partial nonpenetration declaration"):
+            RewardEvaluator({"reward_profile": "formal_object"}, "cpu").objective(state, 1)
 
     def test_configured_missing_hand_ray_evidence_fails_actionably(self):
         state, _, _, _ = self._state()

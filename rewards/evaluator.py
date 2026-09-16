@@ -203,8 +203,8 @@ class RewardEvaluator:
                 self._formal_interval_object_translation(state, end, add, activation)
         if self.profile.formal_object:
             self._formal_object(state, end, add, activation)
-        if self.profile.visual_joint:
-            self._visual_joint(state, end, add, activation)
+        if self.profile.visual_joint_fixed_scale:
+            self._visual_joint_fixed_scale(state, end, add, activation)
         return FactorLedger(end, terms, statistics, activation, profile=self.profile.name,
                             reward_scale=scale)
 
@@ -238,8 +238,14 @@ class RewardEvaluator:
                                      (episode.frame_count,))
             pose_vis = _array_or_none(source, "pose_visibility", (episode.frame_count, 15))
             joint_vis = _array_or_none(source, "joint_visibility", (episode.frame_count, 21))
+            if valid.any() and row_vis is None:
+                raise ValueError(f"hand {side}: valid rows require measured hand_observation_visibility_weight_multiplier shape ({episode.frame_count},)")
+            if valid.any() and joint_vis is None:
+                raise ValueError(f"hand {side}: valid rows require measured joint_visibility shape ({episode.frame_count}, 21)")
+            if valid.any() and pose_vis is None:
+                raise ValueError(f"hand {side}: valid rows require measured pose_visibility shape ({episode.frame_count}, 15)")
             if row_vis is None:
-                activation[f"hand/{side}/row_visibility"] = "inactive_missing_measured_row_visibility"
+                activation[f"hand/{side}/row_visibility"] = "inactive_hand_absent"
             else:
                 observed = np.asarray(row_vis[:end], dtype=np.float32) * valid.astype(np.float32)
                 observed_t = _tensor(observed, self.device)
@@ -254,7 +260,7 @@ class RewardEvaluator:
                         numerator=numerator, denominator=denominator,
                         active_count=int(np.count_nonzero(observed > 0)), reduction="weighted_interval_mean")
             if pose_vis is None:
-                activation[f"hand/{side}/pose_visibility"] = "inactive_missing_measured_finger_visibility"
+                activation[f"hand/{side}/pose_visibility"] = "inactive_hand_absent"
             else:
                 pvis = np.asarray(pose_vis[:end], dtype=np.float32) * valid[:, None]
                 weight = float(self.profile.get("pose_prior_weight"))
@@ -309,7 +315,7 @@ class RewardEvaluator:
             for i in np.flatnonzero(valid):
                 frame = int(episode.frame_idx[i])
                 if joint_vis is None:
-                    activation[f"hand/{side}/joint_observation/frame={frame}"] = "inactive_missing_measured_joint_visibility"
+                    activation[f"hand/{side}/joint_observation/frame={frame}"] = "inactive_hand_absent"
                 else:
                     weights_np = np.asarray(joint_vis[i], dtype=np.float32)
                     if not np.any(weights_np > 0):
@@ -599,28 +605,36 @@ class RewardEvaluator:
         for slot in episode.layout.object_slots:
             obj = episode.objects[slot]
             entity = _object_entity(obj, slot)
-            valid = np.asarray(obj.get("metric_observation_eligible", obj.get("valid"))[:end], dtype=bool)
+            pose_valid = np.asarray(obj.get("pose_valid", obj.get("valid", obj.get("present")))[:end], dtype=bool)
+            valid = pose_valid
             trans = np.asarray(state.object_translation[slot][:end] - obj["translation"][:end], dtype=np.float64)
             rot = np.stack([_rotation_vector(state.object_rotation[slot][i] @ np.asarray(obj["rotation"][i]).T)
                             for i in range(end)])
             sigma_t_raw = obj.get("translation_sigma_m", _cfg(self.cfg, "object_translation_sigma_m", None))
             sigma_r_raw = obj.get("rotation_sigma_rad", _cfg(self.cfg, "object_rotation_sigma_rad", None))
+            if (sigma_t_raw is None) != (sigma_r_raw is None):
+                raise ValueError(f"object {slot}: partial sigma declaration requires both translation_sigma_m and rotation_sigma_rad")
             object_rows = _factor_rows(episode, {"object_pose_observation", "rigid_pose_observation",
                                                 "formal_object_pose"}, end, target=entity)
+            row_sigma_declared = None
             if (sigma_t_raw is None or sigma_r_raw is None) and object_rows:
                 row_sigma_t = np.full(end, np.nan, dtype=np.float64)
                 row_sigma_r = np.full(end, np.nan, dtype=np.float64)
+                row_sigma_declared = np.zeros(end, dtype=bool)
                 for row in object_rows:
                     pos = _frame_position(episode, int(row.get("frame_idx", -1)))
                     if pos is None or pos >= end:
                         continue
-                    if row.get("translation_sigma_m") is not None:
+                    has_t = row.get("translation_sigma_m") is not None
+                    has_r = row.get("rotation_sigma_rad") is not None
+                    if has_t != has_r:
+                        raise ValueError(f"object {slot} frame {episode.frame_idx[pos]}: partial row sigma declaration")
+                    if has_t:
                         row_sigma_t[pos] = float(row["translation_sigma_m"])
-                    if row.get("rotation_sigma_rad") is not None:
                         row_sigma_r[pos] = float(row["rotation_sigma_rad"])
-                if sigma_t_raw is None and np.isfinite(row_sigma_t[valid]).all():
+                        row_sigma_declared[pos] = True
+                if sigma_t_raw is None and row_sigma_declared[valid].any():
                     sigma_t_raw = row_sigma_t
-                if sigma_r_raw is None and np.isfinite(row_sigma_r[valid]).all():
                     sigma_r_raw = row_sigma_r
             sigma_t = self._broadcast_sigma(sigma_t_raw, end)
             sigma_r = self._broadcast_sigma(sigma_r_raw, end)
@@ -631,10 +645,10 @@ class RewardEvaluator:
             if sigma_t is None or sigma_r is None:
                 activation[f"object/{slot}/source_sigma_priors"] = "inactive_missing_measured_or_explicit_sigma"
             else:
-                if (not np.isfinite(sigma_t[valid]).all() or not np.isfinite(sigma_r[valid]).all()
-                        or np.any(sigma_t[valid] <= 0) or np.any(sigma_r[valid] <= 0)):
-                    raise ValueError(f"object {slot}: eligible formal object row has invalid sigma")
-                active = valid
+                active = valid if row_sigma_declared is None else valid & row_sigma_declared
+                if (not np.isfinite(sigma_t[active]).all() or not np.isfinite(sigma_r[active]).all()
+                        or np.any(sigma_t[active] <= 0) or np.any(sigma_r[active] <= 0)):
+                    raise ValueError(f"object {slot}: declared formal object row has invalid sigma")
                 if active.any():
                     rt = np.concatenate([np.asarray(source_pose_translation(trans[i], sigma_t[i])).reshape(-1)
                                          for i in np.flatnonzero(active)])
@@ -650,12 +664,18 @@ class RewardEvaluator:
 
             target_raw = obj.get("nonpenetration_target_world_m")
             weight_raw = obj.get("nonpenetration_weight")
+            if (target_raw is None) != (weight_raw is None):
+                raise ValueError(f"object {slot}: partial nonpenetration declaration requires target and weight")
             if target_raw is None and weight_raw is None and object_rows:
                 targets = np.zeros((end, 3), dtype=np.float64)
                 weights = np.zeros(end, dtype=np.float64)
-                declared = False
+                declared = np.zeros(end, dtype=bool)
                 for row in object_rows:
-                    if row.get("nonpenetration_target_world_m") is None:
+                    has_target = row.get("nonpenetration_target_world_m") is not None
+                    has_weight = row.get("nonpenetration_weight") is not None
+                    if has_target != has_weight:
+                        raise ValueError(f"object {slot} frame {row.get('frame_idx')}: partial row nonpenetration declaration")
+                    if not has_target:
                         continue
                     pos = _frame_position(episode, int(row.get("frame_idx", -1)))
                     if pos is None or pos >= end:
@@ -664,9 +684,9 @@ class RewardEvaluator:
                     if target.shape != (3,) or not np.isfinite(target).all():
                         raise ValueError(f"object {slot}: malformed row nonpenetration target")
                     targets[pos] = target
-                    weights[pos] = float(row.get("nonpenetration_weight", 0.0))
-                    declared = True
-                if declared:
+                    weights[pos] = float(row["nonpenetration_weight"])
+                    declared[pos] = True
+                if declared[valid].any():
                     target_raw, weight_raw = targets, weights
             if target_raw is not None and weight_raw is not None:
                 targets = np.asarray(target_raw, dtype=np.float64)
@@ -793,46 +813,78 @@ class RewardEvaluator:
                 activation[key] = "inactive_frame_outside_prefix"
                 continue
             R, t = state.object_rotation[slot][pos], state.object_translation[slot][pos]
-            depth_points = np.asarray(row.get("depth_points_canonical", []), dtype=np.float64).reshape(-1, 3)
-            observed_z = np.asarray(row.get("depth_observed_z", []), dtype=np.float64)
-            depth_weight = np.asarray(row.get("depth_weight", []), dtype=np.float64)
+            row_state = str(row.get("state", ""))
+            active_declared = bool(row.get("active") is True or row_state == "active" or row_state.startswith("active_"))
+            depth_keys = ("depth_points_canonical", "depth_observed_z", "depth_weight")
+            silhouette_keys = ("silhouette_points_canonical", "silhouette_target_uv")
+            depth_present = [key in row and row[key] is not None for key in depth_keys]
+            silhouette_present = [key in row and row[key] is not None for key in silhouette_keys]
+            if any(depth_present) and not all(depth_present):
+                raise ValueError(f"{key}: partial declared first-hit payload")
+            if any(silhouette_present) and not all(silhouette_present):
+                raise ValueError(f"{key}: partial declared silhouette payload")
+            if active_declared and not (all(depth_present) or all(silhouette_present)):
+                raise ValueError(f"{key}: active object image row requires first-hit or silhouette payload")
+            if not any(depth_present) and not any(silhouette_present):
+                activation[key] = str(row.get("state") or "inactive_declared_image_row_without_selected_subfamily")
+                continue
+            depth_points = (np.asarray(row["depth_points_canonical"], dtype=np.float64)
+                            if all(depth_present) else np.empty((0, 3), dtype=np.float64))
+            observed_z = (np.asarray(row["depth_observed_z"], dtype=np.float64)
+                          if all(depth_present) else np.empty((0,), dtype=np.float64))
+            depth_weight = (np.asarray(row["depth_weight"], dtype=np.float64)
+                            if all(depth_present) else np.empty((0,), dtype=np.float64))
+            if depth_points.size and (depth_points.ndim != 2 or depth_points.shape[1:] != (3,)):
+                raise ValueError(f"{key}: malformed declared first-hit canonical points")
+            depth_points = depth_points.reshape(-1, 3)
             if len(depth_points):
                 if len(depth_points) != len(observed_z) or len(depth_points) != len(depth_weight):
                     raise ValueError(f"{key}: malformed declared first-hit factor")
-                else:
-                    T = np.asarray(row.get("T_world_camera", episode.T_world_camera[pos]), dtype=np.float64)
-                    world = depth_points @ R.T + t
-                    camera = (world - T[:3, 3]) @ T[:3, :3]
-                    residual = first_hit_depth(camera[:, 2], observed_z, depth_weight,
-                        sigma=float(self.profile.get("sigma_image_first_hit_m")),
-                        clip=float(self.profile.get("max_image_first_hit_residual_m")),
-                        weight=float(self.profile.get("image_first_hit_weight")))
-                    add(f"{key}/first_hit", scipy_least_squares_cost(residual, loss),
-                        residual_count=len(residual), active_count=len(residual), reduction=f"scipy_0.5_rho/{loss}")
-                    activation[f"{key}/first_hit"] = "active_declared_first_hit"
-            silhouette_points = np.asarray(row.get("silhouette_points_canonical", []), dtype=np.float64).reshape(-1, 3)
-            silhouette_target = np.asarray(row.get("silhouette_target_uv", []), dtype=np.float64).reshape(-1, 2)
+                T = np.asarray(row.get("T_world_camera", episode.T_world_camera[pos]), dtype=np.float64)
+                world = depth_points @ R.T + t
+                camera = (world - T[:3, 3]) @ T[:3, :3]
+                residual = first_hit_depth(camera[:, 2], observed_z, depth_weight,
+                    sigma=float(self.profile.get("sigma_image_first_hit_m")),
+                    clip=float(self.profile.get("max_image_first_hit_residual_m")),
+                    weight=float(self.profile.get("image_first_hit_weight")))
+                add(f"{key}/first_hit", scipy_least_squares_cost(residual, loss),
+                    residual_count=len(residual), active_count=len(residual), reduction=f"scipy_0.5_rho/{loss}")
+                activation[f"{key}/first_hit"] = "active_declared_first_hit"
+            silhouette_points = (np.asarray(row["silhouette_points_canonical"], dtype=np.float64)
+                                 if all(silhouette_present) else np.empty((0, 3), dtype=np.float64))
+            silhouette_target = (np.asarray(row["silhouette_target_uv"], dtype=np.float64)
+                                 if all(silhouette_present) else np.empty((0, 2), dtype=np.float64))
+            if silhouette_points.size and (silhouette_points.ndim != 2 or silhouette_points.shape[1:] != (3,)):
+                raise ValueError(f"{key}: malformed declared silhouette canonical points")
+            if silhouette_target.size and (silhouette_target.ndim != 2 or silhouette_target.shape[1:] != (2,)):
+                raise ValueError(f"{key}: malformed declared silhouette targets")
+            silhouette_points = silhouette_points.reshape(-1, 3)
+            silhouette_target = silhouette_target.reshape(-1, 2)
+            if active_declared and not (len(depth_points) or len(silhouette_points)):
+                raise ValueError(f"{key}: active object image row requires nonempty first-hit or silhouette payload")
+            if not len(depth_points) and not len(silhouette_points):
+                activation[key] = str(row.get("state") or "inactive_declared_image_row_without_selected_subfamily")
+                continue
             if len(silhouette_points):
                 if len(silhouette_points) != len(silhouette_target):
                     raise ValueError(f"{key}: malformed declared silhouette factor")
+                T = np.asarray(row.get("T_world_camera", episode.T_world_camera[pos]), dtype=np.float64)
+                K = np.asarray(row.get("K_raster", episode.intrinsics[pos]), dtype=np.float64)
+                world = silhouette_points @ R.T + t
+                camera = (world - T[:3, 3]) @ T[:3, :3]
+                if K.shape == (3, 3):
+                    intr = np.asarray([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
                 else:
-                    T = np.asarray(row.get("T_world_camera", episode.T_world_camera[pos]), dtype=np.float64)
-                    K = np.asarray(row.get("K_raster", episode.intrinsics[pos]), dtype=np.float64)
-                    world = silhouette_points @ R.T + t
-                    camera = (world - T[:3, 3]) @ T[:3, :3]
-                    if K.shape == (3, 3):
-                        intr = np.asarray([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
-                    else:
-                        intr = K.reshape(4)
-                    uv = np.column_stack([intr[0] * camera[:, 0] / np.maximum(camera[:, 2], 1e-9) + intr[2],
-                                          intr[1] * camera[:, 1] / np.maximum(camera[:, 2], 1e-9) + intr[3]])
-                    residual = silhouette_endpoint_residual(uv, silhouette_target,
-                        sigma=float(self.profile.get("sigma_image_silhouette_px")),
-                        clip=float(self.profile.get("max_image_silhouette_residual_px")),
-                        weight=float(self.profile.get("image_silhouette_weight")))
-                    add(f"{key}/silhouette", scipy_least_squares_cost(residual, loss),
-                        residual_count=len(residual), active_count=len(silhouette_points), reduction=f"scipy_0.5_rho/{loss}")
-                    activation[f"{key}/silhouette"] = "active_declared_silhouette"
+                    intr = K.reshape(4)
+                uv = np.column_stack([intr[0] * camera[:, 0] / np.maximum(camera[:, 2], 1e-9) + intr[2],
+                                      intr[1] * camera[:, 1] / np.maximum(camera[:, 2], 1e-9) + intr[3]])
+                residual = silhouette_endpoint_residual(uv, silhouette_target,
+                    sigma=float(self.profile.get("sigma_image_silhouette_px")),
+                    clip=float(self.profile.get("max_image_silhouette_residual_px")),
+                    weight=float(self.profile.get("image_silhouette_weight")))
+                add(f"{key}/silhouette", scipy_least_squares_cost(residual, loss),
+                    residual_count=len(residual), active_count=len(silhouette_points), reduction=f"scipy_0.5_rho/{loss}")
+                activation[f"{key}/silhouette"] = "active_declared_silhouette"
 
         edge_rows = _factor_rows(episode, {"object_rgb_edge", "rgb_rotation"}, end, target=entity)
         if not edge_rows:
@@ -899,9 +951,13 @@ class RewardEvaluator:
                 active_count=len(factor.weights), reduction=f"scipy_0.5_rho/{loss}")
             activation[key] = "active_declared_rgb_reprojection"
 
-    def _visual_joint(self, state: AnnotationState, end: int, add: Any,
+    def _visual_joint_fixed_scale(self, state: AnnotationState, end: int, add: Any,
                       activation: dict[str, Any]) -> None:
-        """Selected legacy visual composition, without formal-family double counting."""
+        """Selected fixed-scale RL slice of the legacy visual composition.
+
+        It deliberately has no hand-log-scale action or term; legacy_optimize
+        retains the full visual solver objective including hand scale.
+        """
         from rewards.terms.hand.observation import visual_joint_reprojection, visual_surface_reprojection
         from rewards.terms.hand.priors import visual_articulation, visual_root_orientation, visual_translation
         from rewards.terms.interaction.contact import unsigned_pad_loss

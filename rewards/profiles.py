@@ -84,7 +84,7 @@ class RewardProfile:
     name: str
     formal_hand: bool
     formal_object: bool
-    visual_joint: bool
+    visual_joint_fixed_scale: bool
     values: Mapping[str, Any]
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -96,8 +96,16 @@ def _get(cfg: Mapping[str, Any] | Any, name: str, default: Any) -> Any:
 
 
 def resolve_profile(cfg: Mapping[str, Any] | Any) -> RewardProfile:
-    """Resolve one named composition and apply only explicit numeric/switch overrides."""
+    """Resolve one named composition and apply only explicit numeric/switch overrides.
+
+    ``visual_joint_fixed_scale`` is the RL-compatible fixed-scale slice of the
+    legacy visual fitter: policy actions are MANO root/articulation/translation
+    residuals only. The legacy log-scale objective remains in legacy_optimize;
+    this profile never claims full legacy visual-objective equivalence.
+    """
     name = str(_get(cfg, "reward_profile", "formal_annotation"))
+    if name == "visual_joint":
+        raise ValueError("reward_profile='visual_joint' was renamed to 'visual_joint_fixed_scale'; the RL profile has no hand-scale action")
     shapes = {
         # Full policy objective: formal MANO interval factors plus the distinct
         # formal object trajectory factors. The hand solver's optional
@@ -106,7 +114,7 @@ def resolve_profile(cfg: Mapping[str, Any] | Any) -> RewardProfile:
         "formal_annotation": (True, True, False, FORMAL_DEFAULTS),
         "formal_interval": (True, False, False, FORMAL_DEFAULTS),
         "formal_object": (False, True, False, FORMAL_DEFAULTS),
-        "visual_joint": (False, False, True, VISUAL_DEFAULTS),
+        "visual_joint_fixed_scale": (False, False, True, VISUAL_DEFAULTS),
     }
     if name not in shapes:
         raise ValueError(f"unreviewed reward profile {name!r}; expected one of {sorted(shapes)}")
