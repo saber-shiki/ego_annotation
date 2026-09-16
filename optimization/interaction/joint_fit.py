@@ -15,10 +15,10 @@ from observations.interaction.evidence import appearance_mask_rows
 from gates.interaction.contact import (interaction_states, primary_contact_pads, PRIMARY_DIGITS,
     primary_similarity_reachable, visual_proximity_weights, validate_visual_proximity_contract,
     HAND_TRANSLATION_BOUND_M, HAND_SCALE_BOUNDS, PRIMARY_PROXIMITY_MAX_GAP_M)
-from factors.interaction.contact import unsigned_pad_loss
-from factors.hand.priors import visual_articulation, visual_root_orientation, visual_translation, hand_log_scale
-from factors.hand.observation import visual_surface_reprojection, visual_joint_reprojection
-from factors.common import mean_square
+from rewards.terms.interaction.contact import unsigned_pad_loss
+from rewards.terms.hand.priors import visual_articulation, visual_root_orientation, visual_translation, hand_log_scale
+from rewards.terms.hand.observation import visual_surface_reprojection, visual_joint_reprojection
+from rewards.terms.common import mean_square
 FIT_REFERENCE_WIDTH = 960
 
 

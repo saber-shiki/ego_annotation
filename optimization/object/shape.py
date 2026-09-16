@@ -114,7 +114,7 @@ def estimate_scale(vertices, faces, observations, bounds=(0.8, 1.2), samples=41)
     not reconstructed geometry or contact evidence.
     """
     import numpy as np
-    from factors.object.image import silhouette
+    from rewards.terms.object.image import silhouette
     from observations.object.shape import AUTHORITY
     bounds = np.asarray(bounds, float)
     if bounds.shape != (2,) or not np.isfinite(bounds).all() or (not 0 < bounds[0] <= 1 <= bounds[1]) or (bounds[0] == bounds[1]) or (type(samples) is not int) or (not 3 <= samples <= 101):

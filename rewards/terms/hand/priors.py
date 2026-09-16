@@ -1,5 +1,5 @@
 """Visual and formal MANO prior normalizations remain distinct."""
-from factors.common import mean_square
+from rewards.terms.common import mean_square
 
 
 def visual_articulation(delta):

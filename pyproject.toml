@@ -24,8 +24,8 @@ py-modules = ["main", "render", "evaluate"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["utils*", "observations*", "gates*", "factors*", "optimization*"]
+include = ["utils*", "observations*", "actions*", "envs*", "rewards*", "legacy_optimize*"]
 namespaces = true
 
 [tool.pytest.ini_options]
-testpaths = ["test_pipeline.py", "observations", "gates", "factors", "optimization"]
+testpaths = ["test_pipeline.py", "observations", "actions", "envs", "rewards", "legacy_optimize"]

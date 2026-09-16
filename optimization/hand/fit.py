@@ -105,14 +105,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     from observations.interaction.evidence import OPENPOSE_FINGER_GROUPS
     from optimization.common.correspondences import active_constraints_from_vertices
     from observations.interaction.evidence import inactive_signed_surface_measure
-    from factors.hand.priors import formal_translation, formal_root_orientation, formal_articulation
-    from factors.interaction.contact import contact_state_prior, contact_geometry_likelihood, contact_state_continuity, normal_deadband, normal_scaled_attraction
-    from factors.motion.temporal import parameter_velocity, parameter_acceleration
-    from factors.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
-    from factors.hand.observation import joint_pixel_deadband, joint_depth_deadband
-    from factors.object.pose import object_translation_prior
-    from factors.hand.priors import hand_ray_translation_prior
-    from factors.common import magnitude_hinge
+    from rewards.terms.hand.priors import formal_translation, formal_root_orientation, formal_articulation
+    from rewards.terms.interaction.contact import contact_state_prior, contact_geometry_likelihood, contact_state_continuity, normal_deadband, normal_scaled_attraction
+    from rewards.terms.motion.temporal import parameter_velocity, parameter_acceleration
+    from rewards.terms.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
+    from rewards.terms.hand.observation import joint_pixel_deadband, joint_depth_deadband
+    from rewards.terms.object.pose import object_translation_prior
+    from rewards.terms.hand.priors import hand_ray_translation_prior
+    from rewards.terms.common import magnitude_hinge
     if not rows:
         return ({'status': 'no_rows'}, [], {'frame_idx': np.zeros((0,), dtype=np.int32), 'hand_side': np.asarray([], dtype='<U5'), 'vertices_world_m': np.zeros((0, 778, 3), dtype=np.float32), 'joints_world_m': np.zeros((0, 21, 3), dtype=np.float32)})
     b = len(rows)

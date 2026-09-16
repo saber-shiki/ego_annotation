@@ -96,7 +96,7 @@ class GroupedContractTests(unittest.TestCase):
             nodes,_=main.build_nodes(json.loads(annotations.read_text()),json.loads(source.read_text()),'tool')
             edges,pixels=main.load_edges(edge,report,source,annotations,nodes,root)
             self.assertEqual(len(edges),1);self.assertEqual(len(pixels),1)
-            from factors.object.image import rgb_reprojection_residual
+            from rewards.terms.object.image import rgb_reprojection_residual
             from utils.data import SolverConfig
             poses={n.frame_idx:(n.initial_rotation.copy(),n.initial_translation.copy()) for n in nodes}
             baseline=rgb_reprojection_residual(pixels[0],poses,nodes,SolverConfig(rgb_reprojection_weight_scale=1.))

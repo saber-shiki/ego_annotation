@@ -1,5 +1,5 @@
 """MANO baseline image/depth preservation, with distinct visual/formal normalizers."""
-from factors.common import mean_square
+from rewards.terms.common import mean_square
 
 
 def visual_surface_reprojection(pixel, baseline):

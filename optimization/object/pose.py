@@ -16,11 +16,11 @@ from scipy.spatial.transform import Rotation
 from observations.object.rgb_tracking import local_rotation_evidence, observed_rotation_authority
 from utils.data import PoseNode, RGBEdge, RGBReprojectionFactor, SolverConfig
 from utils.geometry import valid_rotation, apply_left_correction, pose_correction, inverse_pose
-from factors.object.pose import rgb_edge_residual, source_pose_rotation, source_pose_translation
-from factors.object.image import rgb_reprojection_residual, silhouette_endpoint_residual
-from factors.object.geometry import first_hit_depth, observed_point_to_plane, observed_point_to_point
-from factors.motion.temporal import correction_velocity, correction_acceleration
-from factors.interaction.physics import nonpenetration_translation_target
+from rewards.terms.object.pose import rgb_edge_residual, source_pose_rotation, source_pose_translation
+from rewards.terms.object.image import rgb_reprojection_residual, silhouette_endpoint_residual
+from rewards.terms.object.geometry import first_hit_depth, observed_point_to_plane, observed_point_to_point
+from rewards.terms.motion.temporal import correction_velocity, correction_acceleration
+from rewards.terms.interaction.physics import nonpenetration_translation_target
 from optimization.common.correspondences import build_observed_point_factors
 
 @dataclass
@@ -138,7 +138,7 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
 
 def solve_scene_pose(nodes, times, edges, anchor, config=None, reprojections=()):
     from optimization.common.diagnostics import depth_violation
-    from factors.common import robust_cost
+    from rewards.terms.common import robust_cost
     from gates.object.tracking import validate
     cfg = config or GraphConfig()
     times = validate(nodes, times, edges, anchor)

@@ -6,8 +6,8 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 from utils.data import PoseNode,RGBEdge,RGBReprojectionFactor,PointFactor,SolverConfig
-from factors.object.pose import rgb_edge_residual
-from factors.object.image import rgb_reprojection_residual
+from rewards.terms.object.pose import rgb_edge_residual
+from rewards.terms.object.image import rgb_reprojection_residual
 from optimization.object.pose import solve_scene_pose as solve,GraphConfig,residual_blocks
 from observations.common import build_nodes
 from utils.data import time_source_pairs,time_keyframes,RKEY,TKEY
@@ -318,11 +318,11 @@ class FormalFactorConsumerTests(unittest.TestCase):
         from contextlib import ExitStack
         from unittest.mock import patch
         from optimization.hand.fit import optimize_rows
-        import factors.interaction.physics as physics
-        import factors.hand.observation as observation
-        import factors.hand.priors as priors
-        import factors.object.pose as object_factors
-        import factors.common as common
+        import rewards.terms.interaction.physics as physics
+        import rewards.terms.hand.observation as observation
+        import rewards.terms.hand.priors as priors
+        import rewards.terms.object.pose as object_factors
+        import rewards.terms.common as common
         inputs=self.fixture()
         checks=[(physics,'signed_active_penetration'),(physics,'signed_dense_penetration'),
                 (physics,'visible_surface_depth_order'),(observation,'joint_pixel_deadband'),

@@ -94,7 +94,7 @@ import torch
 from gates.interaction.contact import primary_contact_pads
 from gates.interaction.contact import (visual_proximity_weights, primary_similarity_reachable,
     HAND_SCALE_BOUNDS, HAND_TRANSLATION_BOUND_M)
-from factors.interaction.contact import unsigned_pad_loss
+from rewards.terms.interaction.contact import unsigned_pad_loss
 from optimization.common.correspondences import make_scene, closest
 from utils.geometry import project
 
@@ -196,7 +196,7 @@ class PrimaryPads(unittest.TestCase):
 
 class FormalNormalizationTests(unittest.TestCase):
     def test_contact_probability_receives_geometry_gradient(self):
-        from factors.interaction.contact import normal_deadband
+        from rewards.terms.interaction.contact import normal_deadband
         probability=torch.tensor(.4,dtype=torch.float64,requires_grad=True)
         gap=torch.tensor([.03,.02],dtype=torch.float64,requires_grad=True)
         loss=normal_deadband(gap,.01,25000.,probability)
@@ -205,7 +205,7 @@ class FormalNormalizationTests(unittest.TestCase):
         np.testing.assert_allclose(gap.grad.numpy(),25000*.4*np.array([.02,.01]))
 
     def test_formal_root_uses_nine_visibility_denominator(self):
-        from factors.hand.priors import formal_root_orientation
+        from rewards.terms.hand.priors import formal_root_orientation
         delta=torch.ones((2,1,3),dtype=torch.float64)
         visibility=torch.tensor([1.,.5],dtype=torch.float64)
         self.assertAlmostEqual(formal_root_orientation(delta,visibility,9.).item(),3.)
@@ -222,7 +222,7 @@ class FormalKernelParityTests(unittest.TestCase):
         np.testing.assert_allclose(ga.detach(),gb.detach(),atol=1e-12,rtol=1e-12)
 
     def test_active_dense_and_depth_order_preserve_distinct_normalizations(self):
-        from factors.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
+        from rewards.terms.interaction.physics import signed_active_penetration, signed_dense_penetration, visible_surface_depth_order
         normals=torch.tensor([[0.,0.,1.]]*3,dtype=torch.float64)
         depth=torch.tensor([.04,.01,-.02],dtype=torch.float64)
         def residual(moved):return torch.relu(depth-.005-(normals*moved).sum(1))
@@ -236,10 +236,10 @@ class FormalKernelParityTests(unittest.TestCase):
             lambda v:9.*order(v).square().sum()/(order(v)>0).sum().clamp_min(1.),[.98,1.,1.])
 
     def test_observation_ray_object_and_magnitude_terms_match_reference_gradients(self):
-        from factors.hand.observation import joint_pixel_deadband,joint_depth_deadband
-        from factors.hand.priors import hand_ray_translation_prior
-        from factors.object.pose import object_translation_prior
-        from factors.common import magnitude_hinge
+        from rewards.terms.hand.observation import joint_pixel_deadband,joint_depth_deadband
+        from rewards.terms.hand.priors import hand_ray_translation_prior
+        from rewards.terms.object.pose import object_translation_prior
+        from rewards.terms.common import magnitude_hinge
         weights=torch.tensor([1.,.2],dtype=torch.float64)
         base=torch.zeros((2,2),dtype=torch.float64)
         self.assert_kernel(lambda v:joint_pixel_deadband(v,base,weights,1.,3.),
@@ -274,7 +274,7 @@ from scipy.spatial.transform import Rotation
 
 import observations.object.rgb_tracking as builder
 from utils.data import RGBEdge
-from factors.object.pose import rgb_edge_residual
+from rewards.terms.object.pose import rgb_edge_residual
 
 
 def rgb_edge_fixture(moving=True):
