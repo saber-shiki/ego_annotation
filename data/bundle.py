@@ -208,6 +208,14 @@ def prepared_manifest(
     if first_mesh is None:
         raise ValueError("object_mesh lacks first declared entity")
     sources["object_mesh"] = _artifact(first_mesh)
+    completion_collision: Path | None = None
+    if completion_report is not None:
+        completion_payload = json.loads(Path(completion_report).read_text(encoding="utf-8"))
+        outputs = completion_payload.get("outputs") if isinstance(completion_payload.get("outputs"), Mapping) else {}
+        raw_collision = outputs.get("collision_eligible_mesh_labeled")
+        if not isinstance(raw_collision, str) or not Path(raw_collision).is_file():
+            raise ValueError("completion_report requires a readable collision_eligible_mesh_labeled output")
+        completion_collision = Path(raw_collision).resolve()
     assets: dict[str, Any] = {}
     for entity in object_ids:
         pose = per_object(object_mesh, entity)
@@ -215,8 +223,14 @@ def prepared_manifest(
             raise ValueError(f"object_mesh lacks declared entity {entity!r}")
         item: dict[str, Any] = {"pose_mesh": _artifact(pose)}
         collision = per_object(collision_mesh, entity)
+        if collision is None and completion_collision is not None:
+            if len(object_ids) != 1:
+                raise ValueError("multi-object completion reports require an explicit collision_mesh mapping")
+            collision = completion_collision
         if collision is not None:
             item["collision_mesh"] = _artifact(collision)
+        elif completion_report is not None:
+            raise ValueError(f"missing manifest-bound collision mesh for {entity!r}")
         authority = per_object(signed_face_authority, entity)
         if authority is not None:
             item["signed_face_authority"] = _artifact(authority)
@@ -310,6 +324,22 @@ def _object_asset(bundle: EpisodeBundle, entity: str) -> Mapping[str, Any]:
     return MappingProxyType({"pose_mesh": bundle.manifest["sources"]["object_mesh"]})
 
 
+def _top_level_collision_artifact(bundle: EpisodeBundle, entity: str) -> Mapping[str, Any] | None:
+    records = bundle.manifest.get("artifacts")
+    if not isinstance(records, Mapping):
+        return None
+    named = {"collision_eligible_mesh", "collision_mesh", f"{entity}_collision_eligible_mesh"}
+    matches = []
+    for name, record in records.items():
+        if not isinstance(record, Mapping):
+            continue
+        if name in named or record.get("role") in {"collision_eligible_mesh", "collision_mesh"}:
+            matches.append(record)
+    if len(matches) > 1:
+        raise ValueError(f"ambiguous top-level collision artifacts for {entity!r}")
+    return matches[0] if matches else None
+
+
 def _source_artifact_path(bundle: EpisodeBundle, value: Mapping[str, Any]) -> Path:
     return _absolute(bundle.manifest_path.parent, value["path"])
 
@@ -349,6 +379,12 @@ def _camera_mano_contract(frame: Mapping[str, Any], side: str, intrinsics: np.nd
         return (False, "camera_mano_reinference_required")
     if alignment.get("source_hawor_state_intrinsics_match_active_contract") is not True:
         return (False, "source_hawor_intrinsics_not_bound_to_active_camera")
+    if alignment.get("source_hawor_full_K_bound_to_inference") is not True:
+        return (False, "source_hawor_full_K_bound_to_inference_not_proven")
+    plane = alignment.get("hawor_camera_image_plane_contract")
+    if (not isinstance(plane, Mapping) or plane.get("validated") is not True
+            or plane.get("status") != "validated_source_K_affine_centered_hawor_inference_plane"):
+        return (False, "hawor_camera_image_plane_contract_not_validated")
     source = np.asarray(metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy", []), float)
     if source.shape != (4,) or not np.allclose(source, intrinsics, atol=.01, rtol=0):
         return (False, "annotation_mano_intrinsics_differ_from_camera")
@@ -450,15 +486,14 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
         asset = _object_asset(bundle, entity)
         pose_path = _source_artifact_path(bundle, asset["pose_mesh"])
         pose_vertices, pose_faces, pose_watertight = _load_mesh_arrays(pose_path)
-        collision_value = asset.get("collision_mesh")
+        collision_value = asset.get("collision_mesh") or _top_level_collision_artifact(bundle, entity)
         completion_payload: Mapping[str, Any] = {}
         try:
             completion_payload = json.loads(bundle.source_path("completion_report").read_text(encoding="utf-8"))
         except KeyError:
             pass
-        if collision_value is None and isinstance(completion_payload.get("outputs"), Mapping):
-            raw = completion_payload["outputs"].get("collision_eligible_mesh_labeled")
-            collision_value = _artifact(raw) if isinstance(raw, str) and Path(raw).is_file() else None
+        if collision_value is None and "completion_report" in bundle.manifest["sources"]:
+            raise ValueError(f"completion-backed object {entity!r} lacks a manifest-bound collision mesh")
         if collision_value is not None:
             collision_path = _source_artifact_path(bundle, collision_value)
             collision_vertices, collision_faces, collision_watertight = _load_mesh_arrays(collision_path)
@@ -492,7 +527,7 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
             if not np.array_equal(ids,np.arange(len(collision_faces))) or eligible.shape!=(len(collision_faces),) or mesh_hash!=collision_sha or face_count!=len(collision_faces):
                 raise ValueError(f"signed authority does not bind exact collision mesh for {entity}")
             authority=eligible; authority_state="active_mesh_bound_local_face_authority" if authority.any() else "inactive_zero_signed_faces"
-        objects[entity]={"entity_id":entity,"present":_frozen_array(present),"pose_valid":_frozen_array(pose_valid),"valid":_frozen_array(np.asarray(present)&np.asarray(pose_valid)),"metric_observation_eligible":_frozen_array(metric_eligible),"rotation":_frozen_array(rotations),"translation":_frozen_array(translations),"pose_vertices_canonical":_frozen_array(pose_vertices),"pose_faces":_frozen_array(pose_faces),"vertices_canonical":_frozen_array(pose_vertices),"faces":_frozen_array(pose_faces),"collision_vertices_canonical":_frozen_array(collision_vertices),"collision_faces":_frozen_array(collision_faces),"collision_mesh_sha256":collision_sha,"collision_mesh_face_count":int(len(collision_faces)),"collision_mesh_role":collision_role,"watertight":bool(collision_watertight),"signed_geometry_ready":readiness.get("signed_geometry_ready") is True,"signed_authority":_frozen_array(authority),"signed_authority_state":authority_state,"raw_observed_points_world":tuple(_frozen_array(value) for value in raw_points),"observed_points_world":tuple(_frozen_array(value) for value in admitted),"observed_point_state":tuple(states),"pose_provenance":"source_observation_initializer_not_solved_trajectory","geometry_provenance":"completed_reconstructed_pose_mesh"}
+        objects[entity]={"entity_id":entity,"present":_frozen_array(present),"pose_valid":_frozen_array(pose_valid),"valid":_frozen_array(np.asarray(present)&np.asarray(pose_valid)),"metric_observation_eligible":_frozen_array(metric_eligible),"rotation":_frozen_array(rotations),"translation":_frozen_array(translations),"pose_vertices_canonical":_frozen_array(pose_vertices),"pose_faces":_frozen_array(pose_faces),"pose_mesh_sha256":file_sha256(pose_path),"pose_mesh_face_count":int(len(pose_faces)),"vertices_canonical":_frozen_array(pose_vertices),"faces":_frozen_array(pose_faces),"collision_vertices_canonical":_frozen_array(collision_vertices),"collision_faces":_frozen_array(collision_faces),"collision_mesh_sha256":collision_sha,"collision_mesh_face_count":int(len(collision_faces)),"collision_mesh_role":collision_role,"watertight":bool(collision_watertight),"signed_geometry_ready":readiness.get("signed_geometry_ready") is True,"signed_authority":_frozen_array(authority),"signed_authority_state":authority_state,"raw_observed_points_world":tuple(_frozen_array(value) for value in raw_points),"observed_points_world":tuple(_frozen_array(value) for value in admitted),"observed_point_state":tuple(states),"pose_provenance":"source_observation_initializer_not_solved_trajectory","geometry_provenance":"completed_reconstructed_pose_mesh"}
 
     reports=_factor_reports(bundle)
     typed: dict[tuple[int,str|None,str|None,str],list[Mapping[str,Any]]]={}

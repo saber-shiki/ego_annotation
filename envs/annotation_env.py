@@ -175,7 +175,8 @@ class AnnotationEnv(gym.Env):
                     for i, frame in enumerate(episode.frame_idx)]
             object_trajectories[value["entity_id"]] = {"object_slot": slot, "array_prefix": prefix,
                 "object_id": value["entity_id"], "pose_rows": rows,
-                "pose_mesh_sha256": value.get("collision_mesh_sha256")}
+                "pose_mesh_sha256": value.get("pose_mesh_sha256"),
+                "collision_mesh_sha256": value.get("collision_mesh_sha256")}
         per_frame_states = []
         for side in episode.layout.hand_slots:
             arrays[f"{side}_valid"] = np.asarray(episode.hands[side]["valid"], dtype=bool)

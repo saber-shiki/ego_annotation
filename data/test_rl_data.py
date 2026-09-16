@@ -91,6 +91,11 @@ def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_vid
             "camera_contract_alignment": {
                 "active_contract_reinference_required": False,
                 "source_hawor_state_intrinsics_match_active_contract": True,
+                "source_hawor_full_K_bound_to_inference": True,
+                "hawor_camera_image_plane_contract": {
+                    "validated": True,
+                    "status": "validated_source_K_affine_centered_hawor_inference_plane",
+                },
             },
         }} for side in ("left", "right")]
         frames.append({"frame_idx": i, "time_s": i / 30.0, "source_width": 64, "source_height": 64,

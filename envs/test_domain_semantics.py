@@ -40,6 +40,9 @@ class DomainStaticEvidenceTest(unittest.TestCase):
         report = json.loads(factor.read_text())
         for row in report["factor_rows"]:
             row["target_entity_id"] = "object:synthetic"
+        second_contact = dict(report["factor_rows"][0])
+        second_contact["target_entity_id"] = "object:second"
+        report["factor_rows"].append(second_contact)
         factor.write_text(json.dumps(report))
         extra = root / "generic_factor_rows.json"
         extra.write_text(json.dumps({"factor_rows": [
@@ -81,12 +84,17 @@ class DomainStaticEvidenceTest(unittest.TestCase):
             self.assertAlmostEqual(float(left["pose_visibility"][0, 0]), .25)
             np.testing.assert_allclose(left["hand_ray_shift_prior_world_m"][0], [.002, .003, .004])
             self.assertIn((0, "left", "object:synthetic"), arrays["contact"])
+            self.assertIn((0, "left", "object:second"), arrays["contact"])
+            self.assertNotIn((0, "left"), arrays["contact_legacy"])
             env = AnnotationEnv([bundle], {"max_objects": 2, "contact_variables_per_hand": 1,
                                            "mano_models": models, "verify_mano_replay": True,
                                            "observation_point_samples": 4}, "cpu")
             observation, _ = env.reset(options={"episode_index": 0})
             self.assertEqual(observation.shape, env.observation_space.shape)
-            before = refresh_candidate_terms(env.state, {}, 0)["contact_by_key"][("left", "object:synthetic")]
+            before_terms = refresh_candidate_terms(env.state, {}, 0)
+            self.assertNotIn("left", before_terms["contact"])
+            self.assertEqual(set(before_terms["contact_by_key"]), {("left", "object:synthetic"), ("left", "object:second"), ("right", "object:synthetic")})
+            before = before_terms["contact_by_key"][("left", "object:synthetic")]
             ids = before["vertex_ids"].copy(); targets = before["targets_world"].copy()
             env.state.hand_vertices["left"][0] += .4
             moved_hand = refresh_candidate_terms(env.state, {}, 0)["contact_by_key"][("left", "object:synthetic")]
@@ -105,7 +113,56 @@ class DomainStaticEvidenceTest(unittest.TestCase):
                 self.assertEqual(archive["object_entity_ids"].tolist(), ["object:synthetic", "object:second"])
                 self.assertIn("object_1_rotation", archive.files)
                 self.assertFalse(archive["object_1_metric_observation_eligible"][0])
+            self.assertEqual(exported["document"]["object_pose_trajectories"]["object:synthetic"]["pose_mesh_sha256"],
+                             env.state.episode.objects["object:0"]["pose_mesh_sha256"])
+            self.assertEqual(exported["document"]["object_pose_trajectories"]["object:synthetic"]["collision_mesh_sha256"],
+                             env.state.episode.objects["object:0"]["collision_mesh_sha256"])
             self.assertIn("object:second", exported["document"]["object_pose_trajectories"])
+
+    def test_full_k_contract_and_completion_collision_are_manifest_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); base_path, _models = make_synthetic_bundle(root / "base")
+            base = json.loads(base_path.read_text()); source = base["sources"]
+            original_annotations = Path(source["annotations"]["path"])
+            for field, value in (("source_hawor_full_K_bound_to_inference", False),):
+                payload = json.loads(original_annotations.read_text())
+                payload["frames"][0]["hands"][0]["metric_mano_state"]["camera_contract_alignment"][field] = value
+                bad = root / f"bad_{field}.json"; bad.write_text(json.dumps(payload))
+                manifest = prepared_manifest(bundle_id=f"bad-{field}", clip_id="bad", source_video_id="bad",
+                    source_video=base["identity"]["source_video"]["path"], annotations=bad,
+                    mano_archive=source["mano_archive"]["path"], object_mesh=source["object_mesh"]["path"],
+                    object_id="object:synthetic", frame_range=(0,2),
+                    code_identity=(base["identity"]["code"]["path"], base["identity"]["code"]["sha256"]),
+                    config_identity=(base["identity"]["config"]["path"], base["identity"]["config"]["sha256"]),
+                    contact_factors=source["contact_factors"]["path"])
+                with self.assertRaises(ValueError): EpisodeBundle.open(write_manifest(root / f"bad_{field}.manifest.json", manifest)).load()
+            payload = json.loads(original_annotations.read_text())
+            payload["frames"][0]["hands"][0]["metric_mano_state"]["camera_contract_alignment"]["hawor_camera_image_plane_contract"]["status"] = "invalid"
+            bad = root / "bad_plane.json"; bad.write_text(json.dumps(payload))
+            manifest = prepared_manifest(bundle_id="bad-plane", clip_id="bad", source_video_id="bad",
+                source_video=base["identity"]["source_video"]["path"], annotations=bad,
+                mano_archive=source["mano_archive"]["path"], object_mesh=source["object_mesh"]["path"],
+                object_id="object:synthetic", frame_range=(0,2),
+                code_identity=(base["identity"]["code"]["path"], base["identity"]["code"]["sha256"]),
+                config_identity=(base["identity"]["config"]["path"], base["identity"]["config"]["sha256"]),
+                contact_factors=source["contact_factors"]["path"])
+            with self.assertRaises(ValueError): EpisodeBundle.open(write_manifest(root / "bad_plane.manifest.json", manifest)).load()
+            collision = root / "collision.ply"
+            trimesh.Trimesh(np.asarray([[0,0,0],[.1,0,0],[0,.1,0]]), np.asarray([[0,1,2]]), process=False).export(collision)
+            completion = root / "completion.json"
+            completion.write_text(json.dumps({"outputs": {"collision_eligible_mesh_labeled": str(collision)},
+                                              "geometry_readiness": {"signed_geometry_ready": False}}))
+            bound = prepared_manifest(bundle_id="bound-collision", clip_id="bound", source_video_id="bound",
+                source_video=base["identity"]["source_video"]["path"], annotations=original_annotations,
+                mano_archive=source["mano_archive"]["path"], object_mesh=source["object_mesh"]["path"],
+                object_id="object:synthetic", frame_range=(0,2),
+                code_identity=(base["identity"]["code"]["path"], base["identity"]["code"]["sha256"]),
+                config_identity=(base["identity"]["config"]["path"], base["identity"]["config"]["sha256"]),
+                contact_factors=source["contact_factors"]["path"], completion_report=completion)
+            path = write_manifest(root / "bound_collision.json", bound)
+            self.assertIn("collision_mesh", bound["sources"]["object_assets"]["object:synthetic"])
+            trimesh.Trimesh(np.asarray([[0,0,0],[.2,0,0],[0,.2,0]]), np.asarray([[0,1,2]]), process=False).export(collision)
+            with self.assertRaises(ValueError): EpisodeBundle.open(path)
 
     def test_identity_hashes_and_source_geometry_change_are_observable(self):
         with tempfile.TemporaryDirectory() as directory:
