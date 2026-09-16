@@ -151,7 +151,7 @@ def main(argv=None):
     visual.add_argument('--object-id',required=True)
     visual.add_argument('--device',default='cpu')
     visual.add_argument('--iterations',type=int,default=240)
-    visual.add_argument('--object-profile',choices=('legacy','prepared_surface_no_box','prepared_surface_weak_box'),default='legacy')
+    visual.add_argument('--object-profile',choices=('legacy','surface_no_box','surface_weak_box','prepared_surface_no_box','prepared_surface_weak_box'),default='legacy')
     visual.add_argument('--freeze-object',action='store_true')
     judgment=commands.add_parser('judge',help='run one independent Astra image judgment')
     judgment.add_argument('name',choices=('object','mask_track','pose_anchor','rigidity','appearance_anchor',
@@ -179,6 +179,9 @@ def main(argv=None):
     resume.add_argument('--rewind',help='invalidate this named stage and its dependent suffix')
     resume.add_argument('--reason',help='required explanation for explicit rewind')
     resume.add_argument('--candidate',help='label the new same-run suffix; retained receipts stay unchanged')
+    for command in (video, resume):
+        command.add_argument('--geometry-profile', choices=('legacy_internal_moge','shared_metric_pointmap'))
+        command.add_argument('--object-profile', choices=('none','surface_no_box','surface_weak_box'))
     internal=commands.add_parser('_worker',help=argparse.SUPPRESS)
     internal.add_argument('kind',choices=['rgb'])
     internal.add_argument('arguments',nargs=argparse.REMAINDER)
@@ -240,6 +243,9 @@ def main(argv=None):
     from optimization.problems import PreparedVisualFit
     values=vars(args).copy();values.pop('command');run_root=values.pop('run_root')
     values['object_profile'] = values.pop('object_profile', 'legacy')
+    values['object_profile'] = {'prepared_surface_no_box': 'surface_no_box',
+                                'prepared_surface_weak_box': 'surface_weak_box'}.get(
+                                    values['object_profile'], values['object_profile'])
     values['freeze_object'] = values.pop('freeze_object', False)
     return fit_prepared(PreparedVisualFit(**values),run_root)
 
@@ -314,6 +320,16 @@ def owned_surface_arguments(root, case, object_id, track_id, output, *, anchor=N
     return list(map(str,argv))
 
 
+def pipeline_profiles(args, saved=None):
+    defaults = {'geometry_profile':'legacy_internal_moge', 'object_profile':'none'}
+    values = {k:getattr(args,k,None) or (saved or defaults)[k] for k in defaults}
+    if saved is not None and values != saved:
+        raise ValueError('profile composition changed; resume refused')
+    if values['object_profile'] != 'none' and values['geometry_profile'] != 'shared_metric_pointmap':
+        raise ValueError('surface profiles require shared_metric_pointmap')
+    return values
+
+
 def annotate(args):
     """Cold single-object video annotation; every observation is produced in this run."""
     import importlib, os, shutil, uuid, re
@@ -344,6 +360,7 @@ def annotate(args):
     code_hashes={str(p.relative_to(code_root)):sha(p) for p in code_files}
     root=args.run_root.resolve()
     recovering=getattr(args,'command',None)=='resume'
+    profiles = pipeline_profiles(args, load(root/'input/runtime_input_contract.json').get('profiles') if recovering else None)
     code_manifest=root/'input/code_manifest.json'
     raw=root/'input/raw.mp4'
     if recovering:
@@ -383,7 +400,7 @@ def annotate(args):
             'bundle_manifest_sha256':sha(code_manifest),'sensor_calibration_metadata':str(sensor) if sensor else None,
             'sensor_calibration_sha256':sha(sensor) if sensor else None,'source_timing':timing.report(),
             'target_description':args.target_description,'assets_manifest_sha256':sha(args.assets_manifest),
-            'model_asset_manifest_sha256':sha(root/'input/model_asset_manifest.json')}
+            'model_asset_manifest_sha256':sha(root/'input/model_asset_manifest.json'),'profiles':profiles}
         (root/'input/runtime_input_contract.json').write_text(json.dumps(contract,indent=2))
     ledger=RunState(root);ids=list(range(len(timing.presentation_ticks)));object_id=None
     recovery=StageRecovery(ledger,{'contract_sha256':sha(root/'input/runtime_input_contract.json'),
@@ -400,7 +417,7 @@ def annotate(args):
                 verify_code()
                 planned=planned_stage_contract('main.annotate.'+name,'inprocess',
                     inputs={'object_id':object_id,'frame_ids':ids,'values':inputs},
-                    parameters=parameters,execution=process_execution)
+                    parameters={**parameters,'profiles':profiles},execution=process_execution)
                 return recovery.run(name,function,contract=planned)
             return execute
         environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(args.gpu),'HF_HUB_OFFLINE':'1',
@@ -422,7 +439,7 @@ def annotate(args):
             worker_environment={**environment,**(overlay or {})}
             executable=Path(shutil.which(str(python),path=worker_environment.get('PATH')) or python).absolute()
             planned=planned_stage_contract(module,'subprocess',
-                parameters={'command':command,'outputs':outputs,'object_id':object_id,'frame_ids':ids},
+                parameters={'command':command,'outputs':outputs,'object_id':object_id,'frame_ids':ids,'profiles':profiles},
                 inputs={'argv':command[3:]},execution={'executable':executable,
                     'resolved_executable':executable.resolve(),'executable_sha256':sha(executable),
                     'argv':command[1:],'cwd':code_root,
@@ -661,15 +678,33 @@ def annotate(args):
             conditioning=load(native_input)['conditioning_contracts']['sam3d_objects_native']
             return evidence, geometry, native_input, conditioning
         evidence, geometry, native_input, conditioning = _stage_metric_inputs
-        def native_job(stage,image,mask,out,frame):
+        def native_job(stage,image,mask,out,frame,pointmap_receipt=None):
             name=f'{args.case}_{object_id}_frame_{frame}'
+            profile = 'shared_metric_pointmap' if pointmap_receipt is not None else 'legacy_internal_moge'
             argv=['--repo',assets['sam3d_repo'],'--config',assets['sam3d_config'],
                 '--moge-checkpoint',assets['sam3d_moge_checkpoint'],'--dinov2-repo',assets['sam3d_dinov2_repo'],
-                '--dinov2-checkpoint',assets['sam3d_dinov2_checkpoint'],'--case',f'{name}|{image}|{mask}|42','--output-dir',out]
+                '--dinov2-checkpoint',assets['sam3d_dinov2_checkpoint'],'--geometry-profile',profile,
+                '--case',f'{name}|{image}|{mask}|42','--output-dir',out]
+            if pointmap_receipt is not None:
+                argv += ['--pointmap-case', f'{name}|{frame}|{pointmap_receipt}']
             qc=out/name/'qc_sam3d_objects_mesh_v7.json'
             worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}))
             return name,qc,argv
-        name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor)
+        from observations.object.pointmap import build_pointmap
+        metric_pointmap = root/'measurements/geometry_completion'/('pointmap_metric_'+object_id)
+        @stage('metric_pointmap', inputs={'depth':bound,'camera':camera,'manifest':manifest,'annotations':ann,'image':conditioning['image'],'mask':conditioning['mask']},
+            parameters={'profile':'shared_metric_pointmap','frame_idx':anchor,'mask_source':'annotations','output_dir':metric_pointmap})
+        def _stage_metric_pointmap():
+            if profiles['geometry_profile'] == 'legacy_internal_moge':
+                return None
+            receipt = build_pointmap(run_root=root, frame_idx=anchor,
+                image_path=Path(conditioning['image']), mask_path=Path(conditioning['mask']), depth_npz=bound,
+                camera_contract=camera, raw_frame_manifest=manifest, object_id=object_id,
+                mask_source=ann, output_dir=metric_pointmap)
+            record('metric_pointmap',[(receipt,'pointmap_receipt'),(receipt.parent/'pointmap.npy','pointmap')])
+            return receipt
+        metric_pointmap_receipt = _stage_metric_pointmap
+        name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor,metric_pointmap_receipt)
         @stage('metric_geometry', inputs={'qc':qc,'name':name,'conditioning':conditioning,'command':command,'native_input':native_input,'evidence':evidence,'annotations':ann},
             parameters={'geometry':geometry,'observed_band_scale':float(np.sqrt(3.)),'silhouette_free_space_filter':True,'planar_slab_support_filter':True})
         def _stage_metric_geometry():
@@ -726,8 +761,21 @@ def annotate(args):
         choice=ask('appearance_anchor',{'frame_ids':appearance_candidates,'preferred_frame_idx':preferred,'appearance':load(appearance)},appearance_images,choice_path)
         selected=choice['selected_frame_idx'];selected_row=appearance_rows[selected]
         if selected not in appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred):raise ValueError('selected appearance anchor lacks same-frame metric alignment')
+        appearance_pointmap = root/'measurements/scene_native'/object_id/f'pointmap_{selected}'
+        @stage('appearance_pointmap', inputs={'depth':bound,'camera':camera,'manifest':manifest,'appearance':appearance,'selected_row':selected_row},
+            parameters={'profile':'shared_metric_pointmap','frame_idx':selected,'mask_source':'appearance','output_dir':appearance_pointmap})
+        def _stage_appearance_pointmap():
+            if profiles['geometry_profile'] == 'legacy_internal_moge':
+                return None
+            receipt = build_pointmap(run_root=root, frame_idx=selected,
+                image_path=Path(selected_row['raw_rgb_path']), mask_path=Path(selected_row['appearance_mask_path']), depth_npz=bound,
+                camera_contract=camera, raw_frame_manifest=manifest, object_id=object_id,
+                mask_source=appearance, output_dir=appearance_pointmap)
+            record('appearance_pointmap',[(receipt,'pointmap_receipt'),(receipt.parent/'pointmap.npy','pointmap')])
+            return receipt
+        appearance_receipt = _stage_appearance_pointmap
         _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
-            root/'measurements/scene_native'/object_id,selected)
+            root/'measurements/scene_native'/object_id,selected,appearance_receipt)
         binding_dir=root/'measurements/scene_shape'/object_id
         @stage('shape_binding', inputs={'posterior':posterior,'annotations':ann,'appearance':appearance,'choice':choice_path,'native_qc':native_qc},
             parameters={'binding_dir':binding_dir,'object_id':object_id,'root':root})

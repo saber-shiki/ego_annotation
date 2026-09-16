@@ -127,9 +127,7 @@ def fit_visual(args):
             base_joint_pixel=to(jpix),
             patch=sample,
         )
-    freeze_object = bool(getattr(args, 'freeze_object', False) or getattr(args, 'object_profile', '') == 'prepared_surface_no_box' or getattr(args, 'object_profile', '') == 'prepared_surface_weak_box')
-    if freeze_object:
-        obj_delta.requires_grad_(False)
+    freeze_object = bool(getattr(args, 'freeze_object', False) or getattr(args, 'object_profile', '') in {'surface_no_box', 'surface_weak_box', 'prepared_surface_no_box', 'prepared_surface_weak_box'})
     # (not substituted for object reconstruction). Full triangles are rendered.
     mask_contours = []
     contact_gate = np.zeros((B, 2, 5), np.float32)
@@ -252,8 +250,8 @@ def fit_visual(args):
     hand_root = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
     hand_t = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
     hand_scale = torch.nn.Parameter(torch.zeros((B, 2, 1), device=device))
-    obj_delta = torch.nn.Parameter(torch.zeros((B, 6), device=device))
-    params = [hand_delta, hand_root, hand_t, hand_scale, obj_delta]
+    obj_delta = torch.nn.Parameter(torch.zeros((B, 6), device=device), requires_grad=not freeze_object)
+    params = [hand_delta, hand_root, hand_t, hand_scale] + ([] if freeze_object else [obj_delta])
     opt = torch.optim.Adam(params, lr=0.008)
     weights = to(contact_gate)
     targets = {}
@@ -454,7 +452,7 @@ def fit_visual(args):
             "hand_log_scale",
             "object_delta",
         ],
-        params,
+        [hand_delta, hand_root, hand_t, hand_scale, obj_delta],
     ):
         a = p.detach().cpu().numpy()
         if name == "object_delta":
@@ -478,8 +476,8 @@ def fit_visual(args):
         state["intrinsics_960"] = K
     from scipy.spatial.transform import Rotation
 
-    RR = Rotation.from_rotvec(interp["object_delta"][:, :3]).as_matrix() @ R0
-    tt = t0 + np.einsum("bij,bj->bi", T[:, :3, :3], interp["object_delta"][:, 3:])
+    RR = R0.copy() if freeze_object else Rotation.from_rotvec(interp["object_delta"][:, :3]).as_matrix() @ R0
+    tt = t0.copy() if freeze_object else t0 + np.einsum("bij,bj->bi", T[:, :3, :3], interp["object_delta"][:, 3:])
     state["object_rotation"] = RR
     state["object_translation_world"] = tt
     measurements = []
@@ -572,6 +570,8 @@ def fit_visual(args):
         "diagnostic_only": True,
         "annotation_ready": False,
         "gt_consumed": False,
+        "object_profile": getattr(args, 'object_profile', 'legacy'),
+        "object_frozen": freeze_object,
         "generated_mesh_role": "demo_visual_proximity_fitting_surface_not_physical_contact_truth",
         "demo_visual_proximity_fit_eligible": True,
         "physical_contact_authority": False,

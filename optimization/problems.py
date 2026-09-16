@@ -49,6 +49,12 @@ class PreparedVisualFit:
     freeze_object: bool = False
 
     def __post_init__(self):
+        aliases = {'prepared_surface_no_box':'surface_no_box', 'prepared_surface_weak_box':'surface_weak_box'}
+        object.__setattr__(self, 'object_profile', aliases.get(self.object_profile, self.object_profile))
+        if self.object_profile not in {'legacy','surface_no_box','surface_weak_box'}:
+            raise ValueError('unreviewed visual object profile')
+        if self.object_profile != 'legacy':
+            object.__setattr__(self, 'freeze_object', True)
         if self.appearance_mask_manifest is None or self.interaction_judgments is None:
             raise ValueError('prepared visual fitting requires appearance and interaction evidence')
         if self.iterations < 1:
@@ -122,6 +128,9 @@ class StandaloneShape:
     output: object
     object_id: str
     run_root: object
+    object_profile: str = 'none'
+    geometry_profile: str = 'legacy_internal_moge'
+    pointmap_receipt: object | None = None
 
 @dataclass(frozen=True)
 class FormalObjectTrajectory:
