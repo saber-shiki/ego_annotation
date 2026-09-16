@@ -14,19 +14,20 @@ compatibility wrappers at the old `factors`, `gates`, or `optimization` paths.
 | `python main.py resume ...` | Resumes only a same-code/same-input observation producer prefix. |
 | `python main.py prepare ...` | Builds retained observation-side image/surface/visibility inputs. |
 | `python main.py judge ...` | Runs one independent Astra observation/evidence judgment. |
+| `python optimize.py legacy-reference ...` | Strict source-manifest reference composition: P14 observed pose, RGB edges/P15 refinement, fresh appearance-native QC, shape binding, and visual fitting. Outputs are create-only reference candidates under the source run; data/train/rollout do not consume them. |
 | `python optimize.py observed-pose ...` | Preserved direct observed-surface P14 numerical reference. Its result is downstream of the source bundle and is never an RL data prerequisite. |
 | `python optimize.py refine-pose ...` | Preserved RGB/observed P15 reference refinement. |
 | `python optimize.py fit-visual ...` | Preserved visual Adam hand/object fitting reference. |
 | `python optimize.py fit-formal ...` | Preserved named formal MANO interval solve. |
 | `python optimize.py formal-tail ...` | Preserved P15/P18/acceptance/render reference tail. |
 | `python train.py ...` | Official skrl 2.1 PPO training over read-only source observation episodes; saves full agent/preprocessor checkpoint and provenance. |
-| `python rollout.py ...` | Deterministic checkpoint-backed test rollout using the same builders; exports action-driven geometry without updates or legacy fallback. |
+| `python rollout.py ...` | Deterministic no-update checkpoint rollout using the same builders. It evaluates every selected episode exactly once, exports each complete natural termination before reset, and binds candidate JSON, geometry NPZ, and integrity receipts in a top-level manifest. Compatible new data indexes are accepted; training identity stays in provenance. |
 | `python render.py policy ...` | Renders an explicit complete policy-candidate NPZ directly. It does not require or forge formal MANO acceptance. |
 | `python render.py dual ...` | Preserved dual display-geometry render for an already-frozen legacy package. |
 | `python evaluate.py ...` | Preserved HOT3D box, MANO, object, and aggregation schemas. Evaluation remains outside prediction/observation main. |
 
 Installed console scripts are `ego-observe`, `ego-annotate`, `ego-optimize`,
-`ego-render`, and `ego-evaluate`.
+`ego-render`, `ego-evaluate`, `ego-train`, and `ego-rollout`.
 
 ## Source-observation manifest
 
@@ -39,7 +40,7 @@ The source manifest is create-only and contains:
 - P09 visible annotations, including the uncertain per-frame
   `reconstructed_geometry_pose` initializer;
 - reconstructed shape contract and mesh;
-- appearance masks;
+- appearance masks plus the selected independent appearance-anchor decision;
 - independent contact/visibility/occlusion judgments and P17 factor rows.
 
 Every artifact path is relative to the run root and byte-hashed. The manifest

@@ -628,6 +628,7 @@ def annotate(args):
             'completion_report':(completion_path,'reconstructed_shape_contract'),
             'reconstructed_mesh':(mesh_path,'reconstructed_object_mesh'),
             'appearance_masks':(appearance,'appearance_mask_observations'),
+            'appearance_anchor_decision':(choice_path,'appearance_anchor_decision'),
             'interaction_judgments':(judgments,'contact_visibility_occlusion_evidence'),
             'interaction_factors':(factor_path,'qualified_contact_visibility_factors'),
         }

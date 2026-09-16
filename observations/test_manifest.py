@@ -35,6 +35,7 @@ class SourceObservationManifestTests(unittest.TestCase):
             "owned_object_masks": "depth_order_owned_object_masks",
             "metric_eligibility": "metric_surface_eligibility",
             "interaction_judgments": "contact_visibility_occlusion_evidence",
+            "appearance_anchor_decision": "appearance_anchor_decision",
             "interaction_factors": "qualified_contact_visibility_factors",
         }
         records = {}

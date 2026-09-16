@@ -9,6 +9,7 @@ import argparse
 import copy
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,8 @@ from legacy_optimize.problems import StandaloneScene
 from legacy_optimize.solve import solve
 from observations.common import build_nodes, pose_from_values
 from utils.data import RGBEdge, RGBReprojectionFactor, indexed, RKEY, TKEY, load
-from utils.state import sha, in_run, assert_prediction_only, require_run_artifact
+from utils.state import sha, in_run, assert_prediction_only, require_run_artifact, RunState
+from utils.runtime import run_model
 
 
 def load_edges(npz_path, report_path, source_path, annotations_path, nodes, root):
@@ -142,6 +144,178 @@ def fit_prepared(problem, run_root):
     return report
 
 
+def _bundle_artifact(bundle: dict, manifest_path: Path, name: str) -> Path:
+    record = bundle.get('artifacts', {}).get(name)
+    if not isinstance(record, dict) or not isinstance(record.get('path'), str):
+        raise ValueError(f'source observation bundle lacks required artifact: {name}')
+    path = (manifest_path.parent / record['path']).resolve()
+    if not path.is_file() or record.get('sha256') != sha(path):
+        raise ValueError(f'source observation artifact changed or is missing: {name}')
+    return path
+
+
+def _legacy_reference_assets(bundle: dict, manifest_path: Path, assets_manifest: Path) -> dict:
+    contract_path = _bundle_artifact(bundle, manifest_path, 'runtime_input_contract')
+    contract = load(contract_path)
+    expected = contract.get('assets_manifest_sha256')
+    if expected is not None and expected != sha(assets_manifest):
+        raise ValueError('legacy reference assets manifest differs from source-observation run')
+    assets = load(assets_manifest)
+    if not isinstance(assets, dict):
+        raise ValueError('legacy reference assets manifest must be a JSON object')
+    return assets
+
+
+def _reference_worker(command, *, root: Path, output: Path, assets: dict, gpu: int, gpu_uuid: str | None, label: str):
+    code_root = Path(__file__).resolve().parent
+    output.parent.mkdir(parents=True, exist_ok=True)
+    environment = {**os.environ, 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1',
+                   'PYTHONPATH': str(code_root) + os.pathsep + os.environ.get('PYTHONPATH', '')}
+    if label == 'appearance_native':
+        overlay = assets.get('sam3d_environment', {})
+        if not isinstance(overlay, dict):
+            raise ValueError('sam3d_environment must be a mapping when declared')
+        environment.update({str(key): str(value) for key, value in overlay.items()})
+    with output.open('x', encoding='utf-8') as log:
+        resources = run_model(command, cwd=code_root, environment=environment, gpu=gpu,
+                              expected_uuid=gpu_uuid, min_free_mib=int(assets.get('sam3d_min_free_mib', 12000)),
+                              stdout=log)
+    return resources
+
+
+def reference_from_source_observations(source_manifest: Path, assets_manifest: Path, output_dir: Path, *,
+                                       gpu: int, gpu_uuid: str | None=None, device: str='cpu',
+                                       iterations: int=240, render_width: int | None=None) -> dict:
+    """Run the retained P14→RGB/P15→shape→visual reference from verified sources.
+
+    This command deliberately lives outside ``main.py``. It records every new
+    reference stage under the original immutable source run and never feeds its
+    results back into the observation bundle, training data, or rollout path.
+    """
+    from observations.manifest import load_source_observation_manifest
+    from observations.object.pose import fit_observed_pose
+    from legacy_optimize.problems import StandaloneShape, PreparedVisualFit
+
+    source_manifest = Path(source_manifest).resolve()
+    bundle = load_source_observation_manifest(source_manifest)
+    root = source_manifest.parent.resolve()
+    output_dir = Path(output_dir).resolve()
+    if not output_dir.is_relative_to(root):
+        raise ValueError('legacy reference output must be created inside the source-observation run root')
+    if output_dir.exists():
+        raise FileExistsError(f'legacy reference output is create-only: {output_dir}')
+    if not isinstance(gpu, int) or gpu < 0:
+        raise ValueError('legacy reference requires an explicit nonnegative GPU index')
+    if iterations < 1:
+        raise ValueError('legacy reference visual iterations must be positive')
+
+    assets_manifest = Path(assets_manifest).resolve()
+    assets = _legacy_reference_assets(bundle, source_manifest, assets_manifest)
+    required_assets = ('rgb_python', 'lightglue_root', 'sam3d_python', 'sam3d_repo', 'sam3d_config',
+                       'sam3d_moge_checkpoint', 'sam3d_dinov2_repo', 'sam3d_dinov2_checkpoint',
+                       'mano_models')
+    missing = [key for key in required_assets if key not in assets]
+    if missing:
+        raise ValueError(f'legacy reference assets manifest lacks: {missing}')
+
+    annotations = _bundle_artifact(bundle, source_manifest, 'visible_annotations')
+    completion = _bundle_artifact(bundle, source_manifest, 'completion_report')
+    depth = _bundle_artifact(bundle, source_manifest, 'conditioned_depth')
+    raw_manifest = _bundle_artifact(bundle, source_manifest, 'raw_frames')
+    appearance = _bundle_artifact(bundle, source_manifest, 'appearance_masks')
+    decision = _bundle_artifact(bundle, source_manifest, 'appearance_anchor_decision')
+    mano_bridge = _bundle_artifact(bundle, source_manifest, 'mano_bridge')
+    hawor = _bundle_artifact(bundle, source_manifest, 'hawor_world')
+    judgments = _bundle_artifact(bundle, source_manifest, 'interaction_judgments')
+    object_id = str(bundle['object_id'])
+    frame_ids = [int(value) for value in bundle['frame_ids']]
+    if not frame_ids:
+        raise ValueError('source observation timeline is empty')
+
+    output_dir.mkdir(parents=True)
+    ledger = RunState(root)
+    p14_dir = output_dir / 'p14_observed_pose'
+    fit_observed_pose(['--annotations', str(annotations), '--completion-report', str(completion),
+                       '--object-id', object_id, '--output-dir', str(p14_dir)])
+    source_pose = p14_dir / 'v18_compact_rigid_object_pose_fit_report.json'
+    ledger.record('legacy_reference_observed_pose', [(source_pose, 'source_pose')],
+                  object_id=object_id, frame_ids=frame_ids, command=['ego-optimize', 'legacy-reference'])
+
+    rgb_dir = output_dir / 'rgb_edges'
+    edges = rgb_dir / 'edges.npz'
+    edge_report = rgb_dir / 'edges.json'
+    rgb_command = [str(assets['rgb_python']), '-m', 'observations.object.rgb_tracking',
+        '--annotations', str(annotations), '--raw-frame-manifest', str(raw_manifest), '--depth-npz', str(depth),
+        '--initial-pose-report', str(source_pose), '--object-id', object_id, '--frame-start', str(min(frame_ids)),
+        '--frame-end', str(max(frame_ids)), '--keyframe-seconds', '0.5', '--source-gap-seconds', '2.0',
+        '--keyframe-neighbor-span', '4', '--lightglue-root', str(assets['lightglue_root']), '--assets-manifest',
+        str(assets_manifest), '--device', 'cuda:0', '--output-npz', str(edges), '--output-json', str(edge_report)]
+    resources = _reference_worker(rgb_command, root=root, output=output_dir / 'rgb_edges.log', assets=assets,
+                                  gpu=gpu, gpu_uuid=gpu_uuid, label='rgb_edges')
+    if resources is not None:
+        gpu_uuid = resources['uuid']
+    ledger.record('legacy_reference_rgb_edges', [(edges, 'rgb_edges'), (edge_report, 'rgb_edge_report')],
+                  object_id=object_id, frame_ids=frame_ids, command=rgb_command)
+
+    posterior = output_dir / 'p15_refined_pose.json'
+    completion_payload = load(completion)
+    anchor = int((completion_payload.get('inputs') or {}).get('selected_anchor_atomic_binding', {}).get('selected_frame_idx', frame_ids[0]))
+    refine(annotations, source_pose, edges, edge_report, object_id, anchor, posterior, root)
+    ledger.record('legacy_reference_refined_pose', [(posterior, 'candidate_pose')],
+                  object_id=object_id, frame_ids=frame_ids, command=['ego-optimize', 'refine-pose'])
+
+    appearance_payload = load(appearance)
+    decision_payload = load(decision)
+    selected = int(decision_payload['selected_frame_idx'])
+    appearance_rows = indexed(appearance_payload['frames'])
+    if selected not in appearance_rows:
+        raise ValueError('appearance decision selected a frame absent from the source appearance manifest')
+    selected_row = appearance_rows[selected]
+    native_name = f"{bundle['case']}_{object_id}_appearance_{selected}"
+    native_root = output_dir / 'appearance_native'
+    native_qc = native_root / native_name / 'qc_sam3d_objects_mesh_v7.json'
+    native_command = [str(assets['sam3d_python']), '-m', 'observations.object.sam3d', '--repo', str(assets['sam3d_repo']),
+        '--config', str(assets['sam3d_config']), '--moge-checkpoint', str(assets['sam3d_moge_checkpoint']),
+        '--dinov2-repo', str(assets['sam3d_dinov2_repo']), '--dinov2-checkpoint', str(assets['sam3d_dinov2_checkpoint']),
+        '--case', f"{native_name}|{selected_row['raw_rgb_path']}|{selected_row['appearance_mask_path']}|42",
+        '--output-dir', str(native_root)]
+    resources = _reference_worker(native_command, root=root, output=output_dir / 'appearance_native.log', assets=assets,
+                                  gpu=gpu, gpu_uuid=gpu_uuid, label='appearance_native')
+    if resources is not None:
+        gpu_uuid = resources['uuid']
+    ledger.record('legacy_reference_appearance_native', [(native_qc, 'native_geometry')],
+                  object_id=object_id, frame_ids=[selected], command=native_command)
+
+    shape_dir = output_dir / 'shape_binding'
+    binding = solve(StandaloneShape(posterior, annotations, appearance, decision, native_qc,
+                                    shape_dir, object_id, root))
+    binding_path = shape_dir / 'pose_mesh.json'
+    if binding is None or not binding_path.is_file():
+        raise RuntimeError('legacy shape binding did not produce pose_mesh.json')
+    ledger.record('legacy_reference_shape_binding', [(binding_path, 'pose_mesh_binding')],
+                  object_id=object_id, frame_ids=frame_ids, command=['ego-optimize', 'shape-bind'])
+
+    visual_dir = output_dir / 'visual_fit'
+    visual = fit_prepared(PreparedVisualFit(annotations, binding_path, mano_bridge, hawor,
+                                             Path(assets['mano_models']), visual_dir, object_id, appearance,
+                                             judgments, device=device, iterations=iterations,
+                                             render_width=render_width), root)
+    report = {'schema': 'ego.annotation.legacy_reference/1.0.0', 'source_observations': str(source_manifest),
+              'source_observations_sha256': sha(source_manifest), 'object_id': object_id,
+              'output_dir': str(output_dir), 'stages': {'p14_source_pose': str(source_pose),
+                  'rgb_edges': str(edges), 'p15_refined_pose': str(posterior),
+                  'shape_binding': str(binding_path), 'visual_state': str(visual_dir / 'demo_state.npz'),
+                  'visual_report': str(visual_dir / 'fit_report.json')},
+              'visual_report': visual, 'reference_only': True,
+              'training_or_rollout_dependency': False,
+              'note': 'This legacy result is a reference candidate. It does not alter source observations or grant policy/physical acceptance.'}
+    report_path = output_dir / 'legacy_reference.json'
+    report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+    ledger.record('legacy_reference_complete', [(report_path, 'legacy_reference')],
+                  object_id=object_id, frame_ids=frame_ids, command=['ego-optimize', 'legacy-reference'])
+    return report
+
+
 def formal_tail(spec):
     from types import SimpleNamespace
     from legacy_optimize.problems import FormalObjectTrajectory, FormalManoInterval
@@ -226,6 +400,15 @@ def formal_tail(spec):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='command', required=True)
+    reference=commands.add_parser('legacy-reference', help='run the retained P14→RGB/P15→shape→visual reference from source_observations.json')
+    reference.add_argument('--source-observations', type=Path, required=True)
+    reference.add_argument('--assets-manifest', type=Path, required=True)
+    reference.add_argument('--output-dir', type=Path, required=True)
+    reference.add_argument('--gpu', type=int, required=True)
+    reference.add_argument('--gpu-uuid')
+    reference.add_argument('--device', default='cpu')
+    reference.add_argument('--iterations', type=int, default=240)
+    reference.add_argument('--render-width', type=int)
     observed=commands.add_parser('observed-pose',help='build the preserved P14 direct pose reference')
     for name in ('annotations','completion-report','output-dir'):
         observed.add_argument('--'+name,type=Path,required=True)
@@ -251,6 +434,10 @@ def main(argv=None):
     tail=commands.add_parser('formal-tail',help='run the preserved formal numerical and render tail')
     tail.add_argument('--spec',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='legacy-reference':
+        return reference_from_source_observations(args.source_observations, args.assets_manifest, args.output_dir,
+                                                  gpu=args.gpu, gpu_uuid=args.gpu_uuid, device=args.device,
+                                                  iterations=args.iterations, render_width=args.render_width)
     if args.command=='observed-pose':
         from observations.object.pose import fit_observed_pose
         return fit_observed_pose(list(map(str,['--annotations',args.annotations,'--completion-report',args.completion_report,

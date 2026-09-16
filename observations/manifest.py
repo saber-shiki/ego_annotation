@@ -68,6 +68,7 @@ def build_source_observation_manifest(
         "visible_annotations",
         "completion_report",
         "reconstructed_mesh",
+        "appearance_anchor_decision",
         "interaction_judgments",
         "interaction_factors",
     }
@@ -95,6 +96,7 @@ def build_source_observation_manifest(
         "owned_object_masks": records["owned_object_masks"],
         "metric_eligibility": records["metric_eligibility"],
         "interaction_judgments": records["interaction_judgments"],
+        "appearance_anchor_decision": records["appearance_anchor_decision"],
     }
     if mano_assets is not None:
         asset_root = Path(mano_assets).expanduser().resolve()

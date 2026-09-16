@@ -120,8 +120,12 @@ Install the verified RL runtime with `pip install .[rl]`. The supported API is
 `skrl==2.1.0`; `train.py` and `rollout.py` share environment, model, PPO, and
 trainer builders. Training uses official skrl PPO and saves policy, value,
 optimizer, and running preprocessors. Rollout reloads the same agent/checkpoint,
-uses deterministic Gaussian mean actions, freezes preprocessor statistics, and
-calls the environment's explicit policy-candidate exporter:
+uses deterministic Gaussian mean actions, disables random warmup, freezes
+preprocessor statistics, and iterates every selected episode exactly once using
+an explicit `reset(options={"episode_index": ...})`. Each natural completion is
+exported **before** the next reset into its own complete candidate JSON, NPZ, and
+SHA-256 integrity receipt. The top-level output is a rollout manifest binding all
+of those artifacts:
 
 ```bash
 python train.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.json \
@@ -129,16 +133,30 @@ python train.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.jso
 python rollout.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.json \
   --split test --checkpoint NEW_TRAINING_DIR/agent.pt \
   --checkpoint-provenance NEW_TRAINING_DIR/agent.provenance.json \
-  --output NEW_ROLLOUT/annotation.json --device cpu
+  --output NEW_ROLLOUT/manifest.json --device cpu
 ```
 
-The data index is source-video-disjoint. Its episode manifests are read-only
+The training checkpoint records stable dataset/environment/model compatibility
+separately from the training-index identity, so a new compatible index can be
+rolled out without pretending it is the training set. The data index is
+source-video-disjoint. Its episode manifests are read-only
 `ego.annotation.observation_bundle.v1` bundles from main or the prepared-source
-adapter; they do not name legacy optimizer results. The rollout JSON plus complete
-candidate NPZ carries both full MANO hands and object SE(3), and is consumable by
-`python render.py policy ...` without forging legacy physical acceptance.
+adapter; they do not name legacy optimizer results. Each episode JSON plus
+complete candidate NPZ carries both full MANO hands and object SE(3), explicit
+`*_display_valid` arrays, object pose validity, and an integrity receipt. It is
+consumable by `python render.py policy ...` without forging legacy physical
+acceptance.
 
 ## Prepared numerical entries
+
+`python optimize.py legacy-reference --source-observations RUN/source_observations.json \
+--assets-manifest SAME_MODEL_ENVIRONMENTS_JSON --output-dir RUN/legacy_optimize/reference-a \
+--gpu EXPLICIT_GPU_INDEX` is the retained public reference composition. It strictly
+verifies the source bundle and asset-manifest identity, then creates P14 observed
+pose, measured RGB edges, P15 refinement, fresh appearance-native QC, shape
+binding, and visual MANO fit under the same run root. It records those reference
+artifacts without modifying the observation bundle. Training and rollout never
+consume this command or its outputs.
 
 `python optimize.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
 --rgb-edges EDGES_NPZ --rgb-report EDGES_JSON --object-id OBJECT --anchor FRAME

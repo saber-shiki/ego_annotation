@@ -1201,19 +1201,19 @@
         "POSE_MEASUREMENT_STATUSES"
       ],
       "CORRECTED_POSE_STATUS": [
-        "optimization.object.pose",
+        "envs.qualification.object_trajectory",
         "CORRECTED_POSE_STATUS"
       ],
       "COMPLETED_POSE_STATUS": [
-        "optimization.object.pose",
+        "envs.qualification.object_trajectory",
         "COMPLETED_POSE_STATUS"
       ],
       "STRICT_ROTATION_STEP_DEG": [
-        "optimization.object.pose",
+        "envs.qualification.object_trajectory",
         "STRICT_ROTATION_STEP_DEG"
       ],
       "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS": [
-        "optimization.object.pose",
+        "envs.qualification.object_trajectory",
         "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS"
       ],
       "PoseObservation": [
@@ -1329,11 +1329,11 @@
         "formal_object_rotation_observability_summary"
       ],
       "sparse_conditional_rotation_tail_decision": [
-        "gates.object.trajectory",
+        "envs.qualification.object_trajectory",
         "sparse_conditional_rotation_tail_decision"
       ],
       "temporal_readiness_diagnostics": [
-        "gates.object.trajectory",
+        "envs.qualification.object_trajectory",
         "temporal_readiness_diagnostics"
       ],
       "surface_metrics": [
@@ -2043,7 +2043,7 @@
         "contact_row_state_from_judgment"
       ],
       "combine_contact_prior": [
-        "optimization.problems",
+        "actions.filters.contact",
         "combine_contact_prior"
       ],
       "agent_judgment_provenance": [
@@ -2719,7 +2719,8 @@
   "notes": [
     "Relative source symbols resolve to actual grouped owners after owner consolidation and IO deduplication.",
     "This map describes extracted implementation provenance, not evidence that every optional path was executed on a real video.",
-    "Historical independent CLI/problem families excluded by the approved scope remain in baseline Git history."
+    "Historical independent CLI/problem families excluded by the approved scope remain in baseline Git history.",
+    "active_symbol_ownership preserves historical source owners for split symbols while symbol_moves resolves active production imports."
   ],
   "retired_configuration_symbols": [
     {
@@ -2773,8 +2774,88 @@
       "render.py policy": "acceptance-independent complete policy candidate render",
       "evaluate.py": "preserved HOT3D evaluation",
       "train.py": "official skrl PPO training with full checkpoint provenance",
-      "rollout.py": "deterministic no-update checkpoint rollout and policy candidate export"
+      "rollout.py": "deterministic no-update checkpoint rollout and policy candidate export",
+      "optimize.py legacy-reference": "verified source-observation to retained P14/RGB/P15/shape/visual reference composition"
     },
-    "source_observation_schema": "ego.annotation.observation_bundle.v1"
+    "source_observation_schema": "ego.annotation.observation_bundle.v1 with appearance_anchor_decision for legacy reference composition"
+  },
+  "active_symbol_ownership": {
+    "solve_v19_rigid_object_pose_graph.CORRECTED_POSE_STATUS": {
+      "historical_source_owner": [
+        "optimization.object.pose",
+        "CORRECTED_POSE_STATUS"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "CORRECTED_POSE_STATUS"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "solve_v19_rigid_object_pose_graph.COMPLETED_POSE_STATUS": {
+      "historical_source_owner": [
+        "optimization.object.pose",
+        "COMPLETED_POSE_STATUS"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "COMPLETED_POSE_STATUS"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "solve_v19_rigid_object_pose_graph.STRICT_ROTATION_STEP_DEG": {
+      "historical_source_owner": [
+        "optimization.object.pose",
+        "STRICT_ROTATION_STEP_DEG"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "STRICT_ROTATION_STEP_DEG"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "solve_v19_rigid_object_pose_graph.CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS": {
+      "historical_source_owner": [
+        "optimization.object.pose",
+        "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "solve_v19_rigid_object_pose_graph.sparse_conditional_rotation_tail_decision": {
+      "historical_source_owner": [
+        "gates.object.trajectory",
+        "sparse_conditional_rotation_tail_decision"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "sparse_conditional_rotation_tail_decision"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "solve_v19_rigid_object_pose_graph.temporal_readiness_diagnostics": {
+      "historical_source_owner": [
+        "gates.object.trajectory",
+        "temporal_readiness_diagnostics"
+      ],
+      "active_owner": [
+        "envs.qualification.object_trajectory",
+        "temporal_readiness_diagnostics"
+      ],
+      "migration_status": "active_owner_import_checked"
+    },
+    "build_v19_visible_contact_ownership_factor.combine_contact_prior": {
+      "historical_source_owner": [
+        "optimization.problems",
+        "combine_contact_prior"
+      ],
+      "active_owner": [
+        "actions.filters.contact",
+        "combine_contact_prior"
+      ],
+      "migration_status": "active_owner_import_checked"
+    }
   }
 }
