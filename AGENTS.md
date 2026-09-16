@@ -108,13 +108,24 @@ Runtime agents must not share the parent agent's active cwd, dirty working tree,
 Use a single tmux session per project for ordinary project commands. For this project, the canonical parent/development agent session is `ego_annotation`. Create multiple windows inside that session for separate parent-owned commands or long-running jobs; do not create one tmux session per task, branch, validator, probe, or script. A clean runtime-agent run is the exception: it must use a dedicated visible tmux session/window tied to its isolated cwd/worktree so the user can inspect the runtime agent directly. Tmux is execution containment, not evidence of progress.
 
 
-## Grouped source ownership
+## RL-first source ownership
 
-The active business entry is main.py; optimization/solve.py dispatches named
-problems. Model workers live under observations and use separately provisioned
+The active raw-video entry is observation-only `main.py`; it emits a hash-bound
+`ego.annotation.observation_bundle.v1` and stops before pose refinement, MANO
+fitting, policy inference, or rendering. Official skrl training and deterministic
+checkpoint rollout are `train.py` and `rollout.py`. Preserved numerical reference
+commands are in `optimize.py` / `legacy_optimize`; explicit rendering is in
+`render.py`. Pure mathematical costs live under `rewards/terms`, while RL reward
+accounting is separate under `rewards/evaluator.py`. Evidence qualification and
+action filters are separate under `envs/qualification` and `actions/filters`.
+Shared MANO/candidate geometry/transforms must remain outside `legacy_optimize`.
+
+Model workers live under observations and use separately provisioned
 interpreters. Do not resurrect retired scripts/experimental version dispatchers.
-Use the grouped CPU suite (`python -m unittest test_pipeline observations.test_observations
-factors.test_factors gates.test_gates optimization.test_optimization`) and actual
-provider preflight. Production runs must use an immutable snapshot and a new run
-root; source changes during a run are an error. All image judgments use the
-Astra-only transport; do not add configurable alternative models or fallbacks.
+Use the grouped CPU suite (`python -m unittest test_pipeline
+observations.test_observations observations.test_manifest rewards.test_terms
+envs.test_qualification legacy_optimize.test_legacy_optimize`) plus the env/model
+and real prepared-observation smokes in the unified runtime. Production runs must
+use an immutable snapshot and a new run root; source changes during a run are an
+error. All image judgments use the Astra-only transport; do not add configurable
+alternative models or fallbacks.
