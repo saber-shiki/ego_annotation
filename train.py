@@ -47,6 +47,25 @@ def _mapping(value: object, label: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _dataset_provenance(dataset, *, dataset_path: Path, split: str, dataset_class: str) -> tuple[dict, dict]:
+    contract = {
+        "dataset_class": dataset_class,
+        "index_sha256": _sha256(dataset_path),
+    }
+    records = getattr(dataset, "records", ())
+    selected_manifests = sorted(
+        str(row.get("manifest_sha256")) for row in records if isinstance(row, Mapping) and row.get("manifest_sha256")
+    )
+    source_video_ids = sorted(map(str, getattr(dataset, "source_video_ids", ())))
+    identity = {
+        **contract,
+        "split": str(split),
+        "source_video_ids": source_video_ids,
+        "manifest_sha256": selected_manifests,
+    }
+    return contract, identity
+
+
 def build_env(
     cfg: Mapping[str, object],
     *,
@@ -65,13 +84,26 @@ def build_env(
     from skrl.envs.wrappers.torch import wrap_env
 
     runtime_cfg = _mapping(cfg.get("runtime"), "runtime config")
+    dataset_path = Path(dataset_path)
+    dataset_class = str(runtime_cfg["dataset_class"])
     if dataset is None:
-        dataset_type = import_symbol(str(runtime_cfg["dataset_class"]))
-        dataset = dataset_type(Path(dataset_path), split=str(split))
+        dataset_type = import_symbol(dataset_class)
+        dataset = dataset_type(dataset_path, split=str(split))
     if env_type is None:
         env_type = import_symbol(str(runtime_cfg["environment_class"]))
     raw_env = env_type(dataset, _mapping(cfg.get("environment"), "environment config"), device=device)
     wrapped = wrap_env(raw_env, wrapper="gymnasium", verbose=False)
+    wrapped.dataset_contract, wrapped.dataset_identity = _dataset_provenance(
+        dataset,
+        dataset_path=dataset_path,
+        split=split,
+        dataset_class=dataset_class,
+    )
+    if not hasattr(raw_env, "num_annotation_steps") and hasattr(dataset, "__len__") and len(dataset) == 1:
+        bundle = dataset[0]
+        frame_range = getattr(bundle, "manifest", {}).get("frame_range")
+        if isinstance(frame_range, list) and len(frame_range) == 2:
+            wrapped.num_annotation_steps = int(frame_range[1]) - int(frame_range[0]) + 1
 
     # Stock Gymnasium wrapping exposes no privileged state unless the underlying
     # environment deliberately implements both state_space and state().

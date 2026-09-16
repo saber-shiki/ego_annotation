@@ -75,7 +75,7 @@ class FixtureAnnotationEnv(gym.Env):
         reward = -float(np.square(applied).sum())
         return self._observation(), reward, terminated, False, {}
 
-    def export_annotations(self, output):
+    def export_annotation(self, output):
         output = Path(output)
         actions = self._completed_actions or self._episode_actions
         payload = {

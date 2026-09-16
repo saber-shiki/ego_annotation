@@ -125,9 +125,9 @@ def rollout(
     _assert_preprocessors_unchanged(agent, preprocessor_state)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    export_result = env.export_annotations(output)
+    export_result = env.export_annotation(output)
     if not output.exists():
-        raise RuntimeError("AnnotationEnv.export_annotations did not create the requested artifact")
+        raise RuntimeError("AnnotationEnv.export_annotation did not create the requested artifact")
     sidecar = output.with_name(output.name + ".provenance.json")
     _write_json_create(
         sidecar,
@@ -155,7 +155,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--split", default="heldout")
+    parser.add_argument("--split", default="test")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--checkpoint-provenance", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

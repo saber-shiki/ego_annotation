@@ -1,27 +1,25 @@
 runtime:
   skrl_version: "2.1.0"
-  dataset_class: "data.dataset:ObservationDataset"
+  dataset_class: "data.dataset:EpisodeDataset"
   environment_class: "envs.annotation_env:AnnotationEnv"
 
 environment:
-  # These slots define environment packing and action-space size dynamically.
-  entities:
-    hand_slots: [left, right]
-    object_slots: [primary]
+  # Both MANO hands are invariant; object and contact blocks scale from these
+  # declared slots rather than a hand-only fixed network width.
+  max_objects: 1
+  contact_variables_per_hand: 5
   causal_history_frames: 8
-  action_layout:
-    hand:
-      - {name: translation_world_m, width: 3, scale: 0.01}
-      - {name: global_orientation_so3, width: 3, scale: 0.05}
-      - {name: mano_articulation, width: 45, scale: 0.05}
-    object:
-      - {name: pose_se3, width: 6, translation_scale_m: 0.01, rotation_scale_rad: 0.05}
-    contact:
-      enabled: true
-      contract: configured_existing_contact_variables
+  action_scales:
+    hand_root_rad: 0.05
+    hand_articulation_rad: 0.05
+    hand_translation_m: 0.01
+    object_rotation_rad: 0.05
+    object_translation_m: 0.01
+    contact_logit: 1.0
+  object_translation_frame: world
   action_filter:
-    # Policy samples and log-probabilities remain raw; this filter is applied by
-    # AnnotationEnv and both raw/applied values are exported.
+    # Policy samples and log-probabilities remain raw; AnnotationEnv applies
+    # semantic support masks and exports raw/executed action traces.
     mode: physical_residual_filter
   observation_contract:
     sources: [current_observations, accepted_causal_history]
