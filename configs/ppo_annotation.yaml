@@ -1,0 +1,81 @@
+runtime:
+  skrl_version: "2.1.0"
+  dataset_class: "data.dataset:ObservationDataset"
+  environment_class: "envs.annotation:AnnotationEnv"
+
+environment:
+  # These slots define environment packing and action-space size dynamically.
+  entities:
+    hand_slots: [left, right]
+    object_slots: [primary]
+  causal_history_frames: 8
+  action_layout:
+    hand:
+      - {name: translation_world_m, width: 3, scale: 0.01}
+      - {name: global_orientation_so3, width: 3, scale: 0.05}
+      - {name: mano_articulation, width: 45, scale: 0.05}
+    object:
+      - {name: pose_se3, width: 6, translation_scale_m: 0.01, rotation_scale_rad: 0.05}
+    contact:
+      enabled: true
+      contract: configured_existing_contact_variables
+  action_filter:
+    # Policy samples and log-probabilities remain raw; this filter is applied by
+    # AnnotationEnv and both raw/applied values are exported.
+    mode: physical_residual_filter
+  observation_contract:
+    sources: [current_observations, accepted_causal_history]
+    forbidden: [ground_truth, future_policy_results, legacy_optimized_results]
+
+model:
+  encoder:
+    hidden_dims: [256, 256]
+    activation: elu
+    layer_norm: true
+  # Null means use AnnotationEnv's dynamic layout or the actual flattened space.
+  observation_feature_groups: null
+  state_feature_groups: null
+  policy:
+    initial_log_std: -1.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    zero_mean_init: true
+  value:
+    # The stock Gymnasium wrapper does not synthesize privileged state.
+    use_states: false
+
+ppo:
+  rollouts: 128
+  learning_epochs: 8
+  mini_batches: 8
+  # Finite video episodes use undiscounted return so prefix potential rewards
+  # reconstruct the declared final objective.
+  discount_factor: 1.0
+  gae_lambda: 0.95
+  learning_rate: 0.0003
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.0
+  time_limit_bootstrap: true
+  mixed_precision: false
+
+experiment:
+  write_interval: auto
+  checkpoint_interval: auto
+
+trainer:
+  timesteps: 100000
+  headless: true
+  disable_progressbar: false
+
+rollout:
+  # Null consumes AnnotationEnv.num_annotation_steps for the complete heldout split.
+  timesteps: null
+  headless: true
+  disable_progressbar: false
+  stochastic_evaluation: false
