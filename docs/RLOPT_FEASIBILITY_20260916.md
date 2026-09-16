@@ -13,6 +13,11 @@ including real SAM3D complete-mesh generation, then rejected its metric bridge.
 Final annotation JSON, RRD and MP4 do not exist. No physical annotation or
 accuracy claim follows from the software tests or intermediate files.
 
+**Follow-up single-frame experiment:** [shared pointmap/exact-K three-arm results](SHARED_POINTMAP_EXPERIMENT_20260916.md)
+now demonstrate a promising same-frame geometric correction and unchanged bridge
+acceptance. This is standalone diagnostic evidence, not a completed pipeline run
+or an implemented default-provider change.
+
 ## Repairs actually validated
 
 | Mechanism | Commit in integration branch | Evidence |
