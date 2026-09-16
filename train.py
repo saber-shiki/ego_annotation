@@ -16,6 +16,10 @@ import yaml
 SUPPORTED_SKRL_VERSION = "2.1.0"
 
 
+def _canonical(value: Mapping[str, object]) -> dict[str, Any]:
+    return json.loads(json.dumps(dict(value), sort_keys=True, allow_nan=False))
+
+
 def load_runtime_config(path: str | Path) -> tuple[dict[str, Any], str]:
     path = Path(path)
     raw = path.read_bytes()
@@ -47,23 +51,53 @@ def _mapping(value: object, label: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _dataset_provenance(dataset, *, dataset_path: Path, split: str, dataset_class: str) -> tuple[dict, dict]:
-    contract = {
+def _dataset_provenance(
+    dataset,
+    *,
+    dataset_path: Path,
+    split: str,
+    dataset_class: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return stable compatibility separately from mutable training identity."""
+    index = json.loads(dataset_path.read_text(encoding="utf-8"))
+    if not isinstance(index, Mapping) or not isinstance(index.get("schema"), str):
+        raise ValueError("dataset index requires a versioned schema")
+    declared = getattr(dataset, "compatibility_contract", None)
+    if declared is not None:
+        if not isinstance(declared, Mapping):
+            raise ValueError("dataset compatibility_contract must be a mapping")
+        dataset_shape = _canonical(declared)
+    else:
+        records = getattr(dataset, "records", ())
+        schemas: set[str] = set()
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValueError("dataset records must be mappings")
+            manifest = Path(record["manifest"])
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or not isinstance(payload.get("schema"), str):
+                raise ValueError("episode manifest requires a versioned schema")
+            schemas.add(str(payload["schema"]))
+        dataset_shape = {"bundle_schemas": sorted(schemas)}
+
+    compatibility = {
         "dataset_class": dataset_class,
-        "index_sha256": _sha256(dataset_path),
+        "index_schema": str(index["schema"]),
+        **dataset_shape,
     }
     records = getattr(dataset, "records", ())
-    selected_manifests = sorted(
-        str(row.get("manifest_sha256")) for row in records if isinstance(row, Mapping) and row.get("manifest_sha256")
+    manifests = sorted(
+        str(record["manifest_sha256"])
+        for record in records
+        if isinstance(record, Mapping) and isinstance(record.get("manifest_sha256"), str)
     )
-    source_video_ids = sorted(map(str, getattr(dataset, "source_video_ids", ())))
     identity = {
-        **contract,
+        "index_sha256": _sha256(dataset_path),
         "split": str(split),
-        "source_video_ids": source_video_ids,
-        "manifest_sha256": selected_manifests,
+        "source_video_ids": sorted(map(str, getattr(dataset, "source_video_ids", ()))),
+        "manifest_sha256": manifests,
     }
-    return contract, identity
+    return compatibility, identity
 
 
 def build_env(
@@ -75,12 +109,7 @@ def build_env(
     dataset=None,
     env_type=None,
 ):
-    """Construct the agreed dataset/environment seam and official wrapper.
-
-    Production contract:
-      ObservationDataset(bundle_path, split=split)
-      AnnotationEnv(dataset, environment_cfg, device=device)
-    """
+    """Construct the agreed read-only episode dataset and Gymnasium environment."""
     from skrl.envs.wrappers.torch import wrap_env
 
     runtime_cfg = _mapping(cfg.get("runtime"), "runtime config")
@@ -93,20 +122,16 @@ def build_env(
         env_type = import_symbol(str(runtime_cfg["environment_class"]))
     raw_env = env_type(dataset, _mapping(cfg.get("environment"), "environment config"), device=device)
     wrapped = wrap_env(raw_env, wrapper="gymnasium", verbose=False)
-    wrapped.dataset_contract, wrapped.dataset_identity = _dataset_provenance(
+    dataset_contract, dataset_identity = _dataset_provenance(
         dataset,
         dataset_path=dataset_path,
         split=split,
         dataset_class=dataset_class,
     )
-    if not hasattr(raw_env, "num_annotation_steps") and hasattr(dataset, "__len__") and len(dataset) == 1:
-        bundle = dataset[0]
-        frame_range = getattr(bundle, "manifest", {}).get("frame_range")
-        if isinstance(frame_range, list) and len(frame_range) == 2:
-            wrapped.num_annotation_steps = int(frame_range[1]) - int(frame_range[0]) + 1
+    wrapped.dataset_contract = dataset_contract
+    wrapped.dataset_identity = dataset_identity
+    wrapped.episode_dataset = dataset
 
-    # Stock Gymnasium wrapping exposes no privileged state unless the underlying
-    # environment deliberately implements both state_space and state().
     use_states = bool(_mapping(cfg.get("model"), "model config").get("value", {}).get("use_states", False))
     if use_states and wrapped.state_space is None:
         raise ValueError("critic use_states=true but AnnotationEnv exposes no state_space")
@@ -155,7 +180,7 @@ def build_agent(
     experiment_dir: str | Path,
     experiment_name: str,
 ):
-    """Build the same official PPO agent for training or checkpoint rollout."""
+    """Build the same official PPO structure for learning or loaded inference."""
     from skrl.agents.torch.ppo import PPO
     from skrl.memories.torch import RandomMemory
 
@@ -163,6 +188,8 @@ def build_agent(
 
     models = build_models(env, cfg)
     agent_cfg = _ppo_cfg(env, cfg, experiment_dir=Path(experiment_dir), experiment_name=experiment_name)
+    if not training and agent_cfg.random_timesteps:
+        raise ValueError("rollout requires ppo.random_timesteps=0; random warmup actions are not deterministic inference")
     memory = (
         RandomMemory(
             memory_size=agent_cfg.rollouts,
@@ -184,32 +211,31 @@ def build_agent(
     )
 
 
-def build_trainer(env, agent, cfg: Mapping[str, object], *, evaluation: bool, timesteps: int | None = None):
+def build_trainer(env, agent, cfg: Mapping[str, object], *, timesteps: int | None = None):
     from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 
-    section = _mapping(cfg.get("rollout" if evaluation else "trainer"), "trainer config")
+    section = _mapping(cfg.get("trainer"), "trainer config")
     configured_timesteps = section.get("timesteps") if timesteps is None else timesteps
     if configured_timesteps is None:
-        raise ValueError("trainer timesteps must be explicit")
-    trainer_cfg = SequentialTrainerCfg(
-        timesteps=int(configured_timesteps),
-        headless=bool(section.get("headless", True)),
-        render_interval=int(section.get("render_interval", 1)),
-        disable_progressbar=bool(section.get("disable_progressbar", False)),
-        close_environment_at_exit=False,
-        stochastic_evaluation=bool(section.get("stochastic_evaluation", False)),
+        raise ValueError("training timesteps must be explicit")
+    return SequentialTrainer(
+        env=env,
+        agents=agent,
+        cfg=SequentialTrainerCfg(
+            timesteps=int(configured_timesteps),
+            headless=bool(section.get("headless", True)),
+            render_interval=int(section.get("render_interval", 1)),
+            disable_progressbar=bool(section.get("disable_progressbar", False)),
+            close_environment_at_exit=False,
+        ),
     )
-    if evaluation and trainer_cfg.stochastic_evaluation:
-        raise ValueError("annotation rollout must use deterministic mean actions")
-    return SequentialTrainer(env=env, agents=agent, cfg=trainer_cfg)
 
 
 def _jsonable_mapping_attribute(env, name: str) -> dict[str, Any]:
     value = getattr(env, name, None)
     if not isinstance(value, Mapping) or not value:
         raise ValueError(f"AnnotationEnv must expose nonempty {name} provenance")
-    # Round-trip rejects Paths, tensors and mutable opaque objects.
-    return json.loads(json.dumps(dict(value), allow_nan=False))
+    return _canonical(value)
 
 
 def _jsonable_dataset_identity(env) -> dict[str, Any]:
@@ -218,6 +244,55 @@ def _jsonable_dataset_identity(env) -> dict[str, Any]:
 
 def _jsonable_dataset_contract(env) -> dict[str, Any]:
     return _jsonable_mapping_attribute(env, "dataset_contract")
+
+
+def compatibility_contract(env, cfg: Mapping[str, object]) -> dict[str, Any]:
+    runtime = _mapping(cfg.get("runtime"), "runtime config")
+    return {
+        "dataset": _jsonable_dataset_contract(env),
+        "environment_class": str(runtime["environment_class"]),
+        "environment_config": _canonical(_mapping(cfg.get("environment"), "environment config")),
+        "model_config": _canonical(_mapping(cfg.get("model"), "model config")),
+        "observation_space": repr(env.observation_space),
+        "state_space": repr(env.state_space),
+        "action_space": repr(env.action_space),
+    }
+
+
+def _assert_finite_value(value, label: str) -> None:
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        if (value.is_floating_point() or value.is_complex()) and not torch.isfinite(value).all():
+            raise RuntimeError(f"non-finite checkpoint tensor: {label}")
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            _assert_finite_value(child, f"{label}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _assert_finite_value(child, f"{label}[{index}]")
+
+
+def _assert_module_state_finite(module, name: str) -> None:
+    if module is not None and hasattr(module, "state_dict"):
+        _assert_finite_value(module.state_dict(), name)
+
+
+def assert_agent_checkpoint_finite(agent) -> None:
+    for name, module in agent.checkpoint_modules.items():
+        _assert_module_state_finite(module, name)
+
+
+def finite_policy_parameter_changed(agent, initial_policy) -> bool:
+    import torch
+
+    changed = False
+    for name, current in agent.policy.state_dict().items():
+        before = initial_policy[name]
+        if not torch.isfinite(current).all() or not torch.isfinite(before).all():
+            raise RuntimeError(f"non-finite policy parameter during optimizer update: {name}")
+        changed = changed or bool(torch.any(current != before).item())
+    return changed
 
 
 def checkpoint_provenance(
@@ -232,18 +307,14 @@ def checkpoint_provenance(
     import torch
 
     return {
-        "schema": "ego.annotation.skrl_checkpoint/1.0.0",
+        "schema": "ego.annotation.skrl_checkpoint/2.0.0",
         "checkpoint": {"filename": checkpoint.name, "sha256": _sha256(checkpoint)},
-        "config_sha256": config_sha256,
+        "training_config_sha256": config_sha256,
         "skrl_version": skrl.__version__,
         "torch_version": torch.__version__,
-        "split": str(split),
-        "dataset_contract": _jsonable_dataset_contract(env),
-        "dataset_identity": _jsonable_dataset_identity(env),
-        "observation_space": repr(env.observation_space),
-        "state_space": repr(env.state_space),
-        "action_space": repr(env.action_space),
-        "ppo": dict(_mapping(cfg.get("ppo"), "ppo config")),
+        "compatibility": compatibility_contract(env, cfg),
+        "training_identity": {"dataset": _jsonable_dataset_identity(env), "split": str(split)},
+        "ppo": _canonical(_mapping(cfg.get("ppo"), "ppo config")),
         "preprocessors": {
             "observation": "skrl.resources.preprocessors.torch.RunningStandardScaler",
             "state": (
@@ -254,6 +325,7 @@ def checkpoint_provenance(
             "value": "skrl.resources.preprocessors.torch.RunningStandardScaler",
         },
         "optimizer_update_changed_policy": True,
+        "checkpoint_tensors_finite": True,
     }
 
 
@@ -285,11 +357,12 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=False)
     env = build_env(cfg, dataset_path=dataset_path, split=split, device=device)
     agent = build_agent(env, cfg, training=True, experiment_dir=output_dir / "runs", experiment_name="train")
-    trainer = build_trainer(env, agent, cfg, evaluation=False)
     initial_policy = {name: value.detach().clone() for name, value in agent.policy.state_dict().items()}
+    trainer = build_trainer(env, agent, cfg)
     trainer.train()
-    if not any(not value.equal(initial_policy[name]) for name, value in agent.policy.state_dict().items()):
-        raise RuntimeError("training completed without a PPO policy parameter update")
+    assert_agent_checkpoint_finite(agent)
+    if not finite_policy_parameter_changed(agent, initial_policy):
+        raise RuntimeError("training completed without a finite PPO policy parameter update")
 
     checkpoint = output_dir / "agent.pt"
     agent.save(str(checkpoint))
