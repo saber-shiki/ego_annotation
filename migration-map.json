@@ -2732,5 +2732,47 @@
       "symbol": "DEFAULT_OUTPUT",
       "reason": "hard-coded historical machine output directory replaced by explicit output argument"
     }
-  ]
+  ],
+  "rl_first_refactor": {
+    "implementation_baseline": "8b17958a0bccfba4b2951ce50fc9c8bc60a24c31",
+    "old_paths_removed_from_production": true,
+    "path_moves": {
+      "factors/common.py": "rewards/terms/common.py",
+      "factors/hand/observation.py": "rewards/terms/hand/observation.py",
+      "factors/hand/priors.py": "rewards/terms/hand/priors.py",
+      "factors/interaction/contact.py": "rewards/terms/interaction/contact.py",
+      "factors/interaction/physics.py": "rewards/terms/interaction/physics.py",
+      "factors/motion/temporal.py": "rewards/terms/motion/temporal.py",
+      "factors/object/geometry.py": "rewards/terms/object/geometry.py",
+      "factors/object/image.py": "rewards/terms/object/image.py",
+      "factors/object/pose.py": "rewards/terms/object/pose.py",
+      "gates/camera/calibration.py": "envs/qualification/camera.py",
+      "gates/hand/acceptance.py": "envs/qualification/hand_acceptance.py",
+      "gates/hand/observation.py": "envs/qualification/hand_observation.py",
+      "gates/interaction/contact.py": "actions/filters/contact.py",
+      "gates/interaction/visibility.py": "actions/filters/visibility.py",
+      "gates/object/geometry.py": "envs/qualification/object_geometry.py",
+      "gates/object/observation.py": "envs/qualification/object_observation.py",
+      "gates/object/tracking.py": "envs/qualification/object_tracking.py",
+      "gates/object/trajectory.py": "envs/qualification/object_trajectory.py",
+      "gates/output/acceptance.py": "envs/qualification/output.py",
+      "optimization/common/correspondences.py": "utils/candidate_geometry.py",
+      "optimization/common/solvers.py": "utils/numerics.py",
+      "optimization/common/variables.py": "utils/candidate_state.py",
+      "optimization/hand/mano.py": "utils/mano.py",
+      "optimization/hand/fit.py": "legacy_optimize/hand/fit.py",
+      "optimization/interaction/joint_fit.py": "legacy_optimize/interaction/joint_fit.py",
+      "optimization/object/pose.py": "legacy_optimize/object/pose.py plus observations/object/pose.py for P14 direct registration",
+      "optimization/object/shape.py": "legacy_optimize/object/shape.py",
+      "optimization/problems.py": "legacy_optimize/problems.py",
+      "optimization/solve.py": "legacy_optimize/solve.py"
+    },
+    "entrypoints": {
+      "main.py": "observation-only source bundle producer",
+      "optimize.py": "preserved numerical reference",
+      "render.py policy": "acceptance-independent complete policy candidate render",
+      "evaluate.py": "preserved HOT3D evaluation"
+    },
+    "source_observation_schema": "ego_source_observations_v1"
+  }
 }

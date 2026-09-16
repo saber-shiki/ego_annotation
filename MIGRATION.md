@@ -1,166 +1,111 @@
-# Grouped source capability and verification boundaries
+# RL-first source ownership and migration
 
-The active source is the grouped package. Baseline commit
-`12aede8eaa2a945150b3de9bd3d0f81461d408b4` preserves the retired source for audit;
-the original worktree was not modified. `migration-map.json` names the final
-static owners of extracted source symbols. No production import or subprocess
-calls a retired ego-annotation script.
+This document describes the active owners after the RL-first refactor. The
+implementation baseline is `8b17958a0bccfba4b2951ce50fc9c8bc60a24c31`.
+Historical source remains available in Git; production code does not retain
+compatibility wrappers at the old `factors`, `gates`, or `optimization` paths.
 
-## Callable capabilities
+## Entrypoints
 
-| Entry | Implemented behavior | Verification boundary |
+| Entry | Ownership and output |
+|---|---|
+| `python main.py observe ...` | Runs raw-video observation providers and writes hash-bound `source_observations.json` (`ego_source_observations_v1`). Stops before P14/P15/P18 pose solving, visual MANO fitting, policy inference, and rendering. |
+| `python main.py annotate ...` | Compatibility command name for the same observation-only behavior. It does not publish an annotation. |
+| `python main.py resume ...` | Resumes only a same-code/same-input observation producer prefix. |
+| `python main.py prepare ...` | Builds retained observation-side image/surface/visibility inputs. |
+| `python main.py judge ...` | Runs one independent Astra observation/evidence judgment. |
+| `python optimize.py observed-pose ...` | Preserved direct observed-surface P14 numerical reference. Its result is downstream of the source bundle and is never an RL data prerequisite. |
+| `python optimize.py refine-pose ...` | Preserved RGB/observed P15 reference refinement. |
+| `python optimize.py fit-visual ...` | Preserved visual Adam hand/object fitting reference. |
+| `python optimize.py fit-formal ...` | Preserved named formal MANO interval solve. |
+| `python optimize.py formal-tail ...` | Preserved P15/P18/acceptance/render reference tail. |
+| `python render.py policy ...` | Renders an explicit complete policy-candidate NPZ directly. It does not require or forge formal MANO acceptance. |
+| `python render.py dual ...` | Preserved dual display-geometry render for an already-frozen legacy package. |
+| `python evaluate.py ...` | Preserved HOT3D box, MANO, object, and aggregation schemas. Evaluation remains outside prediction/observation main. |
+
+Installed console scripts are `ego-observe`, `ego-annotate`, `ego-optimize`,
+`ego-render`, and `ego-evaluate`.
+
+## Source-observation manifest
+
+The source manifest is create-only and contains:
+
+- raw video and raw-frame manifest;
+- camera calibration/world transforms and conditioned camera-z depth;
+- raw HaWoR world archive and MANO bridge parameters/surfaces;
+- object plan, detector identity, raw/owned masks, and metric eligibility;
+- P09 visible annotations, including the uncertain per-frame
+  `reconstructed_geometry_pose` initializer;
+- reconstructed shape contract and mesh;
+- appearance masks;
+- independent contact/visibility/occlusion judgments and P17 factor rows.
+
+Every artifact path is relative to the run root and byte-hashed. The manifest
+sets `contains_optimized_state=false` and `contains_policy_results=false`. It has
+no `pose_fits/**`, P15/P18 result, accepted MANO archive, checkpoint, rollout,
+or render. `observations.manifest.load_source_observation_manifest` validates the
+schema, path containment, roles, and hashes.
+
+## Physical path migration
+
+| Previous owner | Active owner | Notes |
 |---|---|---|
-| `main.py resume` | Same-run immutable code/config/raw/sensor/target identity, planned producer/argv/environment/input contracts, complete stage-file hashes and original producer receipts; explicit suffix rewind/candidate attempts, partial-output quarantine | CPU fake-producer and actual CLI changed-GPU/UUID/environment rejection, prefix-counter/receipt preservation; no cross-code/config or v1 journal import |
-| `main.py annotate` | Fresh raw video, fixed/estimated K, conditioned camera-z depth, private-input HaWoR, OWLv2/SAM2, metric ownership, full native SAM3D shape, observed/RGB SO3+SE3, full-MANO unsigned visual fit, batched Astra judgments, complete JSON/RRD and triangle MP4 | CPU contracts and real worker-interface checks; full fresh-video acceptance requires the separately executed runtime cases |
-| `main.py refine-pose` | Same-run role/raw/object/timeline-bound prepared observations and paired RGB producer inputs | Numerical/gradient/restoration/PnP tests; empty accepted RGB is a valid measured outcome, absent producer is an error |
-| `main.py fit-visual` | Prepared full MANO/object candidate; immutable source replay, scale/rotation/articulation bounds, 12-step triangle/outline refresh | Real MANO CPU smoke and baseline loss parity; physical acceptance remains false |
-| `main.py fit-formal` | Named per-hand interval profiles; optional contact geometry, object delta, hand-ray, depth-order, visibility and residual variants | Value/gradient parity, actual consumer spies and candidate perturbation; no claim that every optional real-data factor is nonempty |
-| `main.py formal-tail` | Prepared formal or RGB-initialized object graph, P17 evidence, P18 solve, full-MANO acceptance, separate physical/display completion roles, layered JSON/RRD/MP4 | Unit/contract fixtures; full real-data shared-tail integration is not yet established by this refactor's tests |
-| `main.py render-dual` | Two bound SAM3D/TRELLIS display geometries, one frozen shared camera/pose/MANO state, separate RRD/MP4 outputs | Shared-array/hash and role fixtures; no new physical optimization or generated signed authority |
-| `main.py prepare` | Frozen object image targets, visible-surface track, face eligibility, hand visibility, signed proxy, multiview support | Retained computations and loader contracts; optional heavy rasterizers require their declared environments |
-| `main.py judge` | Thirteen separate prompts/schemas/entrypoints, one Astra-only transport | Live image/structured-output probes and rejection tests; visibility receives all requested corresponding frames |
-| `observations.hand.wilor` | Optional raw WiLoR hand prediction | Provider import/API retained; does not replace HaWoR's world-camera/archive contract |
-| `observations.object.trellis` | Optional complete-shape model worker with exact offline DINO bindings | Provisioned model worker; dual display accepts a separately canonical-bound result |
-| `evaluate.py` | Hand boxes, MANO3D, object trajectory and two summaries on frozen predictions | Isolated evaluation entry; ground truth is never imported by prediction main |
+| `factors/common.py` | `rewards/terms/common.py` | Pure cost kernels; no reward aggregation or agent dependency. |
+| `factors/hand/*` | `rewards/terms/hand/*` | Names, activation inputs, units, and reductions preserved. |
+| `factors/interaction/*` | `rewards/terms/interaction/*` | Signed/unsigned authority remains an input contract. |
+| `factors/motion/*` | `rewards/terms/motion/*` | Temporal kernels remain pure. |
+| `factors/object/*` | `rewards/terms/object/*` | Residual kernels remain independent of skrl. |
+| `gates/camera/calibration.py` | `envs/qualification/camera.py` | Camera/image-plane contract qualification. |
+| `gates/hand/observation.py` | `envs/qualification/hand_observation.py` | Hand observation support and full-K qualification. H2 remains translation-specific. |
+| `gates/hand/acceptance.py` | `envs/qualification/hand_acceptance.py` | Legacy output acceptance, separate from policy candidate export. |
+| `gates/object/{geometry,observation,tracking,trajectory}.py` | `envs/qualification/object_*.py` | Evidence/readiness qualification; no action clipping. |
+| `gates/output/acceptance.py` | `envs/qualification/output.py` | Complete geometry/timeline validation. |
+| `gates/interaction/contact.py` | `actions/filters/contact.py` | Contact evidence interpretation and action-affecting row filters. |
+| `gates/interaction/visibility.py` | `actions/filters/visibility.py` | Visibility/quarantine/display filtering. |
+| `optimization/{hand,interaction,object,solve,problems}.py` | `legacy_optimize/*` | Numerical loops and reference compositions only. |
+| `optimization/common/correspondences.py` | `utils/candidate_geometry.py` | Candidate-dependent geometry/active-set refresh shared by legacy and RL. |
+| `optimization/common/solvers.py` | `utils/numerics.py` | Pure registration/numerical helpers used by observations. |
+| `optimization/common/variables.py` | `utils/candidate_state.py` | Shared candidate SE(3) transforms. |
+| `optimization/hand/mano.py` | `utils/mano.py` | Shared licensed MANO loading/replay and topology. |
+| P14 direct observed pose implementation | `observations/object/pose.py` | Callable by the legacy `observed-pose` command; not executed by source main. |
+| main numerical functions | `optimize.py` | Existing signatures retained where possible. |
+| main render dispatch | `render.py` | Policy candidate render is explicit and acceptance-independent. |
 
-## Preserved distinctions
+`migration-map.json` contains the machine-readable path map under
+`rl_first_refactor` in addition to the older symbol-provenance ledger.
 
-- Source, candidate, accepted full-MANO and display arrays are not interchangeable.
-  Accepted formal MANO is rendered only with its gate result and archive hash;
-  standalone visual fitting retains explicit false physical/contact authority.
-- Generated complete triangles support appearance/display and unsigned proximity.
-  Signed factors require declared readiness and local per-face authority.
-- Camera K, affine image planes and radius-to-camera-z conversion retain their
-  source conventions. HaWoR receives an isolated raw copy before upstream code
-  writes detector/SLAM caches.
-- Formal active penetration uses mean squared residual; dense penetration and
-  visible-depth-order use squared sum divided by positive residual count. Contact
-  geometry retains gradients through the optimizable probability multiplier.
-- The object graph refreshes observed correspondences per outer pass, the formal
-  hand solver refreshes signed sets only between LBFGS passes, and visual fitting
-  refreshes triangle/outline correspondences every 12 Adam iterations.
+## Invariants preserved
 
-## Explicit remaining gaps
+- Reward terms are mathematical costs. Legacy optimization reuses those costs but
+  never imports RL episode accounting or reward normalization.
+- Soft magnitude hinges remain soft; no new hard clipping replaces them.
+- Candidate-dependent correspondence and active-set refresh remains live.
+- Generated faces do not gain signed/contact/collision authority through relocation.
+- H2 translation support is not generalized into a universal gate.
+- Full-MANO physical acceptance and display validity remain separate.
+- Policy candidate rendering consumes explicit full hand/object arrays directly;
+  a false legacy acceptance flag cannot discard policy actions.
+- Training/data/rollout modules must not import `legacy_optimize` or require its
+  outputs/success flags.
 
-The initial raw entry remains create-only. `main.py resume` now verifies the
-same run's input contract, code manifest, model configuration and declared model
-asset bytes, then reuses only its successful stage prefix. V2 journals require a
-pre-execution planned contract for every stage. Subprocess contracts bind producer
-module, executable bytes/path, argv, cwd, GPU request, critical environment hashes
-and output roles. In-process contracts bind named role and explicit inputs/parameters
-without inventing shell argv; all stages bind the immutable input prefix receipt.
-Astra contracts include prompt/schema/model/endpoint, evidence and ordered image
-hashes. A same-name stage with a different plan refuses skip until explicitly rewound.
-No callback address, repr or trial execution supplies this identity. Each stage binds all
-files it produced, including native meshes, private caches, rendered images,
-Astra responses and logs; missing or changed evidence invalidates that stage and
-the ordered dependent suffix. Original producer IDs and receipts are retained.
-Unreceipted output is moved into this run's quarantine before recomputation.
-Explicit rewind stores before/after manifests and a reason; an optional candidate
-label identifies the new suffix, while prior candidate artifacts remain archived.
-Final output provenance distinguishes retained original producers from this
-attempt's executions. Reusing a receipted same-run native stage is supported;
-importing arbitrary old meshes, foreign videos or old-version receipts is refused.
+## Validation boundaries
 
-Cross-code or model-configuration changes are refused even with `--rewind`.
-There is no approved interface-patch exception or per-producer cross-version
-compatibility inference. V1 journals lacking planned contracts, including frozen
-8252 runs, cannot be upgraded/restamped even with rewind; those cases use their own
-frozen build. Runs created before the journal existed likewise cannot be imported
-by pretending their loose artifacts are new successful receipts.
-Provisioned interpreter binaries and declared source/model trees are byte-bound;
-installed site-packages are not recursively fingerprinted and must remain frozen.
+The grouped numerical parity tests moved with their owners:
 
-The cold P13 face-support producer declares `input_hashes.evidence_report` from
-the exact P11 bytes it parses. The unchanged P11/P09 normalization gate validates
-this hash and selected-anchor identity before creating the P14 aliases. A missing
-hash in a historical completion is still rejected; consumer-side restamping is
-not a recovery mechanism. CPU producer-to-gate tests retain object/case/frame,
-surfel, positive-GT, alias and changed-byte rejection, plus render/physical roles.
+```bash
+python -m unittest rewards.test_terms envs.test_qualification \
+  legacy_optimize.test_legacy_optimize observations.test_observations
+```
 
-Real three-case outputs and full formal/shared-tail execution remain runtime
-acceptance obligations outside the CPU/build evidence. Recovery never substitutes
-for the first fresh observation execution of each case. A build, import or empty
-signed active set does not establish complete annotations or physical accuracy.
+Manifest and entry split tests are:
 
-## Retired independent historical families
+```bash
+python -m unittest observations.test_manifest tests.test_entrypoints \
+  test_pipeline.GroupedContractTests
+```
 
-Historical VLM click/candidate-selection flows, alternative depth/SLAM/hand/shape
-providers, part/deformable/variable-camera/SDF-deformation/contact-dynamics
-problems, and independent global/keyframe/periodic/late-window experiments remain
-in baseline Git history. Their actual shared numerical helpers were extracted
-when used by a retained path; their old CLIs and rejected experimental modes were
-not copied into the active package.
-
-### Producer CLI contracts
-
-OWLv2 precheck and inference share lowercase/strip/terminal-period normalization;
-reports retain original/effective text and exact unpadded token IDs, including
-special tokens. No text is truncated. Hand visibility writes
-`OUTPUT_ROOT/CASE/hand_observation_visibility_factor_report.json` and its
-`.receipt.json` with source/output hashes; this report is directly consumable by
-formal factor loaders. Image-target preparation forwards its own CLI arguments to
-the retained raster producer (no raster mathematics changed).
-
-The image-target CLI additionally has a real one-frame PyTorch3D CPU fixture:
-triangle mesh + owned mask + observed depth + empty-hand archive traverse the
-actual `main prepare image-targets` process and produce a nonempty depth-factor
-NPZ/report. Set `EGO_IMAGE_TARGET_PYTHON` to the provisioned PyTorch3D interpreter
-when running `observations.test_observations.PrepareCLITests`; no rasterizer is
-mocked in that fixture.
-
-### Tracked-whole rigidity evidence
-
-The rigidity judge now receives the selected object plan, same-run raw/owned
-track receipts and all raw frames as contiguous ten-frame crop sheets (raw above,
-mask contours below). Its schema preserves attachment-state uncertainty and
-explicit component-versus-body motion evidence. The rigid gate is retained and
-rejects contradictory rigid labels; nonrigid/unresolved answers remain saved
-failures. A live Astra diagnostic rereview of frozen cold03 used 150 frames in15
-sheets and returned rigid/no observed relative cap motion while preserving cap
-mechanism uncertainty; request/response/group were all gpt-6-astra. This is richer
-evidence for a new run, not a modification of cold03 or a completed annotation.
-
-### Cold-run retained appearance alignment
-`gates.object.observation.retained_metric_alignment` is the current-run anchor
-contract shared by candidate generation, main's choice filter and shape binding.
-The legacy tolerant geometry validator remains unchanged for its other callers.
-A finite but explicitly rejected P09 surface cannot condition metric alignment.
-
-### Cold-run object instance association
-The old per-keyframe category argmax is removed. Dense OWLv2 association precedes
-SAM2 prompting and a run-bound candidate/mask check precedes the unchanged Astra
-mask gate. CPU regression uses actual mug frame149 detections and frame148 SAM2
-support, labelled as fixture-only; no historical mask is a production input.
-Dense detection increases OWLv2 work relative to sparse keyframes. Lost or
-ambiguous tracks are unsupported, not silently reacquired as another instance.
-Consecutive occluded-extent alternatives now remain associated at the existing
-minimum cost when both candidates pass continuity, largely contain one another
-and share three temporally stable boundaries (thresholds in README). This adds a
-local extent-ambiguity hypothesis, not a global IoU relaxation; true displaced
-competitors and no-track ambiguity retain rejection. Every detection/score is
-unchanged and the report carries `occluded_extent_ambiguity` plus geometry and
-cost margins. Real SAM2 mask identity, ownership and Astra gates remain final
-arbiters. `mug_occluded_extent.json` is a hash-provenanced CPU fixture containing
-all fixed93 detections137–149, no old mask or reusable production prediction.
-It selects lower-score138/149 candidates and retains uncertainty; full fresh
-model execution and mask acceptance remain required.
-
-### Cold-run compact pose review
-The full refined posterior, repeated source rows and solver traces are no longer
-Astra prompt input. The compact builder retains every frame and uses null for
-missing source poses/rotation observability. Raw images and actual candidate mesh
-overlays remain the visual evidence; compact facts never assert ground truth.
-Request byte auditing uses the same adaptive encoder as HTTP transport. The
-planned Astra stage binds `full_sheet_budget_v1` and its2MB limit. Only trajectory
-review opts in: original → JPEG80 → JPEG70 → JPEG70/87.5% → JPEG65/75%, from the
-original bytes at each tier, full image extent and all ordered sheets retained.
-Original image hashes still identify inputs; effective image hashes/dimensions/
-quality and per-tier payload hashes/sizes identify what Astra actually receives.
-The review-image path/hash/frame mapping is checked before encoding. All150
-facts and uncertain tails remain unchanged. Exhausting the finite ladder retains
-the exact oversized final payload and refuses HTTP; there is no120s deadline
-increase, retry or alternate model route. `observations.test_review_encoding`
-checks exact2,037,316-byte overflow, next-tier success, wire/audit identity and
-high-entropy exhaustion. Its optional `EGO_CAN93_DIAGNOSTIC_ROOT` test reads the
-original failed run only as an offline regression, never producing a receipt.
+These CPU tests validate ownership, kernels, source-only dispatch, manifest
+identity, and explicit policy-state render consumption. They do not establish
+RL learning quality, real-video accuracy, or physical acceptance. Those claims
+require the integrated skrl checkpoint/reload/rollout smoke and bounded real
+prepared observation fixture described in the task acceptance contract.

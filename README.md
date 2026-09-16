@@ -1,8 +1,18 @@
-# Grouped ego annotation
+# RL-first ego annotation
 
-The grouped entry is `python main.py`. Numerical stages are owned by
-`optimization/solve.py`; observation eligibility and physical acceptance remain
-separate from candidate estimates.
+`python main.py` is the observation-only entry. It produces a hash-bound
+`ego_source_observations_v1` manifest and stops before numerical refinement,
+MANO fitting, policy inference, or rendering. The manifest binds raw camera/depth,
+HaWoR/MANO parameters, P09 observed geometry with its uncertain
+`reconstructed_geometry_pose` initializer, reconstructed mesh, masks/ownership,
+and independent interaction/P17 evidence. It never contains `pose_fits/**`,
+accepted hand archives, policy results, or rendered annotations.
+
+Preserved numerical reference commands are owned by `python optimize.py` and
+`legacy_optimize/`. Pure kernels live under `rewards/terms`; evidence qualification
+lives under `envs/qualification`; action-changing evidence filters live under
+`actions/filters`. Candidate geometry, MANO replay, transforms, and pure numerical
+helpers live under `utils` so the RL environment never imports legacy solvers.
 
 Astra supplies the thirteen judgments and text prompts; SAM3D generates the
 complete object surface in the cold pipeline. The separate Astra point-cloud
@@ -13,19 +23,18 @@ SAM3D/TRELLIS shape workers and the Astra-only judgment transport are unchanged.
 ## Cold raw-video entry
 
 ```bash
-python main.py annotate --video INPUT_VIDEO --case CASE_ID --run-root NEW_RUN_DIRECTORY \
+python main.py observe --video INPUT_VIDEO --case CASE_ID --run-root NEW_RUN_DIRECTORY \
   --assets-manifest LOCAL_MODEL_ENVIRONMENTS_JSON --gpu EXPLICIT_GPU_INDEX
 ```
 
 The run directory must not exist. Use the separately provisioned model-environment
 manifest; the runner does not install models or download missing weights. It
-copies raw input, produces new camera/depth/MANO/mask observations, executes the
-independent Astra decisions, builds native complete geometry and observed/RGB
-pose evidence, fits the visual scene, and writes `final/annotation.json`,
-`final/world.rrd`, and `renders/annotation.mp4`. Per-frame visibility/contact
-judgments receive every corresponding raw frame in bounded batches; final
-inspection receives every rendered frame. Stage logs and producer receipts remain
-inside this run. Do not use a GPU occupied by another job.
+copies raw input, produces camera/depth/raw-MANO/mask observations, executes the
+independent Astra evidence judgments, reconstructs native object geometry, builds
+P09 visible observations and P17 evidence, then writes
+`source_observations.json`. It does not call the P14/P15/P18 solvers, visual Adam,
+policy rollout, or render dispatch. Stage logs and producer receipts remain inside
+this run. Do not use a GPU occupied by another job.
 
 The cold entry is implemented and its CPU contracts are tested. A full model run
 of this checkpoint has not yet been executed; it is not evidence of three completed
@@ -44,7 +53,7 @@ geometry.
 
 ## Same-run recovery and candidate attempts
 
-The first attempt of each case must still use `annotate` with a new run directory.
+The first attempt of each case must use `observe` (`annotate` is a compatibility alias) with a new run directory.
 For a transient failure, continue the existing run with the **same installed code,
 model configuration and declared assets**:
 
@@ -107,7 +116,7 @@ and a real three-frame decoded video, not a production annotation or API call.
 
 ## Prepared numerical entries
 
-`python main.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
+`python optimize.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
 --rgb-edges EDGES_NPZ --rgb-report EDGES_JSON --object-id OBJECT --anchor FRAME
 --run-root RUN --output POSTERIOR` consumes hash-bound, same-run metric/RGB
 observations and runs local RGB seeding, robust SO(3), and refreshed full SE(3).
@@ -119,18 +128,18 @@ carry identical metadata. Foreign-run files are rejected even if byte-identical.
 Inputs are prepared
 prediction observations, not raw video or ground truth.
 
-CPU regression: `python -m unittest test_pipeline optimization.test_optimization
+CPU regression: `python -m unittest test_pipeline legacy_optimize.test_legacy_optimize
 observations.test_observations -v` (NumPy and SciPy required).
 
-`python main.py fit-visual --help` exposes the prepared complete-MANO/object
+`python optimize.py fit-visual --help` exposes the prepared complete-MANO/object
 optimizer. It preserves two-hand Adam variables, camera-origin hand scale,
 unsigned top-three pad distances, source replay, supported-segment interpolation,
 and the 12-iteration correspondence refresh. `render.export` produces a portable
 JSON/RRD pair with complete triangles and explicit visibility clears. Native-shape
 binding uses extracted front-depth helpers, not a dynamic research-script loader.
 
-Full CPU regression: `python -m unittest test_pipeline factors.test_factors
-optimization.test_optimization observations.test_observations -v`.
+Full CPU regression: `python -m unittest test_pipeline rewards.test_terms
+legacy_optimize.test_legacy_optimize observations.test_observations -v`.
 Set `EGO_MANO_MODELS` to licensed MANO assets to exercise the real two-hand CPU
 optimizer smoke test; model assets are never downloaded by tests.
 
@@ -152,7 +161,7 @@ TRELLIS implementations. Heavy dependencies are imported in the worker functions
 not at pipeline import time. Every worker requires provisioned model paths;
 HaWoR gets a fresh private raw-video copy before any upstream detector/SLAM call.
 
-`python main.py fit-formal --problem INPUTS_JSON` invokes the extracted full
+`python optimize.py fit-formal --problem INPUTS_JSON` invokes the extracted full
 per-hand interval solver through a named `FormalManoInterval` profile. The
 HOT3D profile fixes object translation and enables its original full-K and
 translation-support gates. Optional compositions are named, and numeric tuning
@@ -161,7 +170,7 @@ full-MANO acceptance stage before physical publication.
 
 ## Prepared formal/shared physical tail and evaluation
 
-`python main.py formal-tail --spec INPUTS_JSON` consumes prepared prediction
+`python optimize.py formal-tail --spec INPUTS_JSON` consumes prepared prediction
 observations, source pose, completion, depth, licensed MANO assets and independent
 interaction judgments under one run root. Profiles are `formal`, `rgb_sam3d`, and
 `hot3d_shared`. It executes the formal object graph, P17 evidence assembly,
@@ -187,8 +196,8 @@ shared package hash, mesh hash, canonical frame and `generated_display_only` rol
 
 ## Source organization and historical scope
 
-The active package has four business directories (`observations`, `gates`,
-`factors`, `optimization`) and five utility modules. Historical version chains,
+The active package has five business directories (`observations`, `actions`, `envs`,
+`rewards`, `legacy_optimize`) and five utility modules. Historical version chains,
 runpy dispatchers, old batch scripts, copied runtime prompts, and experimental
 standalone CLIs have been retired from the active checkout; baseline `12aede8`
 remains available in Git and the original worktree. `migration-map.json` records
@@ -202,8 +211,8 @@ are retained. Historical alternative depth/SLAM/hand/shape providers, articulate
 part/deformable/variable-camera solvers, global/keyframe/late-window experimental
 CLIs and GT benchmark suites are outside this version; their code remains in Git.
 
-Use `main.py prepare --help` for optional observation builders and
-`main.py preflight --assets-manifest ENVIRONMENTS_JSON` to validate actual
+Use `python main.py prepare --help` for optional observation builders and
+`python main.py preflight --assets-manifest ENVIRONMENTS_JSON` to validate actual
 provider-package imports before allocating a run. No worker installs missing
 assets or silently replaces a failed producer with empty observations.
 
@@ -234,7 +243,7 @@ factor combinations. `prepare hand-visibility` produces the actual report accept
 by the formal loader; image targets, visible-surface track and face-eligibility
 builders expose the corresponding preserved argument schemas.
 
-`python main.py render-dual --spec DUAL_JSON` renders two already-bound display
+`python render.py dual --spec DUAL_JSON` renders two already-bound display
 geometries against one immutable physical package. The specification names
 `package`, `source_video`, `output`, and exactly two `geometries` records
 (`sam3d`/`trellis`, mesh path/hash, package hash,
