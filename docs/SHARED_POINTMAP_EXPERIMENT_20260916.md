@@ -1,5 +1,9 @@
 # Shared pointmap / exact-K 单帧三臂实验（2026-09-16）
 
+> **后续选择**：用户已选择只共享 pointmap，不新增独立 exact-K 模型干预。
+> [可见表面空间包络整合设计](POINTMAP_ENVELOPE_INTEGRATION_DESIGN_ZH.md) 记录了
+> 两次 native 调用的接线、旧包络机制、历史负结果和候选优化/末端渲染接缝；尚未默认部署。
+
 ## 结论与边界
 
 共享 metric pointmap 在 milk anchor48上能显著改善 SAM3D 与当前观测的几何自一致性；

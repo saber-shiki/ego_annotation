@@ -8,6 +8,8 @@
 > **Latest feasibility checkpoint:** [2026-09-16 tested repairs and remaining geometry blocker](docs/RLOPT_FEASIBILITY_20260916.md),
 > prediction source `9ef06b3`. Real model execution reached SAM3D reconstruction;
 > the metric bridge failed and end-to-end annotation feasibility is not yet established.
+>
+> **Next integration design (not deployed):** [pointmap-only SAM3D and observed-surface envelopes](docs/POINTMAP_ENVELOPE_INTEGRATION_DESIGN_ZH.md).
 
 The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain
