@@ -114,6 +114,30 @@ Recovery CPU tests: `python -m unittest test_pipeline.StageRecoveryTests
 command onto one line). The CLI fixture uses clearly labeled synthetic producers
 and a real three-frame decoded video, not a production annotation or API call.
 
+## Training and checkpoint-backed rollout
+
+Install the verified RL runtime with `pip install .[rl]`. The supported API is
+`skrl==2.1.0`; `train.py` and `rollout.py` share environment, model, PPO, and
+trainer builders. Training uses official skrl PPO and saves policy, value,
+optimizer, and running preprocessors. Rollout reloads the same agent/checkpoint,
+uses deterministic Gaussian mean actions, freezes preprocessor statistics, and
+calls the environment's explicit policy-candidate exporter:
+
+```bash
+python train.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.json \
+  --split train --output NEW_TRAINING_DIR --device cpu
+python rollout.py --config configs/ppo_annotation.yaml --dataset EPISODE_INDEX.json \
+  --split test --checkpoint NEW_TRAINING_DIR/agent.pt \
+  --checkpoint-provenance NEW_TRAINING_DIR/agent.provenance.json \
+  --output NEW_ROLLOUT/annotation.json --device cpu
+```
+
+The data index is source-video-disjoint. Its episode manifests are read-only
+`ego.annotation.observation_bundle.v1` bundles from main or the prepared-source
+adapter; they do not name legacy optimizer results. The rollout JSON plus complete
+candidate NPZ carries both full MANO hands and object SE(3), and is consumable by
+`python render.py policy ...` without forging legacy physical acceptance.
+
 ## Prepared numerical entries
 
 `python optimize.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
@@ -196,8 +220,11 @@ shared package hash, mesh hash, canonical frame and `generated_display_only` rol
 
 ## Source organization and historical scope
 
-The active package has five business directories (`observations`, `actions`, `envs`,
-`rewards`, `legacy_optimize`) and five utility modules. Historical version chains,
+The active package is organized by ownership: observation producers (`observations`),
+action layouts/filters (`actions`), read-only data (`data`), causal environment
+(`envs`), pure terms plus reward accounting (`rewards`), policy/value models
+(`models`), preserved numerical references (`legacy_optimize`), and shared pure
+helpers (`utils`). Historical version chains,
 runpy dispatchers, old batch scripts, copied runtime prompts, and experimental
 standalone CLIs have been retired from the active checkout; baseline `12aede8`
 remains available in Git and the original worktree. `migration-map.json` records

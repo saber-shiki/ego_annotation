@@ -48,6 +48,8 @@ def build_source_observation_manifest(
     time_s: list[float],
     source_timing: Mapping[str, Any],
     artifacts: Mapping[str, tuple[Path, str]],
+    mano_assets: Path | None = None,
+    wilor_root: Path | None = None,
 ) -> dict[str, Any]:
     if not frame_ids or frame_ids != sorted(set(frame_ids)):
         raise ValueError("source observation frame_ids must be non-empty, sorted, and unique")
@@ -94,6 +96,18 @@ def build_source_observation_manifest(
         "metric_eligibility": records["metric_eligibility"],
         "interaction_judgments": records["interaction_judgments"],
     }
+    if mano_assets is not None:
+        asset_root = Path(mano_assets).expanduser().resolve()
+        left = asset_root / "MANO_LEFT.pkl"
+        right = asset_root / "MANO_RIGHT.pkl"
+        if not left.is_file() or not right.is_file():
+            raise FileNotFoundError(f"MANO asset directory lacks left/right models: {asset_root}")
+        sources["mano_assets"] = {
+            "path": str(asset_root),
+            "left_sha256": sha(left),
+            "right_sha256": sha(right),
+            "wilor_root": str(Path(wilor_root).expanduser().resolve()) if wilor_root is not None else None,
+        }
     return {
         "schema": SCHEMA,
         "bundle_version": BUNDLE_VERSION,

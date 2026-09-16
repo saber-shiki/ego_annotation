@@ -19,6 +19,8 @@ compatibility wrappers at the old `factors`, `gates`, or `optimization` paths.
 | `python optimize.py fit-visual ...` | Preserved visual Adam hand/object fitting reference. |
 | `python optimize.py fit-formal ...` | Preserved named formal MANO interval solve. |
 | `python optimize.py formal-tail ...` | Preserved P15/P18/acceptance/render reference tail. |
+| `python train.py ...` | Official skrl 2.1 PPO training over read-only source observation episodes; saves full agent/preprocessor checkpoint and provenance. |
+| `python rollout.py ...` | Deterministic checkpoint-backed test rollout using the same builders; exports action-driven geometry without updates or legacy fallback. |
 | `python render.py policy ...` | Renders an explicit complete policy-candidate NPZ directly. It does not require or forge formal MANO acceptance. |
 | `python render.py dual ...` | Preserved dual display-geometry render for an already-frozen legacy package. |
 | `python evaluate.py ...` | Preserved HOT3D box, MANO, object, and aggregation schemas. Evaluation remains outside prediction/observation main. |

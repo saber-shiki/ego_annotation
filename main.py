@@ -636,7 +636,9 @@ def annotate(args):
         def _stage_source_observations():
             result=write_source_observation_manifest(output=bundle_path,run_root=root,case=args.case,
                 object_id=object_id,track_id=track,frame_ids=ids,
-                time_s=list(timing.presentation_times_s),source_timing=timing.report(),artifacts=artifacts)
+                time_s=list(timing.presentation_times_s),source_timing=timing.report(),artifacts=artifacts,
+                mano_assets=Path(assets['mano_models']),
+                wilor_root=Path(assets['wilor_root']) if assets.get('wilor_root') else None)
             record('source_observations',[(bundle_path,'source_observations')])
             return result
         bundle=_stage_source_observations

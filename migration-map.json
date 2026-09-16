@@ -2771,7 +2771,9 @@
       "main.py": "observation-only source bundle producer",
       "optimize.py": "preserved numerical reference",
       "render.py policy": "acceptance-independent complete policy candidate render",
-      "evaluate.py": "preserved HOT3D evaluation"
+      "evaluate.py": "preserved HOT3D evaluation",
+      "train.py": "official skrl PPO training with full checkpoint provenance",
+      "rollout.py": "deterministic no-update checkpoint rollout and policy candidate export"
     },
     "source_observation_schema": "ego.annotation.observation_bundle.v1"
   }
