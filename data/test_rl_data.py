@@ -49,20 +49,26 @@ def _skew(value):
 
 
 def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_video_id: str = "video-a",
-                          right_valid=(True, False, True)) -> tuple[Path, dict]:
+                          right_valid: tuple[bool, ...] | None = None, frame_count: int = 3) -> tuple[Path, dict]:
     import trimesh
     root.mkdir(parents=True, exist_ok=True)
     video = root / f"{bundle_id}.mp4"; video.write_bytes(b"synthetic-not-a-real-video")
     code = root / "code.txt"; code.write_text("synthetic code")
     config = root / "config.json"; config.write_text("{}")
-    frame_ids = np.arange(3, dtype=np.int32)
+    if frame_count < 2:
+        raise ValueError("synthetic fixture needs at least two frames")
+    if right_valid is None:
+        right_valid = tuple((i != 1 for i in range(frame_count)))
+    if len(right_valid) != frame_count:
+        raise ValueError("right_valid must cover synthetic frame_count")
+    frame_ids = np.arange(frame_count, dtype=np.int32)
     models = {side: SyntheticMano(side) for side in ("left", "right")}
     arrays = {"frame_idx": frame_ids}
     for side in ("left", "right"):
-        roots = np.zeros((3, 3), np.float32); poses = np.zeros((3, 45), np.float32)
-        betas = np.zeros((3, 10), np.float32); trans = np.zeros((3, 3), np.float32)
+        roots = np.zeros((frame_count, 3), np.float32); poses = np.zeros((frame_count, 45), np.float32)
+        betas = np.zeros((frame_count, 10), np.float32); trans = np.zeros((frame_count, 3), np.float32)
         vertices = []; joints = []
-        for i in range(3):
+        for i in range(frame_count):
             output = models[side](global_orient=np_to_torch(roots[i:i+1]),
                                   hand_pose=np_to_torch(poses[i:i+1]), betas=np_to_torch(betas[i:i+1]),
                                   transl=np_to_torch(trans[i:i+1]))
@@ -70,14 +76,14 @@ def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_vid
         arrays.update({f"{side}_root_orient_axis_angle": roots, f"{side}_hand_pose_axis_angle": poses,
                        f"{side}_betas": betas, f"{side}_trans_world_m": trans,
                        f"{side}_vertices_world_m": np.asarray(vertices), f"{side}_joints_world_m": np.asarray(joints),
-                       f"{side}_valid": np.asarray([True, True, True] if side == "left" else right_valid, np.uint8),
+                       f"{side}_valid": np.ones(frame_count, np.uint8) if side == "left" else np.asarray(right_valid, np.uint8),
                        f"{side}_faces": models[side].faces})
     mano = root / f"{bundle_id}_mano.npz"; np.savez(mano, **arrays)
     canonical = np.asarray([[-.04, -.04, -.04], [.04, -.04, -.04], [0, .04, -.04], [0, 0, .04]], np.float32)
     faces = np.asarray([[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]], np.int64)
     mesh = root / f"{bundle_id}_mesh.ply"; trimesh.Trimesh(canonical, faces, process=False).export(mesh)
     frames = []
-    for i in range(3):
+    for i in range(frame_count):
         object_t = np.asarray([0.0 + 0.01 * i, 0.0, 1.04])
         observed = canonical + object_t
         frames.append({"frame_idx": i, "time_s": i / 30.0, "source_width": 64, "source_height": 64,
@@ -88,7 +94,7 @@ def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_vid
                 "visible_geometry_candidate": {"world_vertices_sample_m": observed.tolist()}}]})
     annotations = root / f"{bundle_id}_annotations.json"; annotations.write_text(json.dumps({"frames": frames}))
     factor_rows = []; ownership_rows = []
-    for frame in range(3):
+    for frame in range(frame_count):
         for side in ("left", "right"):
             factor_rows.append({"factor_family": "contact_patch", "frame_idx": frame, "hand_side": side,
                 "state": "active_contact_patch", "contact_patch_prior_probability": 0.7, "weight": 2.0,
@@ -97,7 +103,7 @@ def make_synthetic_bundle(root: Path, bundle_id: str = "synthetic-a", source_vid
     factors = root / f"{bundle_id}_factors.json"; factors.write_text(json.dumps({"factor_rows": factor_rows, "ownership_rows": ownership_rows}))
     manifest = prepared_manifest(bundle_id=bundle_id, clip_id=bundle_id, source_video_id=source_video_id,
         source_video=video, annotations=annotations, mano_archive=mano, object_mesh=mesh,
-        contact_factors=factors, object_id="object:synthetic", frame_range=(0, 2),
+        contact_factors=factors, object_id="object:synthetic", frame_range=(0, frame_count - 1),
         code_identity=(str(code), file_sha256(code)), config_identity=(str(config), file_sha256(config)))
     path = write_manifest(root / f"{bundle_id}.manifest.json", manifest)
     return path, models

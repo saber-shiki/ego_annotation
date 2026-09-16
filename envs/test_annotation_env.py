@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from actions.scaling import ActionScales
-from data.bundle import EpisodeBundle
+from data.bundle import EpisodeBundle, file_sha256
 from data.test_rl_data import make_synthetic_bundle
 from envs.annotation_env import AnnotationEnv
 from envs.dynamics import transformed_object_geometry
@@ -68,14 +68,54 @@ class AnnotationEnvironmentTest(unittest.TestCase):
             with np.load(export["npz"], allow_pickle=False) as archive:
                 self.assertEqual(archive["left_vertices_world"].shape, (3, 778, 3))
                 self.assertEqual(archive["object_rotation"].shape, (3, 3, 3))
+                self.assertTrue(np.array_equal(archive["left_display_valid"], archive["left_valid"]))
+                self.assertTrue(np.array_equal(archive["right_display_valid"], archive["right_valid"]))
                 self.assertFalse(np.allclose(archive["left_vertices_world"][0], left_before))
                 self.assertFalse(np.allclose(archive["object_rotation"][0], np.eye(3)))
+            self.assertEqual(export["hashes"]["json_sha256"], file_sha256(export["json"]))
+            self.assertEqual(export["hashes"]["npz_sha256"], file_sha256(export["npz"]))
+            self.assertEqual(export["hashes"]["integrity_sha256"], file_sha256(export["integrity"]))
+            receipt = export["integrity_document"]
+            self.assertEqual(receipt["files"]["policy_rollout_json"]["sha256"], export["hashes"]["json_sha256"])
+            self.assertEqual(receipt["files"]["policy_rollout_npz"]["sha256"], export["hashes"]["npz_sha256"])
             self.assertFalse(export["document"]["acceptance_substitution_applied"])
             self.assertEqual(export["document"]["object_pose_trajectory"]["pose_rows"][0]["status"],
                              "policy_rollout_candidate")
             reset_obs, _ = env.reset(seed=11)
             np.testing.assert_allclose(reset_obs, obs)
             np.testing.assert_allclose(env.state.hand_vertices["left"][0], left_before)
+
+    def test_explicit_index_variable_episode_rollout_exports_before_destructive_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path0, models = make_synthetic_bundle(root / "short", "short", "video-short", frame_count=2)
+            path1, _ = make_synthetic_bundle(root / "long", "long", "video-long", frame_count=4)
+            env = AnnotationEnv([EpisodeBundle.open(path0), EpisodeBundle.open(path1)], self.config(models), "cpu")
+            _, info = env.reset(seed=99, options={"episode_index": 1})
+            self.assertEqual(info["bundle_id"], "long")
+            layout = env.state.episode.layout
+            long_source = env.state.hand_vertices["left"][0].copy()
+            while True:
+                action = np.zeros(layout.size, np.float32)
+                action[layout.block("hand.left.articulation").start + 1] = .3
+                action[layout.block("hand.left.root").start + 2] = .2
+                action[layout.block("object.object:0.rotation").start] = .2
+                _, _, terminated, truncated, _ = env.step(action)
+                self.assertFalse(truncated)
+                if terminated:
+                    break
+            export = env.export_annotation(root / "long_rollout.json")
+            with np.load(export["npz"], allow_pickle=False) as archive:
+                self.assertEqual(len(archive["frame_idx"]), 4)
+                self.assertFalse(np.allclose(archive["left_vertices_world"][0], long_source))
+                preserved = archive["left_vertices_world"].copy()
+            _, reset_info = env.reset(options={"episode_index": 0})
+            self.assertEqual(reset_info["bundle_id"], "short")
+            self.assertEqual(env.state.episode.frame_count, 2)
+            np.testing.assert_allclose(env.state.hand_vertices["left"][0],
+                                       env.state.episode.hands["left"]["vertices"][0])
+            with np.load(export["npz"], allow_pickle=False) as archive:
+                np.testing.assert_array_equal(archive["left_vertices_world"], preserved)
 
     def test_translation_support_gate_and_truncation_semantics(self):
         with tempfile.TemporaryDirectory() as directory:

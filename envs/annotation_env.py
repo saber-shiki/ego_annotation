@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from hashlib import sha256
 import json
 import numpy as np
 
@@ -16,6 +17,14 @@ from envs.observation import ObservationLayout, observation_layout, pack_observa
 from envs.spaces import action_space, observation_space
 from envs.state import AnnotationState, initial_state
 from rewards.evaluator import RewardEvaluator
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class AnnotationEnv(gym.Env):
@@ -115,7 +124,15 @@ class AnnotationEnv(gym.Env):
         return observation, float(reward), terminated, truncated, info
 
     def export_annotation(self, path: str | Path | None = None) -> dict[str, Any]:
-        """Export the policy candidate directly, without legacy acceptance substitution."""
+        """Export an action-driven candidate for the direct policy consumer.
+
+        ``path`` accepts a JSON path, NPZ path, or stem and produces three new
+        companion artifacts: the full geometry NPZ, the evaluator adapter JSON,
+        and a receipt binding their exact SHA256 values. The geometry has direct
+        candidate display authority; it is deliberately separate from formal
+        physical acceptance and therefore cannot trigger legacy source-HaWoR
+        substitution.
+        """
         if self.state is None:
             raise RuntimeError("reset must be called before export")
         state = self.state
@@ -134,10 +151,14 @@ class AnnotationEnv(gym.Env):
             "object_rotation": np.asarray(state.object_rotation[object_slot], dtype=np.float64),
             "object_translation_world": np.asarray(state.object_translation[object_slot], dtype=np.float64),
             "object_valid": np.asarray(obj["valid"], dtype=bool),
+            "object_pose_valid": np.asarray(obj["valid"], dtype=bool),
         }
         per_frame_states = []
         for side in episode.layout.hand_slots:
             arrays[f"{side}_valid"] = np.asarray(episode.hands[side]["valid"], dtype=bool)
+            # Renderer consumer authority for this direct policy-candidate layer.
+            # This does not claim signed/physical acceptance.
+            arrays[f"{side}_display_valid"] = np.asarray(episode.hands[side]["valid"], dtype=bool)
             arrays[f"{side}_vertices_world"] = np.asarray(state.hand_vertices[side], dtype=np.float32)
             arrays[f"{side}_joints_world"] = np.asarray(state.hand_joints[side], dtype=np.float32)
             arrays[f"{side}_faces"] = np.asarray(episode.hands[side]["faces"], dtype=np.int64)
@@ -166,7 +187,17 @@ class AnnotationEnv(gym.Env):
             "clip_id": episode.clip_id,
             "source_video_id": episode.source_video_id,
             "inputs": {"annotations": annotations, "identity": dict(episode.identity)},
-            "policy_rollout_array_layer": {"role": "direct_policy_candidate_full_geometry", "path": None},
+            "policy_rollout_array_layer": {
+                "role": "direct_policy_candidate_full_geometry",
+                "path": None,
+                "sha256": None,
+                "display_authority": "policy_candidate_geometry_not_formal_acceptance",
+            },
+            "display_validity_policy": {
+                "object_pose_valid": "policy candidate object pose is finite and present",
+                "hand_display_valid": "policy candidate full MANO geometry is present",
+                "formal_acceptance_substitution": False,
+            },
             "per_frame_states": per_frame_states,
             "object_pose_trajectory": {"object_id": obj.get("entity_id"), "pose_rows": pose_rows},
             "uncertainty": {
@@ -186,9 +217,35 @@ class AnnotationEnv(gym.Env):
             else:
                 json_path = requested.with_suffix(".json")
                 npz_path = requested.with_suffix(".npz")
+            receipt_path = json_path.with_name(json_path.stem + "_integrity.json")
+            for artifact in (json_path, npz_path, receipt_path):
+                if artifact.exists():
+                    raise ValueError(f"policy rollout export requires new artifact path: {artifact}")
             npz_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(npz_path, **arrays)
-            document["policy_rollout_array_layer"]["path"] = str(npz_path)
+            npz_sha256 = _file_sha256(npz_path)
+            document["policy_rollout_array_layer"].update({"path": str(npz_path), "sha256": npz_sha256})
+            document["companion_integrity_receipt"] = {
+                "path": str(receipt_path),
+                "schema": "ego.annotation.policy_rollout_integrity.v1",
+            }
             json_path.write_text(json.dumps(document, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-            return {"json": str(json_path), "npz": str(npz_path), "document": document}
+            json_sha256 = _file_sha256(json_path)
+            receipt = {
+                "schema": "ego.annotation.policy_rollout_integrity.v1",
+                "role": "bind_direct_policy_candidate_json_and_npz",
+                "files": {
+                    "policy_rollout_json": {"path": str(json_path), "sha256": json_sha256},
+                    "policy_rollout_npz": {"path": str(npz_path), "sha256": npz_sha256},
+                },
+                "acceptance_substitution_applied": False,
+            }
+            receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+            receipt_sha256 = _file_sha256(receipt_path)
+            return {
+                "json": str(json_path), "npz": str(npz_path), "integrity": str(receipt_path),
+                "hashes": {"json_sha256": json_sha256, "npz_sha256": npz_sha256,
+                           "integrity_sha256": receipt_sha256},
+                "document": document, "integrity_document": receipt,
+            }
         return {"arrays": arrays, "document": document}

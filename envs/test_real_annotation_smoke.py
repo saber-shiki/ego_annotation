@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+import json
 import tempfile
 import unittest
 
@@ -82,9 +84,49 @@ class RealPreparedBottleSmokeTest(unittest.TestCase):
                 timeline(dict(archive))
                 self.assertEqual(archive["left_vertices_world"].shape, (3, 778, 3))
                 self.assertEqual(archive["left_faces"].shape, (1538, 3))
+                self.assertTrue(np.array_equal(archive["left_display_valid"], archive["left_valid"]))
+                self.assertTrue(np.array_equal(archive["right_display_valid"], archive["right_valid"]))
                 self.assertFalse(np.allclose(archive["object_rotation"][0], np.eye(3)))
+            self.assertEqual(exported["hashes"]["json_sha256"], file_sha256(exported["json"]))
+            self.assertEqual(exported["hashes"]["npz_sha256"], file_sha256(exported["npz"]))
+            self.assertEqual(exported["hashes"]["integrity_sha256"], file_sha256(exported["integrity"]))
+            self.assertEqual(exported["integrity_document"]["files"]["policy_rollout_json"]["sha256"],
+                             exported["hashes"]["json_sha256"])
+            self.assertEqual(exported["integrity_document"]["files"]["policy_rollout_npz"]["sha256"],
+                             exported["hashes"]["npz_sha256"])
             self.assertEqual(exported["document"]["inputs"]["annotations"], str(annotations))
             self.assertFalse(exported["document"]["acceptance_substitution_applied"])
+            # Existing evaluator adapters consume the JSON action-driven joint/SE3 rows
+            # and the annotation camera trajectory, without requiring formal acceptance.
+            import evaluate
+            evaluator_prediction = evaluate.load_interval_state_prediction(
+                SimpleNamespace(interval_state=Path(exported["json"]), remote_root=None, local_root=None),
+                json.loads(annotations.read_text())["frames"],
+            )
+            self.assertEqual(evaluator_prediction["camera_trajectory_source"], f"annotations:{annotations}")
+            self.assertGreater(np.max(np.abs(evaluator_prediction["sides"]["left"]["joints_world_m"][0] - base_joints)), 1e-7)
+            object_rows = evaluate.load_v19_rows(json.loads(Path(exported["json"]).read_text()))
+            self.assertIn(0, object_rows)
+            self.assertFalse(np.allclose(object_rows[0]["rotation_world_from_completed_canonical_matrix"], np.eye(3)))
+            # Existing direct triangle renderer consumes the policy display-valid arrays.
+            baseline_env = AnnotationEnv([EpisodeBundle.open(manifest_path)], cfg, "cpu")
+            baseline_env.reset(seed=0)
+            baseline_export = baseline_env.export_annotation(Path(directory) / "baseline_rollout.json")
+            import cv2
+            import render
+            raw_manifest = json.loads((RUN / "input/raw_frame_manifest/manifest.json").read_text())
+            slice_manifest = Path(directory) / "raw_slice.json"
+            slice_manifest.write_text(json.dumps({"frames": raw_manifest["frames"][:3]}))
+            raw_image = cv2.imread(raw_manifest["frames"][0]["raw_frame_path"])
+            with np.load(exported["npz"], allow_pickle=False) as archive:
+                action_pixels = render.mesh_overlay(dict(archive), 0, raw_image)
+            with np.load(baseline_export["npz"], allow_pickle=False) as archive:
+                baseline_pixels = render.mesh_overlay(dict(archive), 0, raw_image)
+            self.assertGreater(np.max(np.abs(action_pixels.astype(np.int16) - baseline_pixels.astype(np.int16))), 0)
+            reviews = render.render_video(exported["npz"], slice_manifest, Path(directory) / "policy.mp4")
+            self.assertEqual(len(reviews), 3)
+            self.assertTrue((Path(directory) / "policy.mp4").is_file())
+            self.assertTrue(all(Path(row["path"]).is_file() for row in reviews))
             baseline_env = AnnotationEnv([EpisodeBundle.open(manifest_path)], cfg, "cpu")
             baseline_env.reset(seed=0)
             _, _, _, _, baseline_info = baseline_env.step(np.zeros(layout.size, np.float32))
