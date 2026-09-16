@@ -25,6 +25,7 @@ ego-render = "render:main"
 ego-evaluate = "evaluate:main"
 ego-train = "train:main"
 ego-rollout = "rollout:main"
+ego-index = "data.build_index:main"
 
 [tool.setuptools]
 py-modules = ["main", "optimize", "render", "evaluate", "train", "rollout"]
@@ -38,4 +39,4 @@ namespaces = true
 configs = ["*.yaml"]
 
 [tool.pytest.ini_options]
-testpaths = ["test_pipeline.py", "tests", "observations", "actions", "envs", "rewards", "legacy_optimize"]
+testpaths = ["test_pipeline.py", "tests", "observations", "actions", "data", "envs", "rewards", "models", "legacy_optimize"]

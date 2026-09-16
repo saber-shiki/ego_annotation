@@ -86,12 +86,12 @@ observation/native prefix:
 ```bash
 python main.py resume --run-root RUN_DIRECTORY \
   --assets-manifest SAME_MODEL_ENVIRONMENTS_JSON --gpu SAME_GPU_INDEX \
-  --rewind visual_fit --reason 'repeat the fit after a transient execution failure' \
-  --candidate fit-attempt-b
+  --rewind conditioned_depth --reason 'repeat the conditioned depth observation after a transient provider failure' \
+  --candidate observation-attempt-b
 ```
 
-Rewind invalidates the named stage and its ordered dependent suffix, leaving the
-prefix unchanged. `quarantine/ATTEMPT/` keeps prior suffix artifacts, worker logs,
+Rewind invalidates the named observation stage and its ordered dependent suffix, leaving the
+verified observation prefix unchanged. `quarantine/ATTEMPT/` keeps prior suffix artifacts, worker logs,
 producer manifests, before/after stage manifests and the explicit reason. Missing,
 changed or unreceipted partial output is also quarantined before the corresponding
 stage is rerun. `state/recovery/events.jsonl` is append-only and records success,
@@ -116,7 +116,7 @@ and a real three-frame decoded video, not a production annotation or API call.
 
 ## Training and checkpoint-backed rollout
 
-Install the verified RL runtime with `pip install .[rl]`. The supported API is
+Install the verified full RL/domain runtime with `pip install .[rl,visual]`. The supported API is
 `skrl==2.1.0`; `train.py` and `rollout.py` share environment, model, PPO, and
 trainer builders. Training uses official skrl PPO and saves policy, value,
 optimizer, and running preprocessors. Rollout reloads the same agent/checkpoint,
@@ -140,11 +140,15 @@ The training checkpoint records stable dataset/environment/model compatibility
 separately from the training-index identity, so a new compatible index can be
 rolled out without pretending it is the training set. `reward_profile` selects a
 reviewed mathematical composition (`formal_annotation` by default; also
-`formal_interval`, `formal_object`, or `visual_joint`). `reward_scale` is a single
+`formal_interval`, `formal_object`, or `visual_joint_fixed_scale`). The latter is
+the fixed-scale RL slice because the policy action schema has no hand log-scale
+action; the preserved legacy visual optimizer remains the full scale-capable
+reference. `reward_scale` is a single
 post-objective PPO return scale; it does not alter any selected factor ratio,
-normalizer, unit, activation condition, or SciPy robust-loss convention. The data
-index is
-source-video-disjoint. Its episode manifests are read-only
+normalizer, unit, activation condition, or SciPy robust-loss convention. Build a
+source-video-disjoint index from main-produced source manifests with
+`python -m data.build_index RUN_A/source_observations.json RUN_B/source_observations.json --output EPISODE_INDEX.json`
+(or `ego-index ...`). The index's episode manifests are read-only
 `ego.annotation.observation_bundle.v1` bundles from main or the prepared-source
 adapter; they do not name legacy optimizer results. Each episode JSON plus
 complete candidate NPZ carries both full MANO hands and object SE(3), explicit
@@ -199,8 +203,10 @@ response models fail rather than choosing another model. The transport sends
 actual image bytes and records their hashes. Credential contents are never stored
 in output or configuration.
 
-Main-environment package installation: `pip install --no-deps .`; provision the
-listed core/visual dependencies in the isolated runtime first. Heavy observation
+Main-environment package installation: `pip install --no-deps .` is suitable only
+when the full provisioned dependencies already exist. For real RL/domain training
+install `.[rl,visual]`; installation must not replace the provisioned model or GPU
+runtime during a prediction job. Heavy observation
 providers will use their separately declared environments.
 
 Model workers now contain the actual HaWoR, UniDepth, OWLv2, SAM2, SAM3D and

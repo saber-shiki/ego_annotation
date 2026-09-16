@@ -5,6 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 from typing import Iterable
+import argparse
 import json
 
 from data.bundle import SCHEMA, validate_manifest
@@ -45,3 +46,23 @@ def build_index(roots: Iterable[str | Path], output: str | Path | None = None) -
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return index
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("roots", nargs="+", type=Path, help="source-observation manifest files or directories")
+    parser.add_argument("--output", type=Path, required=True, help="create-only episode index JSON")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.output.exists():
+        raise FileExistsError(f"episode index is create-only: {args.output}")
+    result = build_index(args.roots, args.output)
+    print(json.dumps({"output": str(args.output), "episode_count": len(result["episodes"])}, indent=2))
+    return result
+
+
+if __name__ == "__main__":
+    main()

@@ -21,13 +21,14 @@ compatibility wrappers at the old `factors`, `gates`, or `optimization` paths.
 | `python optimize.py fit-formal ...` | Preserved named formal MANO interval solve. |
 | `python optimize.py formal-tail ...` | Preserved P15/P18/acceptance/render reference tail. |
 | `python train.py ...` | Official skrl 2.1 PPO training over read-only source observation episodes; saves full agent/preprocessor checkpoint and provenance. |
+| `python -m data.build_index ... --output INDEX.json` | Builds a create-only source-video-disjoint episode index from verified source-observation manifests. |
 | `python rollout.py ...` | Deterministic no-update checkpoint rollout using the same builders. It evaluates every selected episode exactly once, exports each complete natural termination before reset, and binds candidate JSON, geometry NPZ, and integrity receipts in a top-level manifest. Compatible new data indexes are accepted; training identity stays in provenance. |
 | `python render.py policy ...` | Renders an explicit complete policy-candidate NPZ directly. It does not require or forge formal MANO acceptance. |
 | `python render.py dual ...` | Preserved dual display-geometry render for an already-frozen legacy package. |
 | `python evaluate.py ...` | Preserved HOT3D box, MANO, object, and aggregation schemas. Evaluation remains outside prediction/observation main. |
 
 Installed console scripts are `ego-observe`, `ego-annotate`, `ego-optimize`,
-`ego-render`, `ego-evaluate`, `ego-train`, and `ego-rollout`.
+`ego-render`, `ego-evaluate`, `ego-train`, `ego-rollout`, and `ego-index`.
 
 ## Source-observation manifest
 
@@ -83,7 +84,10 @@ schema, path containment, roles, and hashes.
   never imports RL episode accounting or reward normalization.
 - `rewards/profiles.py` selects one reviewed formal or visual composition;
   `reward_scale` is a single post-objective PPO-return scale and never changes
-  selected factor ratios, normalizers, units, activation, or robust loss.
+  selected factor ratios, normalizers, units, activation, or robust loss. The
+  RL visual profile is `visual_joint_fixed_scale`: it deliberately excludes a
+  hand-scale action, while `legacy_optimize` retains the full scale-capable
+  visual solver.
 - Soft magnitude hinges remain soft; no new hard clipping replaces them.
 - Candidate-dependent correspondence and active-set refresh remains live.
 - Generated faces do not gain signed/contact/collision authority through relocation.
