@@ -119,6 +119,31 @@ class DomainStaticEvidenceTest(unittest.TestCase):
                              env.state.episode.objects["object:0"]["collision_mesh_sha256"])
             self.assertIn("object:second", exported["document"]["object_pose_trajectories"])
 
+    def test_inactive_target_suppresses_frozen_source_contact_entry(self):
+        from types import SimpleNamespace
+        from actions.space import ActionLayout
+        layout = ActionLayout(object_slots=("object:0",), contact_variables_per_hand=1)
+        source_row = {
+            "target_entity_id": "object:0", "state": "active_contact_patch",
+            "vertex_ids": np.asarray([1, 2, 3], np.int64),
+            "targets_object": np.ones((3, 3)), "normals_object": np.ones((3, 3)),
+            "factor_row": {"hand_side": "left"},
+        }
+        episode = SimpleNamespace(
+            frame_idx=np.asarray([0]), layout=layout,
+            hands={"left": {"valid": np.asarray([True])}, "right": {"valid": np.asarray([False])}},
+            objects={"object:0": {"entity_id": "object:0", "valid": np.asarray([False]),
+                                   "metric_observation_eligible": np.asarray([False])}},
+            contacts={(0, "left", "object:0"): source_row},
+        )
+        state = SimpleNamespace(episode=episode, position=0, object_rotation={"object:0": np.eye(3)[None]},
+                                object_translation={"object:0": np.zeros((1, 3))}, hand_vertices={}, hand_joints={})
+        entry = refresh_candidate_terms(state, {}, 0)["contact_by_key"][("left", "object:0")]
+        self.assertEqual(entry["state"], "inactive_contact_hand_or_target_absent")
+        self.assertEqual(entry["vertex_ids"].shape, (0,))
+        self.assertEqual(entry["targets_world"].shape, (0, 3))
+        self.assertEqual(entry["normals_world"].shape, (0, 3))
+
     def test_full_k_contract_and_completion_collision_are_manifest_bound(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); base_path, _models = make_synthetic_bundle(root / "base")

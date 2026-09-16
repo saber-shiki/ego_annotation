@@ -191,7 +191,7 @@ def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str,Any] | Any,
     pair_entries={}
     for target,row in _contact_rows(episode,frame,"left")+_contact_rows(episode,frame,"right"):
         side=row["factor_row"].get("hand_side");key=(side,target);slot=_slot_for_entity(episode,target)
-        if slot is None or not bool(episode.objects[slot]["valid"][i]) or not bool(episode.hands[side]["valid"][i]): entry={"state":"inactive_contact_hand_or_target_absent","vertex_ids":np.zeros(0,np.int64),"targets_world":np.zeros((0,3)),"normals_world":np.zeros((0,3)),**dict(row)}
+        if slot is None or not bool(episode.objects[slot]["valid"][i]) or not bool(episode.hands[side]["valid"][i]): entry={**dict(row),"state":"inactive_contact_hand_or_target_absent","vertex_ids":np.zeros(0,np.int64),"targets_world":np.zeros((0,3)),"normals_world":np.zeros((0,3))}
         else:
             R=state.object_rotation[slot][i];t=state.object_translation[slot][i];targets=np.asarray(row["targets_object"],float);normals=np.asarray(row["normals_object"],float);entry={**dict(row),"state":"active_frozen_source_patch" if len(targets) else str(row.get("membership_state","inactive_no_source_patch_vertices")),"vertex_ids":np.asarray(row["vertex_ids"],np.int64),"targets_world":targets@R.T+t if len(targets) else targets,"normals_world":normals@R.T if len(normals) else normals,"object_slot":slot}
         result["contact_by_key"][key]=entry
