@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from utils.state import sha
 
-SCHEMA = "ego_source_observations_v1"
+SCHEMA = "ego.annotation.observation_bundle.v1"
 BUNDLE_VERSION = 1
 FORBIDDEN_ARTIFACT_ROLES = {
     "optimized_pose",
@@ -54,6 +54,9 @@ def build_source_observation_manifest(
     if len(time_s) != len(frame_ids):
         raise ValueError("source observation timestamps must match frame_ids")
     required = {
+        "runtime_input_contract",
+        "code_manifest",
+        "model_asset_manifest",
         "raw_video",
         "raw_frames",
         "camera_calibration",
@@ -73,12 +76,42 @@ def build_source_observation_manifest(
         name: artifact_record(run_root, path, role)
         for name, (path, role) in sorted(artifacts.items())
     }
+    runtime_record = records["runtime_input_contract"]
+    runtime_path = Path(run_root).resolve() / runtime_record["path"]
+    runtime_contract = json.loads(runtime_path.read_text(encoding="utf-8"))
+    bundle_id = str(runtime_contract.get("run_id") or records["runtime_input_contract"]["sha256"])
+    sources = {
+        "annotations": records["visible_annotations"],
+        "mano_archive": records["hawor_world"],
+        "object_mesh": records["reconstructed_mesh"],
+        "mano_bridge": records["mano_bridge"],
+        "contact_factors": records["interaction_factors"],
+        "completion_report": records["completion_report"],
+        "conditioned_depth": records["conditioned_depth"],
+        "camera_calibration": records["camera_calibration"],
+        "raw_object_masks": records["raw_object_masks"],
+        "owned_object_masks": records["owned_object_masks"],
+        "metric_eligibility": records["metric_eligibility"],
+        "interaction_judgments": records["interaction_judgments"],
+    }
     return {
         "schema": SCHEMA,
         "bundle_version": BUNDLE_VERSION,
+        "bundle_id": bundle_id,
+        "clip_id": str(case),
+        "source_video_id": records["raw_video"]["sha256"],
+        "identity": {
+            "source_video": records["raw_video"],
+            "code": records["code_manifest"],
+            "config": records["model_asset_manifest"],
+        },
+        "sources": sources,
+        "frame_range": [int(frame_ids[0]), int(frame_ids[-1])],
+        "entity_slots": {"hands": ["left", "right"], "objects": [str(object_id)]},
         "prediction_side_only": True,
         "contains_optimized_state": False,
         "contains_policy_results": False,
+        "legacy_optimizer_required": False,
         "initial_state_authority": "raw_perception_and_direct_observation_registration",
         "case": str(case),
         "object_id": str(object_id),
@@ -87,6 +120,11 @@ def build_source_observation_manifest(
         "time_s": [float(value) for value in time_s],
         "source_timing": dict(source_timing),
         "artifacts": records,
+        "provenance": {
+            "prediction_only": True,
+            "legacy_optimizer_required": False,
+            "object_pose_role": "reconstructed_geometry_pose_source_initializer_not_solved_trajectory",
+        },
         "initial_state": {
             "hands": ["hawor_world", "mano_bridge"],
             "object_geometry": ["visible_annotations", "completion_report", "reconstructed_mesh"],

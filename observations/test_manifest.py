@@ -19,6 +19,9 @@ from observations.manifest import (
 class SourceObservationManifestTests(unittest.TestCase):
     def _artifacts(self, root: Path):
         names = {
+            "runtime_input_contract": "runtime_input_contract",
+            "code_manifest": "code_manifest",
+            "model_asset_manifest": "model_asset_manifest",
             "raw_video": "raw_video",
             "raw_frames": "raw_frame_manifest",
             "camera_calibration": "camera_calibration",
@@ -38,7 +41,10 @@ class SourceObservationManifestTests(unittest.TestCase):
         for name, role in names.items():
             path = root / "source" / f"{name}.bin"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(name.encode())
+            if name == "runtime_input_contract":
+                path.write_text(json.dumps({"run_id": "fixture-run"}))
+            else:
+                path.write_bytes(name.encode())
             records[name] = (path, role)
         return records
 

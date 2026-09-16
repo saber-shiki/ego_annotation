@@ -1,7 +1,7 @@
 # RL-first ego annotation
 
 `python main.py` is the observation-only entry. It produces a hash-bound
-`ego_source_observations_v1` manifest and stops before numerical refinement,
+`ego.annotation.observation_bundle.v1` manifest and stops before numerical refinement,
 MANO fitting, policy inference, or rendering. The manifest binds raw camera/depth,
 HaWoR/MANO parameters, P09 observed geometry with its uncertain
 `reconstructed_geometry_pose` initializer, reconstructed mesh, masks/ownership,

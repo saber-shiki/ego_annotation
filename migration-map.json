@@ -2773,6 +2773,6 @@
       "render.py policy": "acceptance-independent complete policy candidate render",
       "evaluate.py": "preserved HOT3D evaluation"
     },
-    "source_observation_schema": "ego_source_observations_v1"
+    "source_observation_schema": "ego.annotation.observation_bundle.v1"
   }
 }

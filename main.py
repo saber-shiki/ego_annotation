@@ -632,7 +632,7 @@ def annotate(args):
             'interaction_factors':(factor_path,'qualified_contact_visibility_factors'),
         }
         @stage('source_observations',inputs={'artifacts':artifacts,'object_id':object_id,'track_id':track},
-            parameters={'output':bundle_path,'schema':'ego_source_observations_v1'})
+            parameters={'output':bundle_path,'schema':'ego.annotation.observation_bundle.v1'})
         def _stage_source_observations():
             result=write_source_observation_manifest(output=bundle_path,run_root=root,case=args.case,
                 object_id=object_id,track_id=track,frame_ids=ids,

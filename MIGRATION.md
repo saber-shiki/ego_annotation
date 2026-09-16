@@ -9,7 +9,7 @@ compatibility wrappers at the old `factors`, `gates`, or `optimization` paths.
 
 | Entry | Ownership and output |
 |---|---|
-| `python main.py observe ...` | Runs raw-video observation providers and writes hash-bound `source_observations.json` (`ego_source_observations_v1`). Stops before P14/P15/P18 pose solving, visual MANO fitting, policy inference, and rendering. |
+| `python main.py observe ...` | Runs raw-video observation providers and writes hash-bound `source_observations.json` (`ego.annotation.observation_bundle.v1`). Stops before P14/P15/P18 pose solving, visual MANO fitting, policy inference, and rendering. |
 | `python main.py annotate ...` | Compatibility command name for the same observation-only behavior. It does not publish an annotation. |
 | `python main.py resume ...` | Resumes only a same-code/same-input observation producer prefix. |
 | `python main.py prepare ...` | Builds retained observation-side image/surface/visibility inputs. |
