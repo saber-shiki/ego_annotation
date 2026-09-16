@@ -173,14 +173,30 @@ def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_man
     return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'recovery': recovery_provenance(root), 'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
 
 def main(argv=None):
+    """Render explicit candidate geometry; policy state never depends on legacy acceptance."""
     import argparse
+    import sys
+    values=list(sys.argv[1:] if argv is None else argv)
+    if values and values[0]=='policy':
+        parser=argparse.ArgumentParser(description='render complete policy candidate state')
+        parser.add_argument('command')
+        parser.add_argument('--state',type=Path,required=True)
+        parser.add_argument('--raw-manifest',type=Path,required=True)
+        parser.add_argument('--output',type=Path,required=True)
+        args=parser.parse_args(values)
+        return render_video(args.state,args.raw_manifest,args.output)
+    if values and values[0]=='dual':
+        parser=argparse.ArgumentParser(description='render dual display geometry from frozen state')
+        parser.add_argument('command')
+        parser.add_argument('--spec',type=Path,required=True)
+        args=parser.parse_args(values)
+        spec=load(args.spec)
+        return render_dual_backend(Path(spec['package']),Path(spec['source_video']),spec['geometries'],Path(spec['output']))
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('state', 'binding', 'fit-report', 'run-root', 'bundle-manifest', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(values)
     return export_scene(args.state, args.binding, args.fit_report, args.run_root, args.bundle_manifest, args.output)
-if __name__ == '__main__':
-    main()
 
 def mesh_overlay(state, position, image):
     """Render actual object/MANO triangles through the declared calibrated camera."""
@@ -202,7 +218,9 @@ def mesh_overlay(state, position, image):
     if state['object_valid'][position]:
         add(state['object_vertices_canonical'] @ state['object_rotation'][position].T + state['object_translation_world'][position], state['object_faces'], [183, 188, 80])
     for side in ('left', 'right'):
-        if state[side + '_display_valid'][position]:
+        display_key = side + '_display_valid'
+        side_valid = state[display_key] if display_key in state else state[side + '_valid']
+        if side_valid[position]:
             add(state[side + '_vertices_world'][position], state[side + '_faces'], [158, 183, 235])
     if not colors:
         return image
@@ -1246,3 +1264,6 @@ def render_dual_backend(package_path, source_video, geometries, output):
     manifest = {'schema': 'dual_backend_shared_state_display_v1', 'package_sha256': sha256(package_path), 'shared_state_sha256': shared_digest.hexdigest(), 'shared_physics_recomputed': False, 'generated_geometry_authority': 'display_only', 'branches': results, 'physical_acceptance': package['metric_prediction'].get('full_mano_acceptance', {'accepted': False})}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, allow_nan=False))
     return manifest
+
+if __name__ == '__main__':
+    main()

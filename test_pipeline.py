@@ -18,7 +18,7 @@ class GroupedContractTests(unittest.TestCase):
 
     def test_all_grouped_modules_import_without_scripts(self):
         root=Path(__file__).parent
-        for directory in ('utils','observations','gates','factors','optimization'):
+        for directory in ('utils','observations','actions','envs','rewards','legacy_optimize'):
             for path in (root/directory).rglob('*.py'):
                 if not path.name.startswith('test_'):
                     importlib.import_module('.'.join(path.relative_to(root).with_suffix('').parts))
@@ -28,7 +28,7 @@ class GroupedContractTests(unittest.TestCase):
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node,ast.ImportFrom):
                     self.assertNotIn((node.module or '').split('.')[0],
-                                     {'observations','gates','factors','optimization','main','render'})
+                                     {'observations','actions','envs','rewards','legacy_optimize','main','render'})
 
     def test_named_problem_fixes_anchor_and_rejects_unknown(self):
         node=PoseNode(0,np.eye(3),np.array([0.,0.,1.]),None,'test',False,1.)
@@ -39,7 +39,7 @@ class GroupedContractTests(unittest.TestCase):
 
     def test_prepared_entry_writes_candidate_and_preserves_source(self):
         import json
-        import main
+        import optimize
         from utils.state import sha
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory).resolve()
@@ -83,7 +83,7 @@ class GroupedContractTests(unittest.TestCase):
                      (depth,'depth','depth'),(edge,'rgb_edges','rgb'),(report,'rgb_edge_report','rgb')]]
             registry={**contract,'records':records}
             (root/'state/producer_receipts.json').write_text(json.dumps(registry))
-            main.main(['refine-pose','--annotations',str(annotations),'--source-pose',str(source),
+            optimize.main(['refine-pose','--annotations',str(annotations),'--source-pose',str(source),
                 '--rgb-edges',str(edge),'--rgb-report',str(report),'--object-id','tool',
                 '--anchor','0','--output',str(output),'--run-root',str(root)])
             candidate=json.loads(output.read_text())
@@ -92,9 +92,10 @@ class GroupedContractTests(unittest.TestCase):
             self.assertFalse(candidate['physical_contact_authority'])
             self.assertEqual(sha(source),before)
             with self.assertRaises(ValueError):
-                main.refine(annotations,source,edge,report,'tool',0,output,root)
-            nodes,_=main.build_nodes(json.loads(annotations.read_text()),json.loads(source.read_text()),'tool')
-            edges,pixels=main.load_edges(edge,report,source,annotations,nodes,root)
+                optimize.refine(annotations,source,edge,report,'tool',0,output,root)
+            from observations.common import build_nodes
+            nodes,_=build_nodes(json.loads(annotations.read_text()),json.loads(source.read_text()),'tool')
+            edges,pixels=optimize.load_edges(edge,report,source,annotations,nodes,root)
             self.assertEqual(len(edges),1);self.assertEqual(len(pixels),1)
             from rewards.terms.object.image import rgb_reprojection_residual
             from utils.data import SolverConfig
@@ -112,25 +113,25 @@ class GroupedContractTests(unittest.TestCase):
                     replacements={annotations:annotations,source:source,edge:edge,report:report}
                     replacements[original]=foreign
                     with self.assertRaisesRegex(ValueError,'escapes run root'):
-                        main.refine(replacements[annotations],replacements[source],replacements[edge],
+                        optimize.refine(replacements[annotations],replacements[source],replacements[edge],
                             replacements[report],'tool',0,root/'new.json',root)
             registry['records'][-1]['producer_id']='different-rgb-producer'
             (root/'state/producer_receipts.json').write_text(json.dumps(registry))
             with self.assertRaisesRegex(ValueError,'producer pairing'):
-                main.load_edges(edge,report,source,annotations,nodes,root)
+                optimize.load_edges(edge,report,source,annotations,nodes,root)
             registry['records'][-1]['producer_id']='rgb'
             mismatched=json.loads(report.read_text());mismatched['object_id']='other'
             report.write_text(json.dumps(mismatched));registry['records'][-1]['sha256']=sha(report)
             (root/'state/producer_receipts.json').write_text(json.dumps(registry))
             with self.assertRaisesRegex(ValueError,'metadata pairing'):
-                main.load_edges(edge,report,source,annotations,nodes,root)
+                optimize.load_edges(edge,report,source,annotations,nodes,root)
 
 
     def test_entry_help_and_no_legacy_imports(self):
         import main
         with self.assertRaises(SystemExit) as result:main.main(['--help'])
         self.assertEqual(result.exception.code,0)
-        for directory in ('utils','observations','gates','factors','optimization'):
+        for directory in ('utils','observations','actions','envs','rewards','legacy_optimize'):
             for path in (Path(__file__).parent/directory).rglob('*.py'):
                 if path.name.startswith('test_'):continue
                 for node in ast.walk(ast.parse(path.read_text())):
@@ -271,7 +272,7 @@ class ExportTests(unittest.TestCase):
             self.assertFalse((Path(td)/'final').exists())
 
     def test_production_fit_wrapper_derives_visibility_before_export(self):
-        import main as fitter
+        import optimize as fitter
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as td:
             root=Path(td).resolve();z,b=fixture();out=root/'fit';out.mkdir()

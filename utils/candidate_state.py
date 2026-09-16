@@ -14,12 +14,16 @@ def corrected_pose(obs: PoseObservation, rot_delta: np.ndarray, trans_delta: np.
     return (r_corr, t_corr)
 
 def canonical_gauge(native_cv, scale, T, pose):
-    from utils.geometry import validate_transforms
-    from observations.object.shape import digest_json
+    import hashlib
+    import json
+    from utils.data import RKEY, TKEY
+    from utils.geometry import validate_transforms, valid_rotation
     import numpy as np
-    from observations.object.shape import _pose
     T = validate_transforms([T])[0]
-    (R, t) = _pose(pose)
+    R = np.asarray(pose[RKEY], dtype=float)
+    t = np.asarray(pose[TKEY], dtype=float)
+    if not valid_rotation(R) or t.shape != (3,) or not np.isfinite(t).all():
+        raise ValueError('malformed initializer pose')
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError('invalid scene similarity scale')
     world = native_cv * scale @ T[:3, :3].T + T[:3, 3]
@@ -31,4 +35,4 @@ def canonical_gauge(native_cv, scale, T, pose):
     transform = np.eye(4)
     transform[:3, :3] = scale * R.T @ T[:3, :3]
     transform[:3, 3] = R.T @ (T[:3, 3] - t)
-    return (canonical, {'T_original_canonical_from_native_opencv': transform.tolist(), 'T_world_camera_metric': T.tolist(), 'initializer_pose': pose, 'initializer_pose_sha256': digest_json(pose), 'roundtrip_max_abs_native_scene_error': error, 'formula': 'Vcanonical=((s*Vnative)@Rcamera.T+tcamera-tinitializer)@Rinitializer'})
+    return (canonical, {'T_original_canonical_from_native_opencv': transform.tolist(), 'T_world_camera_metric': T.tolist(), 'initializer_pose': pose, 'initializer_pose_sha256': hashlib.sha256(json.dumps(pose, sort_keys=True, allow_nan=False).encode()).hexdigest(), 'roundtrip_max_abs_native_scene_error': error, 'formula': 'Vcanonical=((s*Vnative)@Rcamera.T+tcamera-tinitializer)@Rinitializer'})

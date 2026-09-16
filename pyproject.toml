@@ -17,10 +17,14 @@ visual = ["torch>=2", "smplx==0.1.28", "open3d==0.19.0", "rerun-sdk==0.37.2", "c
 test = ["pytest>=8"]
 
 [project.scripts]
+ego-observe = "main:cli"
 ego-annotate = "main:cli"
+ego-optimize = "optimize:cli"
+ego-render = "render:main"
+ego-evaluate = "evaluate:main"
 
 [tool.setuptools]
-py-modules = ["main", "render", "evaluate"]
+py-modules = ["main", "optimize", "render", "evaluate"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -28,4 +32,4 @@ include = ["utils*", "observations*", "actions*", "envs*", "rewards*", "legacy_o
 namespaces = true
 
 [tool.pytest.ini_options]
-testpaths = ["test_pipeline.py", "observations", "actions", "envs", "rewards", "legacy_optimize"]
+testpaths = ["test_pipeline.py", "tests", "observations", "actions", "envs", "rewards", "legacy_optimize"]
