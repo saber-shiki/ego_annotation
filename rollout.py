@@ -104,7 +104,7 @@ def _discover_export_files(result: object, requested: Path) -> list[Path]:
                 if str(child_key) == "document":
                     continue
                 visit(child, str(child_key))
-        elif isinstance(value, (str, Path)) and key.lower() in {"path", "json", "npz", "artifact"}:
+        elif isinstance(value, (str, Path)) and key.lower() in {"path", "json", "npz", "artifact", "integrity"}:
             path = Path(value).expanduser().resolve()
             if path.is_file() and path.suffix.lower() in {".json", ".npz"}:
                 paths.add(path)
