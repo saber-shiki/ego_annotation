@@ -250,7 +250,7 @@ def main(argv=None):
         if args.output.exists():raise ValueError('judgment output must be create-only')
         module=importlib.import_module('observations.judgments.judge_'+args.name)
         evidence=load(args.evidence)
-        audited=args.name in {'pose_trajectory','rigidity'} or (args.name=='mask_track' and 'mask_review_batch' in evidence)
+        audited=args.name in {'pose_trajectory','rigidity','backend_geometry','final_inspection'} or (args.name=='mask_track' and 'mask_review_batch' in evidence)
         value=module.judge(evidence,args.image,audit_dir=args.output.with_suffix('.request')) if audited else module.judge(evidence,args.image)
         args.output.parent.mkdir(parents=True,exist_ok=True)
         with args.output.open('x') as handle:json.dump(value,handle,indent=2,allow_nan=False)
@@ -479,9 +479,9 @@ def annotate(args):
             verify_code()
             module=importlib.import_module('observations.judgments.judge_'+name)
             request_evidence={'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence}
-            if name=='rigidity':
+            if name in {'rigidity','backend_geometry','final_inspection'}:
                 request_evidence=module.review_evidence(request_evidence,images)
-            audited=name in {'pose_trajectory','rigidity'} or (name=='mask_track' and 'mask_review_batch' in evidence)
+            audited=name in {'pose_trajectory','rigidity','backend_geometry','final_inspection'} or (name=='mask_track' and 'mask_review_batch' in evidence)
             planned=planned_stage_contract('observations.judgments.judge_'+name,'astra',
                 parameters={'output':path,'role':'judgment'},
                 inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images,
@@ -924,12 +924,19 @@ def annotate(args):
             reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4',binding_path=binding,run_root=root)
             return reviews
         reviews = _stage_render_video
+        if [r['frame_idx'] for r in reviews] != ids:
+            raise ValueError('rendered review/full timeline coverage mismatch')
         review_images=[Path(r['path']) for r in reviews]
-        backend_judgment=ask('backend_geometry',{'backends':['sam3d'],'binding':load(binding)},
-            [review_images[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))],root/'state/backend_judgment.json')
+        from observations.judgments.judge_backend_geometry import compact_backend_evidence
+        selected_reviews=[reviews[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))]
+        backend_evidence=compact_backend_evidence(binding, object_id=object_id, backends=['sam3d'],
+            frame_ids=ids, review_frame_ids=[r['frame_idx'] for r in selected_reviews], rendered_frames=selected_reviews)
+        backend_judgment=ask('backend_geometry',backend_evidence,
+            [Path(r['path']) for r in selected_reviews],root/'state/backend_judgment.json')
         inspections=[]
         for offset in range(0,len(ids),12):
-            inspections.append(ask('final_inspection',{'frame_ids':ids[offset:offset+12]},review_images[offset:offset+12],
+            inspections.append(ask('final_inspection',{'frame_ids':ids[offset:offset+12],
+                'rendered_frames':reviews[offset:offset+12]},review_images[offset:offset+12],
                 root/'state/final_inspection'/f'{offset:06d}.json'))
         output=root/'final'
         review=scene_review_summary(mask_judgment,trajectory_judgment,inspections)
