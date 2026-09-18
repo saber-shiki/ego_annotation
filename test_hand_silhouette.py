@@ -75,15 +75,27 @@ class EmptyLeftOfficialSAM2(FakeOfficialSAM2):
         return values
 
 
-def raw_manifest(root,ids,size=(64,64),frame_paths=None):
-    video=root/'source.mp4'
+class RasterOfficialSAM2(FakeOfficialSAM2):
+    def __init__(self):super().__init__();self.prediction_count=0
+    def predict(self,*,point_coords,point_labels,box,multimask_output,return_logits):
+        self.calls.append(('predict',np.asarray(box).copy(),multimask_output,return_logits))
+        height,width=self.image.shape[:2];logits=np.full((1,height,width),-1.,np.float32)
+        if self.prediction_count==0:logits[:,:,width//2:]=1.
+        else:logits[:,:,:width//2]=1.
+        self.prediction_count+=1
+        return logits,np.asarray([.9]),np.zeros((1,4,4),np.float32)
+
+
+def raw_manifest(root,ids,size=(64,64),frame_paths=None,source_size=None):
+    video=root/'source.mp4';source_size=tuple(source_size or size)
     if not video.exists():video.write_bytes(b'synthetic authoritative source video')
     rows=[]
     for n,i in enumerate(ids):
         path=(Path(frame_paths[n]) if frame_paths is not None else root/f'rgb_{i}.png')
         if frame_paths is None:cv2.imwrite(str(path),np.full((size[1],size[0],3),40+n,np.uint8))
         rows.append({'frame_idx':int(i),'raw_frame_path':str(path.resolve()),'raw_frame_sha256':sha(path),
-            'source_width':size[0],'source_height':size[1],'manifest_width':size[0],'manifest_height':size[1]})
+            'source_width':source_size[0],'source_height':source_size[1],
+            'manifest_width':size[0],'manifest_height':size[1]})
     path=root/'raw_manifest.json';path.write_text(json.dumps({'input_video':str(video.resolve()),
         'input_video_sha256':sha(video),'frames':rows}))
     return path
@@ -142,6 +154,52 @@ class HandMaskProducerTests(unittest.TestCase):
             self.assertFalse(doc['model_execution']['temporal_memory'])
             self.assertFalse(doc['model_execution']['propagation'])
             self.assertTrue(all(r['path']==r['source_frame_path'] for r in doc['predictor_inputs']))
+
+    def test_source_plane_boxes_transform_to_smaller_manifest_predictor_plane(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);manifest=raw_manifest(root,[7],size=(4,3),source_size=(8,6));hawor=detector_npz(root,[7],size=(8,6))
+            with np.load(hawor,allow_pickle=False) as z:data=dict(z)
+            data['left_det_box_xyxyscore']=np.asarray([[4.,1.,7.,5.,.9]])
+            data['right_det_box_xyxyscore']=np.asarray([[1.,1.,4.,5.,.8]])
+            np.savez(hawor,**data)
+            checkpoint=root/'sam2.pt';checkpoint.write_bytes(b'x')
+            source=root/'source';source.mkdir();(source/'cfg.yaml').write_text('x')
+            predictor=RasterOfficialSAM2()
+            receipt=produce_sam2_hand_masks(raw_frame_manifest=manifest,hawor_npz=hawor,output_dir=root/'out',
+                checkpoint=checkpoint,model_cfg='cfg.yaml',sam2_source=source,device='cpu',
+                predictor_factory=lambda *a,**k:predictor)
+            doc=validate_hand_mask_receipt(receipt,frame_ids=[7],source_size_wh=(8,6),source_frame_manifest=manifest)
+            A=half_pixel_affine((8,6),(4,3))
+            np.testing.assert_allclose(doc['coordinate_transform']['A_mask_from_source'],A)
+            self.assertEqual(doc['source_size_wh'],[8,6]);self.assertEqual(doc['manifest_size_wh'],[4,3])
+            self.assertEqual(predictor.calls[0][1],(3,4,3))
+            np.testing.assert_allclose(predictor.calls[1][1],transform_points(np.asarray([[4.,1.],[7.,5.]]),A).reshape(-1))
+            np.testing.assert_allclose(predictor.calls[2][1],transform_points(np.asarray([[1.,1.],[4.,5.]]),A).reshape(-1))
+            self.assertTrue(all(r['predictor_size_wh']==[4,3] and r['manifest_size_wh']==[4,3]
+                for r in doc['predictor_inputs']))
+            self.assertTrue(all(r['mask_size_wh']==[4,3] and cv2.imread(r['mask_path'],0).shape==(3,4)
+                for r in doc['frames']))
+
+    def test_manifest_plane_missing_varying_or_decode_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);manifest=raw_manifest(root,[0],size=(4,3),source_size=(8,6));hawor=detector_npz(root,[0],size=(8,6))
+            doc=json.loads(manifest.read_text());doc['frames'][0].pop('manifest_width');manifest.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError,'manifest_width/manifest_height'):
+                make_sam2_hand_prompt_payload(raw_frame_manifest=manifest,hawor_npz=hawor)
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);manifest=raw_manifest(root,[0,1],size=(4,3),source_size=(8,6));hawor=detector_npz(root,[0,1],size=(8,6))
+            doc=json.loads(manifest.read_text());doc['frames'][1]['manifest_width']=5;manifest.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError,'dimensions must be constant'):
+                make_sam2_hand_prompt_payload(raw_frame_manifest=manifest,hawor_npz=hawor)
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);manifest=raw_manifest(root,[0],size=(4,3),source_size=(8,6));hawor=detector_npz(root,[0],size=(8,6))
+            doc=json.loads(manifest.read_text());doc['frames'][0]['manifest_width']=5;manifest.write_text(json.dumps(doc))
+            checkpoint=root/'sam2.pt';checkpoint.write_bytes(b'x')
+            source=root/'source';source.mkdir();(source/'cfg.yaml').write_text('x')
+            with self.assertRaisesRegex(ValueError,'differs from declared manifest raster'):
+                produce_sam2_hand_masks(raw_frame_manifest=manifest,hawor_npz=hawor,output_dir=root/'out',
+                    checkpoint=checkpoint,model_cfg='cfg.yaml',sam2_source=source,device='cpu',
+                    predictor_factory=lambda *a,**k:RasterOfficialSAM2())
 
     def test_official_image_api_seam_has_no_video_predictor_or_propagation(self):
         import inspect

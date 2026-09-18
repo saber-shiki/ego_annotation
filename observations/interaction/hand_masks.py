@@ -55,6 +55,19 @@ def _rows(doc: dict) -> dict[int,dict]:
     return result
 
 
+def _manifest_size(rows: dict[int,dict]) -> tuple[int,int]:
+    """Return the constant decoded-frame plane declared by the raw manifest."""
+    sizes=[]
+    for row in rows.values():
+        width=row.get('manifest_width');height=row.get('manifest_height')
+        if (not isinstance(width,int) or isinstance(width,bool) or width<=0 or
+                not isinstance(height,int) or isinstance(height,bool) or height<=0):
+            raise ValueError('source RGB manifest requires positive integer manifest_width/manifest_height per frame')
+        sizes.append((width,height))
+    if len(set(sizes))!=1:raise ValueError('source RGB manifest frame dimensions must be constant')
+    return sizes[0]
+
+
 def _raw_path(row: dict) -> Path:
     value=row.get('raw_frame_path') or row.get('rgb')
     if not value:raise ValueError('source RGB row lacks image path')
@@ -131,7 +144,7 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
     source_path=Path(source_frame_manifest).resolve()
     if doc.get('source_rgb_manifest_path')!=str(source_path) or _sha(source_path)!=_digest(doc.get('source_rgb_manifest_sha256'),'source RGB manifest hash'):
         raise ValueError('hand mask source RGB manifest identity mismatch')
-    source_doc=json.loads(source_path.read_text());source_rows=_rows(source_doc)
+    source_doc=json.loads(source_path.read_text());source_rows=_rows(source_doc);manifest_wh=_manifest_size(source_rows)
     source_video_hash=_digest(source_doc.get('input_video_sha256'),'source video hash')
     if _digest(doc.get('source_video_sha256'),'source video hash')!=source_video_hash:
         raise ValueError('hand mask source video hash mismatch')
@@ -150,8 +163,11 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
     if not isinstance(plane,dict) or plane.get('box_output_plane')!='source_rgb' or plane.get('camera_intrinsics_contract_mode') is None:
         raise ValueError('hand mask receipt lacks HaWoR detector plane contract')
     declared=tuple(map(int,doc.get('source_size_wh') or []))
+    receipt_manifest_wh=tuple(map(int,doc.get('manifest_size_wh') or []))
     if len(declared)!=2 or min(declared)<=0 or (source_size_wh is not None and declared!=tuple(map(int,source_size_wh))):
         raise ValueError('hand mask source RGB plane mismatch')
+    if receipt_manifest_wh!=manifest_wh:
+        raise ValueError('hand mask manifest RGB plane mismatch')
     with np.load(doc['hawor_detector_npz']['path'],allow_pickle=False) as hz:
         arrays=dict(hz)
     hawor_contract=_validated_hawor_source_contract(source_doc,arrays,declared)
@@ -194,6 +210,12 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
                 row.get('source_frame_path')!=str(raw_path) or row.get('source_frame_sha256')!=raw_hash):
             raise ValueError('SAM2 predictor input has stale source-frame provenance')
         _record(raw_path,raw_hash,'SAM2 predictor input frame')
+        if (tuple(map(int,row.get('predictor_size_wh') or []))!=manifest_wh or
+                tuple(map(int,row.get('manifest_size_wh') or []))!=manifest_wh):
+            raise ValueError('SAM2 predictor input manifest-plane dimensions mismatch')
+        image=cv2.imread(str(raw_path),cv2.IMREAD_COLOR)
+        if image is None or (image.shape[1],image.shape[0])!=manifest_wh:
+            raise ValueError('SAM2 predictor input decode differs from declared manifest raster')
         if row.get('derivation')!='authoritative_raw_frame_opencv_bgr_to_rgb_direct':
             raise ValueError('SAM2 predictor input is not a direct raw-frame decode')
     expected_ids=None if frame_ids is None else [int(x) for x in frame_ids]
@@ -225,8 +247,8 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
         if row.get('sam2_object_id') not in (1,2) or row['sam2_object_id']!=(1 if side=='left' else 2):
             raise ValueError('hand mask side/object identity mismatch')
         row_size=tuple(map(int,row.get('mask_size_wh') or []))
-        if row_size!=declared or not np.allclose(affine,half_pixel_affine(declared,row_size),atol=1e-9):
-            raise ValueError('hand mask direct-frame raster/half-pixel affine mismatch')
+        if row_size!=manifest_wh or not np.allclose(affine,half_pixel_affine(declared,manifest_wh),atol=1e-9):
+            raise ValueError('hand mask source-to-manifest half-pixel affine mismatch')
         for name in ('raw_support_area_px','partitioned_area_px','raw_overlap_px','overlap_tie_px','overlap_assigned_to_side_px','source_box_raw_support_px'):
             if not isinstance(row.get(name),int) or row[name]<0:raise ValueError(f'invalid hand mask {name}')
         fraction=row.get('raw_overlap_fraction_of_smaller')
@@ -237,7 +259,7 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
         if not prompt.get('target_visible') and raw_ref!=(None,None):
             raise ValueError('SAM2 prediction exists without a same-frame detector box')
         if raw_ref==(None,None):
-            raw_image=np.zeros((declared[1],declared[0]),bool)
+            raw_image=np.zeros((manifest_wh[1],manifest_wh[0]),bool)
             if (row['raw_support_area_px']!=0 or row['source_box_raw_support_px']!=0 or
                     row.get('predicted_iou') is not None or row.get('source_box_raw_support_fraction') is not None):
                 raise ValueError('missing SAM2 prediction fabricates raw diagnostics')
@@ -267,7 +289,7 @@ def validate_hand_mask_receipt(manifest: str|Path, *, frame_ids: Iterable[int]|N
         else:
             if row.get('mask_path') is not None or row.get('mask_sha256') is not None:
                 raise ValueError('inactive hand rows must not fabricate a mask')
-            row_masks[key]=np.zeros((declared[1],declared[0]),bool)
+            row_masks[key]=np.zeros((manifest_wh[1],manifest_wh[0]),bool)
     if expected_ids is not None:
         required={(i,s) for i in expected_ids for s in allowed_sides}
         if seen!=required:raise ValueError('hand mask receipt must exactly cover frame/side timeline')
@@ -309,6 +331,7 @@ def hand_mask_rows(manifest: str|Path, *, frame_ids: Iterable[int], source_size_
 
 def make_sam2_hand_prompt_payload(*,raw_frame_manifest: str|Path,hawor_npz: str|Path) -> dict:
     raw_path=Path(raw_frame_manifest).resolve();raw=json.loads(raw_path.read_text());frames=_rows(raw)
+    _manifest_size(frames)
     first=next(iter(frames.values()))
     width=int(first.get('source_width',0));height=int(first.get('source_height',0))
     if width<=0 or height<=0:raise ValueError('raw frame manifest lacks source dimensions')
@@ -364,18 +387,20 @@ def produce_sam2_hand_masks(*,raw_frame_manifest: str|Path,hawor_npz: str|Path,o
         if not p.is_file():raise FileNotFoundError(f'{label} missing: {p}')
     prompt=make_sam2_hand_prompt_payload(raw_frame_manifest=raw_path,hawor_npz=hawor_path)
     raw=json.loads(raw_path.read_text());source_rows=_rows(raw);ids=sorted(source_rows)
-    source_wh=tuple(prompt['source_size_wh']);images=[]
+    source_wh=tuple(prompt['source_size_wh']);manifest_wh=_manifest_size(source_rows);images=[]
     for i in ids:
         p=_raw_path(source_rows[i]);_record(p,source_rows[i].get('raw_frame_sha256') or _sha(p),'raw RGB frame')
         image=cv2.imread(str(p),cv2.IMREAD_COLOR)
         if image is None:raise ValueError(f'unreadable RGB frame {p}')
-        if (image.shape[1],image.shape[0])!=source_wh:raise ValueError('SAM2 direct RGB frame differs from declared source raster')
+        if (image.shape[1],image.shape[0])!=manifest_wh:
+            raise ValueError('SAM2 direct RGB frame differs from declared manifest raster')
         images.append((p,image))
-    mask_wh=source_wh;A=half_pixel_affine(source_wh,mask_wh)
+    mask_wh=manifest_wh;A=half_pixel_affine(source_wh,mask_wh)
     out.mkdir(parents=True);mask_dir=out/'masks';mask_dir.mkdir();raw_mask_dir=out/'raw_positive_masks';raw_mask_dir.mkdir()
     prompt_path=out/'prompt_payload.json';prompt_path.write_text(json.dumps(prompt,indent=2,allow_nan=False)+'\n')
     predictor_inputs=[{'frame_idx':int(frame),'path':str(p),'sha256':_sha(p),
         'source_frame_path':str(p),'source_frame_sha256':_sha(p),
+        'manifest_size_wh':list(manifest_wh),'predictor_size_wh':list(manifest_wh),
         'derivation':'authoritative_raw_frame_opencv_bgr_to_rgb_direct'} for frame,(p,_) in zip(ids,images)]
     if predictor_factory is None:
         sys.path.insert(0,str(source))
@@ -465,7 +490,7 @@ def produce_sam2_hand_masks(*,raw_frame_manifest: str|Path,hawor_npz: str|Path,o
             rows.append(row)
     receipt={'schema':'rgb_sam2_hand_masks_v1','producer':'sam2_rgb_hand_track',
         'source_video_sha256':prompt['source_video_sha256'],'source_rgb_manifest_path':str(raw_path),
-        'source_rgb_manifest_sha256':_sha(raw_path),'source_size_wh':list(source_wh),
+        'source_rgb_manifest_sha256':_sha(raw_path),'source_size_wh':list(source_wh),'manifest_size_wh':list(manifest_wh),
         'coordinate_transform':{'A_mask_from_source':A.tolist(),'pixel_center_convention':'integer_pixel_centers_opencv',
             'mapping_kind':'explicit_half_pixel_affine'},'checkpoint':{'path':str(checkpoint),'sha256':_sha(checkpoint)},
         'model_config':{'path':str(cfg),'sha256':_sha(cfg)},'hawor_detector_npz':{'path':str(hawor_path),'sha256':_sha(hawor_path)},
