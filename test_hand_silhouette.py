@@ -19,6 +19,7 @@ from observations.interaction.hand_masks import (half_pixel_affine,make_sam2_han
     produce_sam2_hand_masks,transform_points,validate_hand_mask_receipt)
 from observations.hand.hawor import FULL_K_RECTIFIED_MODE,aggregate_file_sha256
 from optimization.problems import PreparedVisualFit
+from optimization.solve import solve
 from optimization.object.surface_fit import fit_surface
 from test_surface_integration import consumer_fixture,hands_and_judgment
 from utils.state import sha
@@ -299,6 +300,23 @@ class PreparedRawFitTests(unittest.TestCase):
             self.assertGreater(max(row['raw_hand_silhouette'] for row in report['trace']),0.)
             self.assertTrue(all(row['raw_hand_silhouette']==0. for row in missing_report['trace']))
             self.assertGreater(report['trace'][-1]['image'],0.)
+
+    def test_direct_legacy_solve_accepts_interval_only_judgments_without_external_mano(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);p=consumer_fixture(root);fit_surface(p);models,judgment=hands_and_judgment(root,p)
+            interval_only={'object_id':p.object_id,'interaction_judgments':judgment['interaction_judgments']}
+            interval_path=root/'interval_only_judgments.json';interval_path.write_text(json.dumps(interval_only))
+            problem=PreparedVisualFit(p.annotations,p.output_dir/'pose_mesh.json',root/'bridge.npz',root/'hands.npz',
+                root/'fake_models',root/'legacy_direct','thing',p.appearance,interval_path,iterations=1,
+                object_profile='surface_no_box',hand_profile='legacy',run_root=root)
+            with open('/dev/null','w') as sink,patch('optimization.interaction.joint_fit.mano_models',return_value=models),contextlib.redirect_stdout(sink):
+                report=solve(problem)
+            self.assertEqual(report['hand_profile'],'legacy')
+            with np.load(problem.output_dir/'demo_state.npz',allow_pickle=False) as state:
+                self.assertEqual(state['hand_profile'].item(),'legacy')
+                self.assertEqual(state['left_vertices_world'].shape,(3,778,3))
+                self.assertTrue(all(state[key].dtype!=object for key in state.files))
+                self.assertNotIn('raw_hand_mask_manifest',state.files)
 
     def test_legacy_default_and_explicit_profile_are_bitwise_identical_and_pickle_free(self):
         with tempfile.TemporaryDirectory() as td:

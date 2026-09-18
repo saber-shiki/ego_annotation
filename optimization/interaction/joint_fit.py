@@ -66,9 +66,11 @@ def fit_visual(args):
     N = len(ids)
     valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
     judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
-    from gates.interaction.visibility import validate_visibility
-    visibility=validate_visibility(judgment_payload,ids,args.object_id)
     hand_profile = getattr(args, 'hand_profile', 'legacy')
+    visibility = None
+    if hand_profile == 'raw_hand_silhouette':
+        from gates.interaction.visibility import validate_visibility
+        visibility=validate_visibility(judgment_payload,ids,args.object_id)
     raw_contours = {}
     raw_rows = {}
     raw_active=set()
