@@ -27,36 +27,52 @@ from utils.geometry import camera,project,resized_K
 
 
 class FakeOfficialSAM2:
-    """Official predictor protocol double; masks, not producer requests, are emitted."""
-    def __init__(self):self.objects=[];self.count=0;self.calls=[]
-    def init_state(self,**kwargs):
-        paths=list(Path(kwargs['video_path']).glob('*'));self.count=len(paths)
-        image=cv2.imread(str(paths[0]));self.height,self.width=image.shape[:2]
-        return {}
-    def add_new_points_or_box(self,inference_state,frame_idx,obj_id,box,**kwargs):
-        self.calls.append((frame_idx,obj_id,np.asarray(box).copy()))
-        if obj_id not in self.objects:self.objects.append(obj_id)
-        logits=[]
-        for value in self.objects:
-            m=torch.full((1,self.height,self.width),-1.)
-            y0,y1=max(1,int(self.height*.3)),min(self.height-1,int(self.height*.75))
-            # Keep two independent side masks at proportional full-frame locations.
-            x0,x1=((int(self.width*.60),int(self.width*.84)) if value==1 else
-                   (int(self.width*.12),int(self.width*.38)))
-            m[:,y0:y1,x0:x1]=1.;logits.append(m)
-        return frame_idx,list(self.objects),torch.stack(logits)
+    """SAM2ImagePredictor protocol double; producer requests do not shape masks."""
+    def __init__(self):self.calls=[];self.image=None
+    def set_image(self,image):
+        self.image=np.asarray(image).copy();self.calls.append(('set_image',self.image.shape,int(self.image[0,0,0])))
+    def predict(self,*,point_coords,point_labels,box,multimask_output,return_logits):
+        self.calls.append(('predict',np.asarray(box).copy(),multimask_output,return_logits))
+        assert self.image is not None and point_coords is None and point_labels is None
+        assert multimask_output is False and return_logits is True
+        height,width=self.image.shape[:2];is_left=float(np.asarray(box)[0])>15
+        logits=np.full((1,height,width),-1.,np.float32)
+        y0,y1=max(1,int(height*.3)),min(height-1,int(height*.75))
+        x0,x1=((int(width*.60),int(width*.84)) if is_left else (int(width*.12),int(width*.38)))
+        logits[:,y0:y1,x0:x1]=1.
+        return logits,np.asarray([.91 if is_left else .83]),np.zeros((1,4,4),np.float32)
 
 
 class OverlappingOfficialSAM2(FakeOfficialSAM2):
-    def add_new_points_or_box(self,inference_state,frame_idx,obj_id,box,**kwargs):
-        self.calls.append((frame_idx,obj_id,np.asarray(box).copy()))
-        if obj_id not in self.objects:self.objects.append(obj_id)
-        logits=[]
-        for _value in self.objects:
-            m=torch.full((1,self.height,self.width),-1.)
-            m[:,int(self.height*.25):int(self.height*.8),int(self.width*.25):int(self.width*.75)]=1.
-            logits.append(m)
-        return frame_idx,list(self.objects),torch.stack(logits)
+    def predict(self,*,point_coords,point_labels,box,multimask_output,return_logits):
+        self.calls.append(('predict',np.asarray(box).copy(),multimask_output,return_logits))
+        height,width=self.image.shape[:2];is_left=float(np.asarray(box)[0])>15
+        logits=np.full((1,height,width),-2.,np.float32)
+        y0,y1=int(height*.25),int(height*.8)
+        if is_left:
+            logits[:,y0:y1,int(width*.25):int(width*.75)]=2.
+            logits[:,y0:y1,int(width*.42):int(width*.46)]=3.
+        else:
+            logits[:,y0:y1,int(width*.12):int(width*.62)]=1.
+            # Exact ties are assigned to the lower object ID (left).
+            logits[:,y0:y1,int(width*.42):int(width*.46)]=3.
+        return logits,np.asarray([.88 if is_left else .77]),np.zeros((1,4,4),np.float32)
+
+
+class FullTieOfficialSAM2(FakeOfficialSAM2):
+    def predict(self,*,point_coords,point_labels,box,multimask_output,return_logits):
+        self.calls.append(('predict',np.asarray(box).copy(),multimask_output,return_logits))
+        height,width=self.image.shape[:2];logits=np.full((1,height,width),-1.,np.float32)
+        logits[:,int(height*.25):int(height*.8),int(width*.25):int(width*.75)]=2.
+        return logits,np.asarray([.8]),np.zeros((1,4,4),np.float32)
+
+
+class EmptyLeftOfficialSAM2(FakeOfficialSAM2):
+    def predict(self,*,point_coords,point_labels,box,multimask_output,return_logits):
+        values=super().predict(point_coords=point_coords,point_labels=point_labels,box=box,
+            multimask_output=multimask_output,return_logits=return_logits)
+        if float(np.asarray(box)[0])>15:values[0].fill(-1.)
+        return values
 
 
 def raw_manifest(root,ids,size=(64,64),frame_paths=None):
@@ -112,15 +128,30 @@ def produce(root,ids,size=(64,64),predictor_type=FakeOfficialSAM2):
 
 
 class HandMaskProducerTests(unittest.TestCase):
-    def test_actual_grouped_producer_writes_full_side_timeline_and_string_tracks(self):
+    def test_direct_frame_producer_calls_set_image_then_predict_per_frame(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);manifest,hawor,receipt,predictor=produce(root,[7,19,103],(80,48))
             doc=validate_hand_mask_receipt(receipt,frame_ids=[7,19,103],source_size_wh=(80,48),
                 source_frame_manifest=manifest)
-            self.assertEqual(len(doc['frames']),6);self.assertEqual(len(predictor.calls),6)
+            self.assertEqual(len(doc['frames']),6)
+            self.assertEqual([call[0] for call in predictor.calls],['set_image','predict','predict']*3)
             self.assertEqual({r['detector_track_id'] for r in doc['frames']},{'1.0','2.0'})
             self.assertTrue(all(Path(r['mask_path']).is_file() for r in doc['frames']))
-            self.assertEqual(doc['model_execution']['propagation_used_as_direct_observation'],False)
+            self.assertTrue(all(r['status']=='visible' and r['uncertainty']==.25 for r in doc['frames']))
+            self.assertTrue(doc['model_execution']['direct_frame'])
+            self.assertFalse(doc['model_execution']['temporal_memory'])
+            self.assertFalse(doc['model_execution']['propagation'])
+            self.assertTrue(all(r['path']==r['source_frame_path'] for r in doc['predictor_inputs']))
+
+    def test_official_image_api_seam_has_no_video_predictor_or_propagation(self):
+        import inspect
+        import observations.interaction.hand_masks as hand_masks
+        source=inspect.getsource(hand_masks.produce_sam2_hand_masks)
+        self.assertIn('from sam2.build_sam import build_sam2',source)
+        self.assertIn('from sam2.sam2_image_predictor import SAM2ImagePredictor',source)
+        self.assertNotIn('video_predictor',source)
+        self.assertNotIn('init_state',source)
+        self.assertNotIn('propagate',source)
 
     def test_receipt_rejects_side_frame_source_hash_and_halfpixel_tamper(self):
         with tempfile.TemporaryDirectory() as td:
@@ -161,14 +192,53 @@ class HandMaskProducerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'source/camera contract'):
                 make_sam2_hand_prompt_payload(raw_frame_manifest=manifest,hawor_npz=hawor)
 
-    def test_predictor_input_hash_and_unconstrained_overlap_are_enforced(self):
+    def test_overlap_is_logit_partitioned_nonoverlap_with_continuous_uncertainty_and_ties(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);manifest,_,receipt,_=produce(root,[0],predictor_type=OverlappingOfficialSAM2)
-            doc=json.loads(receipt.read_text())
-            self.assertTrue(all(r['status']=='unresolved' and r['inactive_reason']=='ambiguous_side_overlap' for r in doc['frames']))
-            self.assertFalse(doc['model_execution']['non_overlap_masks'])
-            predictor_frame=Path(doc['predictor_inputs'][0]['path']);predictor_frame.write_bytes(b'tampered derived jpeg')
-            with self.assertRaisesRegex(ValueError,'input frame hash mismatch'):
+            doc=json.loads(receipt.read_text());rows={r['hand_side']:r for r in doc['frames']}
+            left=cv2.imread(rows['left']['mask_path'],0)>0;right=cv2.imread(rows['right']['mask_path'],0)>0
+            self.assertFalse(np.any(left&right));self.assertTrue(left.any());self.assertTrue(right.any())
+            self.assertTrue(all(r['status']=='partially_visible' for r in rows.values()))
+            fraction=rows['left']['raw_overlap_fraction_of_smaller']
+            self.assertGreater(fraction,0);self.assertLess(fraction,1)
+            self.assertTrue(all(np.isclose(r['uncertainty'],np.clip(.25+.75*fraction,.25,1.)) for r in rows.values()))
+            self.assertTrue(all(r['occluder']=='other_hand_overlap_sam2_logit_partition_uncertain' for r in rows.values()))
+            self.assertGreater(rows['left']['overlap_assigned_to_side_px'],rows['right']['overlap_assigned_to_side_px'])
+            self.assertGreater(rows['left']['overlap_tie_px'],0)
+            self.assertEqual(rows['left']['overlap_tie_px'],rows['right']['overlap_tie_px'])
+            self.assertEqual(rows['left']['raw_overlap_px'],
+                rows['left']['overlap_assigned_to_side_px']+rows['right']['overlap_assigned_to_side_px'])
+            validate_hand_mask_receipt(receipt,frame_ids=[0],source_size_wh=(64,64),source_frame_manifest=manifest)
+
+    def test_zero_overlap_and_empty_partitions_have_explicit_status(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);_,_,receipt,_=produce(root,[0])
+            rows=json.loads(receipt.read_text())['frames']
+            self.assertTrue(all(r['raw_overlap_px']==0 and r['status']=='visible' and r['uncertainty']==.25 for r in rows))
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);_,_,receipt,_=produce(root,[0],predictor_type=FullTieOfficialSAM2)
+            rows={r['hand_side']:r for r in json.loads(receipt.read_text())['frames']}
+            self.assertEqual(rows['left']['status'],'partially_visible')
+            self.assertEqual(rows['left']['overlap_assigned_to_side_px'],rows['left']['raw_overlap_px'])
+            self.assertEqual(rows['right']['status'],'unresolved');self.assertIsNone(rows['right']['mask_path'])
+            self.assertEqual(rows['right']['inactive_reason'],'empty_after_logit_partition')
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);_,_,receipt,_=produce(root,[0],predictor_type=EmptyLeftOfficialSAM2)
+            rows={r['hand_side']:r for r in json.loads(receipt.read_text())['frames']}
+            self.assertEqual(rows['left']['status'],'unresolved');self.assertIsNone(rows['left']['mask_path'])
+            self.assertEqual(rows['left']['inactive_reason'],'empty_unconstrained_support')
+            self.assertEqual(rows['right']['status'],'visible')
+
+    def test_predictor_input_and_overlap_diagnostic_tamper_are_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);manifest,_,receipt,_=produce(root,[0],predictor_type=OverlappingOfficialSAM2)
+            original=json.loads(receipt.read_text())
+            tampered=copy.deepcopy(original);tampered['frames'][0]['raw_overlap_px']+=1
+            bad=root/'bad_overlap.json';bad.write_text(json.dumps(tampered))
+            with self.assertRaisesRegex(ValueError,'overlap diagnostic'):
+                validate_hand_mask_receipt(bad,frame_ids=[0],source_size_wh=(64,64),source_frame_manifest=manifest)
+            predictor_frame=Path(original['predictor_inputs'][0]['path']);predictor_frame.write_bytes(b'tampered raw frame')
+            with self.assertRaisesRegex(ValueError,'source-frame provenance|input frame|raw RGB'):
                 validate_hand_mask_receipt(receipt,frame_ids=[0],source_size_wh=(64,64),source_frame_manifest=manifest)
 
 
