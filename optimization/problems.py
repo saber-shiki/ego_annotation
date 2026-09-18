@@ -48,13 +48,19 @@ class PreparedVisualFit:
     object_profile: str = 'legacy'
     freeze_object: bool = False
     run_root: object | None = None
+    raw_hand_mask_manifest: object | None = None
+    hand_profile: str = 'legacy'
 
     def __post_init__(self):
         aliases = {'prepared_surface_no_box':'surface_no_box', 'prepared_surface_weak_box':'surface_weak_box'}
         object.__setattr__(self, 'object_profile', aliases.get(self.object_profile, self.object_profile))
         if self.object_profile not in {'legacy','surface_no_box','surface_weak_box'}:
             raise ValueError('unreviewed visual object profile')
-        if self.object_profile != 'legacy':
+        if self.hand_profile not in {'legacy','raw_hand_silhouette'}:
+            raise ValueError('unreviewed hand visual profile')
+        if self.hand_profile == 'raw_hand_silhouette' and (self.raw_hand_mask_manifest is None or self.object_profile not in {'surface_no_box','surface_weak_box'}):
+            raise ValueError('raw_hand_silhouette requires an independent hand mask receipt and frozen surface object profile')
+        if self.object_profile != 'legacy' or self.hand_profile == 'raw_hand_silhouette':
             object.__setattr__(self, 'freeze_object', True)
         if self.appearance_mask_manifest is None or self.interaction_judgments is None:
             raise ValueError('prepared visual fitting requires appearance and interaction evidence')

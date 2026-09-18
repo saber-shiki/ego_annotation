@@ -112,6 +112,15 @@ def refine(annotations_path, source_path, edge_path, edge_report, object_id, anc
 def fit_prepared(problem, run_root):
     from gates.object.geometry import validate_posterior
     from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
+    if getattr(problem, 'hand_profile', 'legacy') == 'raw_hand_silhouette':
+        from observations.interaction.hand_masks import validate_hand_mask_receipt
+        annotation_doc = load(problem.annotations)
+        frame_ids = [int(row['frame_idx']) for row in annotation_doc['frames']]
+        first = annotation_doc['frames'][0]
+        source_size = (int(first['source_width']), int(first['source_height']))
+        receipt = validate_hand_mask_receipt(problem.raw_hand_mask_manifest, frame_ids=frame_ids, source_size_wh=source_size)
+        if receipt.get('source_video_sha256') and annotation_doc.get('input_video_sha256') and receipt['source_video_sha256'] != annotation_doc['input_video_sha256']:
+            raise ValueError('raw hand mask source video hash mismatch')
     binding=load(problem.pose_report)
     candidate = binding.get('schema') == 'object_surface_candidate_binding_v1'
     if candidate:
@@ -171,6 +180,8 @@ def main(argv=None):
     visual.add_argument('--iterations',type=int,default=240)
     visual.add_argument('--object-profile',choices=('legacy','surface_no_box','surface_weak_box','prepared_surface_no_box','prepared_surface_weak_box'),default='legacy')
     visual.add_argument('--freeze-object',action='store_true')
+    visual.add_argument('--hand-profile',choices=('legacy','raw_hand_silhouette'),default='legacy')
+    visual.add_argument('--raw-hand-mask-manifest',type=Path)
     judgment=commands.add_parser('judge',help='run one independent Astra image judgment')
     judgment.add_argument('name',choices=('object','mask_track','pose_anchor','rigidity','appearance_anchor',
         'pose_trajectory','contact','contact_pads','occlusion','depth_reliability','visibility',
@@ -265,6 +276,8 @@ def main(argv=None):
                                 'prepared_surface_weak_box': 'surface_weak_box'}.get(
                                     values['object_profile'], values['object_profile'])
     values['freeze_object'] = values.pop('freeze_object', False)
+    values['hand_profile'] = values.pop('hand_profile', 'legacy')
+    values['raw_hand_mask_manifest'] = values.pop('raw_hand_mask_manifest', None)
     return fit_prepared(PreparedVisualFit(**values),run_root)
 
 
