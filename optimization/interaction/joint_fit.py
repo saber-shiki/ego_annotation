@@ -18,7 +18,8 @@ from gates.interaction.contact import (interaction_states, primary_contact_pads,
 from factors.interaction.contact import unsigned_pad_loss
 from factors.hand.priors import visual_articulation, visual_root_orientation, visual_translation, hand_log_scale
 from factors.hand.observation import visual_surface_reprojection, visual_joint_reprojection
-from factors.hand.silhouette import mask_contour, triangle_edge_points
+from factors.hand.silhouette import (mask_contour, visible_boundary_associations,
+    bidirectional_contour_residual)
 from factors.common import mean_square
 FIT_REFERENCE_WIDTH = 960
 
@@ -68,10 +69,12 @@ def fit_visual(args):
     raw_contours = {}
     raw_rows = {}
     if hand_profile == 'raw_hand_silhouette':
-        from observations.interaction.hand_masks import hand_mask_rows, validate_hand_mask_receipt
-        receipt = validate_hand_mask_receipt(args.raw_hand_mask_manifest, frame_ids=ids, source_size_wh=tuple(source_size))
-        raw_rows = hand_mask_rows(args.raw_hand_mask_manifest, frame_ids=ids, source_size_wh=tuple(source_size))
-        sx, sy = float(fit_size[0]) / float(source_size[0]), float(fit_size[1]) / float(source_size[1])
+        from observations.interaction.hand_masks import hand_mask_rows, half_pixel_affine, transform_points
+        receipt, raw_rows = hand_mask_rows(args.raw_hand_mask_manifest, frame_ids=ids,
+            source_size_wh=tuple(source_size), source_frame_manifest=args.raw_frame_manifest)
+        A_mask_from_source=np.asarray(receipt['coordinate_transform']['A_mask_from_source'],np.float64)
+        A_fit_from_source=half_pixel_affine(tuple(source_size),tuple(fit_size))
+        A_fit_from_mask=A_fit_from_source@np.linalg.inv(A_mask_from_source)
         for side in ['left','right']:
             raw_contours[side] = {}
             for i, frame_id in enumerate(ids):
@@ -81,7 +84,7 @@ def fit_visual(args):
                 mask = cv2.imread(str(row['mask_path']), cv2.IMREAD_GRAYSCALE)
                 contour = mask_contour(mask)
                 if len(contour) >= 3:
-                    raw_contours[side][i] = contour * np.asarray([sx, sy], np.float32)
+                    raw_contours[side][i] = transform_points(contour,A_fit_from_mask)
     key = fit_keyframes(N, valid)
     B = len(key)
     judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
@@ -276,6 +279,7 @@ def fit_visual(args):
     params = [hand_delta, hand_root, hand_t, hand_scale] + ([] if freeze_object else [obj_delta])
     opt = torch.optim.Adam(params, lr=0.008)
     weights = to(contact_gate)
+    targets = {}
     silhouette_targets = {}
     outline = {}
     trace = []
@@ -362,18 +366,45 @@ def fit_visual(args):
                         to(contour),
                     )
         if it % 12 == 0 and hand_profile == 'raw_hand_silhouette':
-            # Correspondences are regenerated from every MANO triangle edge;
-            # they are never reused after a candidate parameter update.
+            # Re-raycast the complete original triangle meshes.  Only z-buffer
+            # visible external/hole/island boundary pixels become associations;
+            # internal edges and object/other-hand-hidden boundaries are absent.
             silhouette_targets = {}
-            for side in ['left','right']:
-                if side not in data or side not in hands: continue
-                d=data[side]
-                for local,k in enumerate(d['ki']):
-                    frame_i=int(key[k])
-                    if frame_i not in raw_contours.get(side, {}): continue
-                    edge_uv=triangle_edge_points(torch_project(hands[side][2][local], intr[k]), z.get(side+'_faces', models[side].faces)).detach()
+            object_vc=[]
+            for k in range(B):
+                object_vc.append(((to(V) @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]).detach().cpu().numpy())
+            for si,side in enumerate(['left','right']):
+                if side not in data or side not in hands:continue
+                d=data[side];faces=np.asarray(z.get(side+'_faces',models[side].faces),np.int64)
+                for local,k0 in enumerate(d['ki']):
+                    k=int(k0);frame_i=int(key[k])
+                    if frame_i not in raw_contours.get(side,{}):continue
+                    entities=[]
+                    ovc=object_vc[k]
+                    entities.append({'label':0,'vertices_camera':ovc,'vertices_uv':project(ovc,fit_K[key[k]]),'faces':F})
+                    target_label=None
+                    for sj,other in enumerate(['left','right']):
+                        if other not in data or other not in hands:continue
+                        matches=np.flatnonzero(data[other]['ki']==k)
+                        if not len(matches):continue
+                        oi=int(matches[0]);hvc=hands[other][2][oi].detach().cpu().numpy()
+                        label=sj+1
+                        entities.append({'label':label,'vertices_camera':hvc,
+                            'vertices_uv':project(hvc,fit_K[key[k]]),
+                            'faces':np.asarray(z.get(other+'_faces',models[other].faces),np.int64)})
+                        if other==side:target_label=label
+                    if target_label is None:continue
+                    face_ids,bary,_=visible_boundary_associations(entities,target_label,tuple(fit_size))
+                    if not len(face_ids):continue
                     raw=to(raw_contours[side][frame_i])
-                    silhouette_targets[(int(k),side)]=(torch.cdist(edge_uv,raw).argmin(dim=1), torch.cdist(raw,edge_uv).argmin(dim=1), raw)
+                    face_tensor=torch.as_tensor(face_ids,device=device,dtype=torch.long)
+                    bary_tensor=to(bary)
+                    with torch.no_grad():
+                        hit=(hands[side][2][local][face_tensor]*bary_tensor[:,:,None]).sum(dim=1)
+                        edge_uv=torch_project(hit,intr[k])
+                        fi=torch.cdist(edge_uv,raw).argmin(dim=1)
+                        ri=torch.cdist(raw,edge_uv).argmin(dim=1)
+                    silhouette_targets[(k,side)]=(face_tensor,bary_tensor,fi,ri,raw)
         loss = (
             visual_articulation(hand_delta)
             + visual_root_orientation(hand_root)
@@ -396,12 +427,11 @@ def fit_visual(args):
             ki = d["ki"]
             pix = torch_project(vc[:, sample_indices], intr[ki])
             jpix = torch_project(jc, intr[ki])
-            if hand_profile != 'raw_hand_silhouette':
-                image_loss = (
-                    image_loss
-                    + visual_surface_reprojection(pix, d["base_pixel"][:, sample_indices])
-                    + visual_joint_reprojection(jpix, d["base_joint_pixel"])
-                )
+            image_loss = (
+                image_loss
+                + visual_surface_reprojection(pix, d["base_pixel"][:, sample_indices])
+                + visual_joint_reprojection(jpix, d["base_joint_pixel"])
+            )
             qc = (vw - t[ki, None]) @ R[ki]
             q, n = targets[side]
             # Generated normals have no inside/outside authority. Do not apply
@@ -416,14 +446,19 @@ def fit_visual(args):
                         delta, weights[k, si, finger]) / (B * 2)
         silhouette_loss = to(0.0)
         if hand_profile == 'raw_hand_silhouette':
-            for (k, side), (fi, ri, raw) in silhouette_targets.items():
-                d=data[side]; local=int(np.flatnonzero(d['ki']==k)[0])
-                edge_uv=triangle_edge_points(torch_project(hands[side][2][local], intr[k]), z.get(side+'_faces', models[side].faces))
-                forward=(edge_uv-raw[fi].detach()).square().sum(dim=1).clamp_max(25.).mean()
-                reverse=(edge_uv[ri]-raw.detach()).square().sum(dim=1).clamp_max(25.).mean()
+            for (k, side), (face_ids,bary,fi,ri,raw) in silhouette_targets.items():
+                d=data[side];local=int(np.flatnonzero(d['ki']==k)[0])
+                hit=(hands[side][2][local][face_ids]*bary[:,:,None]).sum(dim=1)
+                edge_uv=torch_project(hit,intr[k])
                 row=raw_rows[(int(ids[key[k]]),side)]
-                gate=(1.-float(row['uncertainty'])) * (1. if row['status']=='visible' else .5)
-                silhouette_loss = silhouette_loss + (forward+reverse)*gate/2.
+                gate=(1. if row['status']=='visible' else .5)
+                # Fixed 12-step nearest associations; pseudo-Huber keeps a
+                # nonzero gradient for raw contour shifts well beyond 5 px.
+                forward_distance=torch.linalg.vector_norm(edge_uv-raw[fi].detach(),dim=1)
+                reverse_distance=torch.linalg.vector_norm(edge_uv[ri]-raw.detach(),dim=1)
+                from factors.hand.silhouette import smooth_robust_squared
+                silhouette_loss += (smooth_robust_squared(forward_distance).mean()+
+                    smooth_robust_squared(reverse_distance).mean())*.5*gate*(1.-float(row['uncertainty']))
         boundary_loss = to(0.0)
         for k in outline:
             vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
@@ -458,25 +493,9 @@ def fit_visual(args):
                     if triples:
                         e = np.asarray(triples)
                         temporal += ((p[e + 2, si] - 2 * p[e + 1, si] + p[e, si]) / scale).square().mean() * 0.06
-        if hand_profile == 'raw_hand_silhouette':
-            # Raw-mask composition uses physical timestamp intervals, not keyframe indices.
-            key_times = to(times[key])
-            for p, scale in [(hand_delta, .05), (hand_root, .035), (hand_t, .006), (hand_scale, .025)]:
-                for si, side in enumerate(['left','right']):
-                    active = to(valid[side][key[:-1]] & valid[side][key[1:]]).bool()
-                    dt = (key_times[1:] - key_times[:-1]).clamp_min(1e-6)
-                    if torch.any(active):
-                        temporal = temporal + (((p[1:,si] - p[:-1,si]) / dt[:,None] / scale)[active]).square().mean() * .06
-                    if B > 2:
-                        triple = to(valid[side][key[:-2]] & valid[side][key[1:-1]] & valid[side][key[2:]]).bool()
-                        dt0=(key_times[1:-1]-key_times[:-2]).clamp_min(1e-6)
-                        dt1=(key_times[2:]-key_times[1:-1]).clamp_min(1e-6)
-                        if torch.any(triple):
-                            v0=(p[1:-1,si]-p[:-2,si])/dt0[:,None]
-                            v1=(p[2:,si]-p[1:-1,si])/dt1[:,None]
-                            temporal = temporal + (((v1-v0)/((dt0+dt1)[:,None]/2.)/scale)[triple]).square().mean() * .06
         loss = (
             loss
+            + image_loss * 3
             + silhouette_loss * (3 if hand_profile == 'raw_hand_silhouette' else 0)
             + visual_proximity_loss * 1.7
             + boundary_loss * 3
@@ -525,6 +544,8 @@ def fit_visual(args):
             full = np.stack([interpolate_supported(times, key, a[:, si], valid[side])
                              for si, side in enumerate(["left", "right"])], axis=1)
         interp[name] = full
+    if hand_profile == 'raw_hand_silhouette':
+        ACTIVE={'visible','partially_visible'}
     state = {
         "frame_idx": ids, "time_s": times,
         "T_world_camera": T, "render_size_wh": size,
@@ -535,11 +556,16 @@ def fit_visual(args):
         "primary_contact_digit_order": np.asarray(PRIMARY_DIGITS),
         "object_vertices_canonical": V, "object_faces": F,
         "keyframe_idx": ids[key], **interp,
-        "hand_profile": hand_profile,
-        "raw_hand_mask_manifest": str(args.raw_hand_mask_manifest) if hand_profile == 'raw_hand_silhouette' else None,
-        "raw_hand_mask_rows": np.asarray([[str(raw_rows[(int(i), s)]['status']) if (int(i),s) in raw_rows else 'unresolved' for s in ('left','right')] for i in ids]),
-        "raw_hand_mask_uncertainty": np.asarray([[float(raw_rows[(int(i), s)]['uncertainty']) if (int(i),s) in raw_rows else 1.0 for s in ('left','right')] for i in ids], dtype=np.float32),
+        "hand_profile": np.asarray(hand_profile),
     }
+    if hand_profile == 'raw_hand_silhouette':
+        state.update(
+            raw_hand_mask_manifest=np.asarray(str(args.raw_hand_mask_manifest)),
+            raw_frame_manifest=np.asarray(str(args.raw_frame_manifest)),
+            raw_hand_mask_rows=np.asarray([[str(raw_rows[(int(i),s)]['status']) for s in ('left','right')] for i in ids],dtype='<U24'),
+            raw_hand_mask_uncertainty=np.asarray([[float(raw_rows[(int(i),s)]['uncertainty']) for s in ('left','right')] for i in ids],dtype=np.float32),
+            raw_hand_mask_active=np.asarray([[raw_rows[(int(i),s)]['status'] in ACTIVE for s in ('left','right')] for i in ids],dtype=bool),
+        )
     if np.array_equal(size, [960, 960]):
         state["intrinsics_960"] = K
     from scipy.spatial.transform import Rotation
@@ -650,7 +676,10 @@ def fit_visual(args):
                 k: str(getattr(args, k).resolve())
                 for k in ["annotations", "pose_report", "mano_bridge", "hawor_params", "mano_models"]
             },
-            **({"raw_hand_mask_manifest": str(args.raw_hand_mask_manifest.resolve())}
+            **({"appearance_mask_manifest": str(args.appearance_mask_manifest.resolve())}
+               if args.appearance_mask_manifest else {}),
+            **({"raw_hand_mask_manifest": str(args.raw_hand_mask_manifest.resolve()),
+                "raw_frame_manifest": str(args.raw_frame_manifest.resolve())}
                if hand_profile == 'raw_hand_silhouette' else {}),
         },
         "input_hashes": {
@@ -658,7 +687,10 @@ def fit_visual(args):
                 k: sha(getattr(args, k))
                 for k in ["annotations", "pose_report", "mano_bridge", "hawor_params"]
             },
-            **({"raw_hand_mask_manifest": sha(args.raw_hand_mask_manifest)}
+            **({"appearance_mask_manifest": sha(args.appearance_mask_manifest)}
+               if args.appearance_mask_manifest else {}),
+            **({"raw_hand_mask_manifest": sha(args.raw_hand_mask_manifest),
+                "raw_frame_manifest": sha(args.raw_frame_manifest)}
                if hand_profile == 'raw_hand_silhouette' else {}),
             **({"interaction_judgments": sha(args.interaction_judgments)} if args.interaction_judgments else {}),
             **{

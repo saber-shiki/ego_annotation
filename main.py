@@ -118,7 +118,8 @@ def fit_prepared(problem, run_root):
         frame_ids = [int(row['frame_idx']) for row in annotation_doc['frames']]
         first = annotation_doc['frames'][0]
         source_size = (int(first['source_width']), int(first['source_height']))
-        receipt = validate_hand_mask_receipt(problem.raw_hand_mask_manifest, frame_ids=frame_ids, source_size_wh=source_size)
+        receipt = validate_hand_mask_receipt(problem.raw_hand_mask_manifest, frame_ids=frame_ids,
+            source_size_wh=source_size, source_frame_manifest=problem.raw_frame_manifest)
         if receipt.get('source_video_sha256') and annotation_doc.get('input_video_sha256') and receipt['source_video_sha256'] != annotation_doc['input_video_sha256']:
             raise ValueError('raw hand mask source video hash mismatch')
     binding=load(problem.pose_report)
@@ -182,6 +183,7 @@ def main(argv=None):
     visual.add_argument('--freeze-object',action='store_true')
     visual.add_argument('--hand-profile',choices=('legacy','raw_hand_silhouette'),default='legacy')
     visual.add_argument('--raw-hand-mask-manifest',type=Path)
+    visual.add_argument('--raw-frame-manifest',type=Path)
     judgment=commands.add_parser('judge',help='run one independent Astra image judgment')
     judgment.add_argument('name',choices=('object','mask_track','pose_anchor','rigidity','appearance_anchor',
         'pose_trajectory','contact','contact_pads','occlusion','depth_reliability','visibility',
@@ -278,6 +280,7 @@ def main(argv=None):
     values['freeze_object'] = values.pop('freeze_object', False)
     values['hand_profile'] = values.pop('hand_profile', 'legacy')
     values['raw_hand_mask_manifest'] = values.pop('raw_hand_mask_manifest', None)
+    values['raw_frame_manifest'] = values.pop('raw_frame_manifest', None)
     return fit_prepared(PreparedVisualFit(**values),run_root)
 
 
