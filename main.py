@@ -120,8 +120,29 @@ def fit_prepared(problem, run_root):
         source_size = (int(first['source_width']), int(first['source_height']))
         receipt = validate_hand_mask_receipt(problem.raw_hand_mask_manifest, frame_ids=frame_ids,
             source_size_wh=source_size, source_frame_manifest=problem.raw_frame_manifest)
-        if receipt.get('source_video_sha256') and annotation_doc.get('input_video_sha256') and receipt['source_video_sha256'] != annotation_doc['input_video_sha256']:
-            raise ValueError('raw hand mask source video hash mismatch')
+        raw_doc=load(problem.raw_frame_manifest)
+        raw_rows={int(row['frame_idx']):row for row in raw_doc['frames']}
+        if set(raw_rows)!=set(frame_ids):
+            raise ValueError('raw hand mask source timeline differs from annotations')
+        for frame in annotation_doc['frames']:
+            idx=int(frame['frame_idx']);source=raw_rows[idx]
+            source_path=Path(source.get('raw_frame_path') or source.get('rgb')).resolve()
+            if Path(frame['raw_frame_path']).resolve()!=source_path or sha(source_path)!=(source.get('raw_frame_sha256') or sha(source_path)):
+                raise ValueError('raw hand mask source RGB differs from annotation source')
+        declared_inputs=annotation_doc.get('v19_inputs') or {}
+        if declared_inputs.get('raw_frame_manifest') and Path(declared_inputs['raw_frame_manifest']).resolve()!=Path(problem.raw_frame_manifest).resolve():
+            raise ValueError('annotation raw-frame manifest differs from hand-mask source')
+        if declared_inputs.get('hawor_npz') and Path(declared_inputs['hawor_npz']).resolve()!=Path(problem.hawor_params).resolve():
+            raise ValueError('annotation HaWoR archive differs from visual-fit initializer')
+        detector_ref=receipt['hawor_detector_npz']
+        if (Path(detector_ref['path']).resolve()!=Path(problem.hawor_params).resolve() or
+                detector_ref['sha256']!=sha(problem.hawor_params)):
+            raise ValueError('hand-mask detector archive differs from visual-fit HaWoR initializer')
+        with np.load(problem.hawor_params,allow_pickle=False) as archive:
+            hawor_K=np.asarray(archive['camera_intrinsics_fx_fy_cx_cy'],np.float64)
+        annotation_K=np.asarray([frame['camera']['intrinsics_fx_fy_cx_cy'] for frame in annotation_doc['frames']],np.float64)
+        if hawor_K.shape!=annotation_K.shape or not np.allclose(hawor_K,annotation_K,atol=1e-6,rtol=0):
+            raise ValueError('hand-mask HaWoR source camera differs from annotation camera contract')
     binding=load(problem.pose_report)
     candidate = binding.get('schema') == 'object_surface_candidate_binding_v1'
     if candidate:

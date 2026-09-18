@@ -65,9 +65,13 @@ def fit_visual(args):
         load(args.appearance_mask_manifest), args.annotations, args.object_id, ids, source_size)
     N = len(ids)
     valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
+    judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
+    from gates.interaction.visibility import validate_visibility
+    visibility=validate_visibility(judgment_payload,ids,args.object_id)
     hand_profile = getattr(args, 'hand_profile', 'legacy')
     raw_contours = {}
     raw_rows = {}
+    raw_active=set()
     if hand_profile == 'raw_hand_silhouette':
         from observations.interaction.hand_masks import hand_mask_rows, half_pixel_affine, transform_points
         receipt, raw_rows = hand_mask_rows(args.raw_hand_mask_manifest, frame_ids=ids,
@@ -79,15 +83,16 @@ def fit_visual(args):
             raw_contours[side] = {}
             for i, frame_id in enumerate(ids):
                 row = raw_rows[(int(frame_id), side)]
-                if row['status'] not in {'visible','partially_visible'} or not row.get('mask_path'):
+                if (row['status'] not in {'visible','partially_visible'} or not row.get('mask_path') or
+                        visibility[int(frame_id)][side]['state'] not in {'visible','partially_visible'}):
                     continue
                 mask = cv2.imread(str(row['mask_path']), cv2.IMREAD_GRAYSCALE)
                 contour = mask_contour(mask)
                 if len(contour) >= 3:
                     raw_contours[side][i] = transform_points(contour,A_fit_from_mask)
+                    raw_active.add((int(frame_id),side))
     key = fit_keyframes(N, valid)
     B = len(key)
-    judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
     judgments = interaction_states(judgment_payload, ids, args.object_id)
     primary = primary_contact_pads(judgment_payload, ids, args.object_id)
     R0 = np.asarray([r["rotation_world_from_completed_canonical_matrix"] for r in rows])
@@ -544,8 +549,6 @@ def fit_visual(args):
             full = np.stack([interpolate_supported(times, key, a[:, si], valid[side])
                              for si, side in enumerate(["left", "right"])], axis=1)
         interp[name] = full
-    if hand_profile == 'raw_hand_silhouette':
-        ACTIVE={'visible','partially_visible'}
     state = {
         "frame_idx": ids, "time_s": times,
         "T_world_camera": T, "render_size_wh": size,
@@ -564,7 +567,7 @@ def fit_visual(args):
             raw_frame_manifest=np.asarray(str(args.raw_frame_manifest)),
             raw_hand_mask_rows=np.asarray([[str(raw_rows[(int(i),s)]['status']) for s in ('left','right')] for i in ids],dtype='<U24'),
             raw_hand_mask_uncertainty=np.asarray([[float(raw_rows[(int(i),s)]['uncertainty']) for s in ('left','right')] for i in ids],dtype=np.float32),
-            raw_hand_mask_active=np.asarray([[raw_rows[(int(i),s)]['status'] in ACTIVE for s in ('left','right')] for i in ids],dtype=bool),
+            raw_hand_mask_active=np.asarray([[(int(i),s) in raw_active for s in ('left','right')] for i in ids],dtype=bool),
         )
     if np.array_equal(size, [960, 960]):
         state["intrinsics_960"] = K

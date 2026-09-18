@@ -104,15 +104,30 @@ def visible_boundary_associations(entities: list[dict], target_label: int,
             bary_map[ymin:ymax+1,xmin:xmax+1][take]=pc[take].astype(np.float32)
     if target_faces is None: raise ValueError('target label has no mesh entity')
     visible=(owner==int(target_label)).astype(np.uint8)
-    boundary=visible-cv2.erode(visible,np.ones((3,3),np.uint8),iterations=1)
-    ys,xs=np.nonzero(boundary)
-    if not len(xs):
+    contours,_=cv2.findContours(visible,cv2.RETR_LIST,cv2.CHAIN_APPROX_NONE)
+    contours=[c.reshape(-1,2) for c in contours if len(c)]
+    if not contours:
         return np.zeros((0,3),np.int64),np.zeros((0,3),np.float32),np.zeros((0,2),np.float32)
-    order=np.arange(len(xs)) if len(xs)<=max_samples else np.linspace(0,len(xs)-1,max_samples,dtype=int)
-    ys=ys[order];xs=xs[order]
+    # Preserve every external boundary, hole, and disconnected island.  The
+    # cap is shared proportionally only after reserving one hit per contour.
+    budget=max(int(max_samples),len(contours))
+    lengths=np.asarray([len(c) for c in contours],np.float64)
+    allocation=np.ones(len(contours),np.int64)
+    remaining=budget-len(contours)
+    if remaining:
+        share=remaining*lengths/lengths.sum()
+        allocation+=np.floor(share).astype(np.int64)
+        for i in np.argsort(-(share-np.floor(share)))[:remaining-int(np.floor(share).sum())]:
+            allocation[i]+=1
+    selected=[]
+    for contour,count in zip(contours,allocation):
+        take=min(len(contour),int(count))
+        selected.append(contour if take==len(contour) else contour[np.linspace(0,len(contour)-1,take,dtype=int)])
+    xy=np.concatenate(selected,axis=0)
+    xs=xy[:,0];ys=xy[:,1]
     ids=face_map[ys,xs]
     good=ids>=0
-    return target_faces[ids[good]],bary_map[ys[good],xs[good]],np.column_stack((xs[good],ys[good])).astype(np.float32)
+    return target_faces[ids[good]],bary_map[ys[good],xs[good]],xy[good].astype(np.float32)
 
 def timestamp_velocity_residual(values: torch.Tensor, times: torch.Tensor, active: torch.Tensor|None=None) -> torch.Tensor:
     if values.shape[0]<2:return values.sum()*0.
