@@ -1,5 +1,10 @@
 # RL-first ego annotation
 
+This branch preserves the executed milk RL local baseline. See
+[Milk RL baseline and reproduction notes](docs/MILK_RL_LOCAL_BASELINE.md) for
+source hashes, archived experiment scripts, external data requirements and known
+geometry/training limitations.
+
 `python main.py` is the observation-only entry. It produces a hash-bound
 `ego.annotation.observation_bundle.v1` manifest and stops before numerical refinement,
 MANO fitting, policy inference, or rendering. The manifest binds raw camera/depth,

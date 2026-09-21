@@ -1,0 +1,38 @@
+{
+  "schema": "ego.annotation.milk_rl_published_baseline.v1",
+  "base_commit": "823a906da71a03bfbb185fa5045d982f2684e7c8",
+  "source_runtime": "/mnt/user-home/kupingxin/ego_annotation_runtime/rl_milk_minfix_v1_20260918",
+  "observation_run": "/mnt/truenas-user-home/kupingxin/ego_annotation_rl_runs/hot3d_milk_823a906_minfix_v1_20260918",
+  "training_run": "/mnt/truenas-user-home/kupingxin/ego_annotation_rl_runs/milk_learning_stage1_1024_v1",
+  "zero_final_objective": 1821.4214886534671,
+  "annotation_quality_verified": false,
+  "checkpoints": [
+    {
+      "steps": 256,
+      "checkpoint_sha256": "05ff4e3dd3dcb88843e5bc037b0cdb1bf9f6b870e6c79941cb9fce9e978bf609",
+      "final_objective": 8900.21514216587
+    },
+    {
+      "steps": 512,
+      "checkpoint_sha256": "8af6f0c218d2a83f706da22017f5eca75e09417bd6ee15e676806fc75dba2753",
+      "final_objective": 209826.26684005893
+    },
+    {
+      "steps": 768,
+      "checkpoint_sha256": "0cc9277c7bc45592407d7cbd9c996058a690bf8696d49c07e0891987264a17da",
+      "final_objective": 439834.3728747396
+    },
+    {
+      "steps": 1024,
+      "checkpoint_sha256": "35e27ab2d11e4d67245f96fe132236f5484c0708dd95b4f7d8de39a060649a06",
+      "final_objective": 6259180.7365203565
+    }
+  ],
+  "archived_script_sha256": {
+    "rrd/export_all.py": "805556a40e1acce3a8a9820cc47ad151a4b89da462e318427fbd9325a14b7859",
+    "rrd/export_policy_rrd.py": "a55e57471002bbe0c52ce83d8a18b4827ec3350a6fcce7d786b4a495ceb21f23",
+    "stage1/learning_harness.py": "91e06033d1054ef6caf1163a1765e30a627bcfbb32817657cc71ff1999314d69",
+    "stage1/synthetic_fixture.py": "8092b71e61b504753d030bb9515e0757a23a6b387c8fbf59a0dd28cb1b8a7e91",
+    "stage1/test_learning_harness.py": "5d17c0bf277eb06214b7100824c3858a563b29aafb001b5b31a906f659d6b496"
+  }
+}

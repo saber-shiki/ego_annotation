@@ -162,7 +162,9 @@ def annotate(args):
     from utils.state import StageRecovery, planned_stage_contract
     from utils.runtime import stage_environment, astra_stage_inputs
     from utils.config import recovery_asset_manifest
+    from observations.interaction.assembly import assemble_interaction_batch, interaction_adapter_contract
     assets=load(args.assets_manifest)
+    interaction_contract=interaction_adapter_contract(assets)
     if assets.get('agent_model')!='gpt-6-astra' or assets.get('agent_provider')!='dexgem-responses' or assets.get('agent_disable_fallbacks') is not True:
         raise ValueError('asset manifest must pin Astra without fallbacks')
     os.environ['EGO_ASTRA_CREDENTIAL_FILE']=assets['agent_credential_file']
@@ -183,6 +185,8 @@ def annotate(args):
             raise ValueError('source code changed; cross-version recovery refused')
         if sha(args.assets_manifest)!=contract.get('assets_manifest_sha256'):
             raise ValueError('model configuration changed; cross-config recovery refused')
+        if contract.get('interaction_adapter')!=interaction_contract:
+            raise ValueError('interaction adapter configuration changed; recovery refused')
         sensor=Path(contract['sensor_calibration_metadata']) if contract['sensor_calibration_metadata'] else None
         if (sha(sensor) if sensor else None)!=contract['sensor_calibration_sha256']:
             raise ValueError('sensor identity changed')
@@ -212,6 +216,7 @@ def annotate(args):
             'bundle_manifest_sha256':sha(code_manifest),'sensor_calibration_metadata':str(sensor) if sensor else None,
             'sensor_calibration_sha256':sha(sensor) if sensor else None,'source_timing':timing.report(),
             'target_description':args.target_description,'assets_manifest_sha256':sha(args.assets_manifest),
+            'interaction_adapter':interaction_contract,
             'model_asset_manifest_sha256':sha(root/'input/model_asset_manifest.json')}
         (root/'input/runtime_input_contract.json').write_text(json.dumps(contract,indent=2))
     ledger=RunState(root);ids=list(range(len(timing.presentation_ticks)));object_id=None
@@ -554,6 +559,7 @@ def annotate(args):
             return depth_images
         depth_images = {int(key):value for key,value in _stage_depth_review.items()}
         interaction={'object_id':object_id,'status':'ok','interaction_judgments':[],'frames':[],
+            'adapter_contract':interaction_contract,'assembly_sources':[],
             'diagnostics':{'occlusion':[],'depth_reliability':[]},'timeline_evidence':{'contact':[],'pads':[]}}
         for offset in range(0,len(ids),12):
             batch=ids[offset:offset+12];batch_images=[Path(raw_by_id[i]['raw_frame_path']) for i in batch]
@@ -572,17 +578,17 @@ def annotate(args):
                 'intervals':contact['interaction_judgments'],'provenance':contact['judgment_provenance']})
             interaction['timeline_evidence']['pads'].append({'judgment_sha256':sha(destination/'pads.json'),
                 'intervals':pads['intervals'],'provenance':pads['judgment_provenance']})
-            for row in contact['interaction_judgments']:
-                # Expand supplied intervals only to attach the independently judged anatomical pads.
-                for frame in batch:
-                    if row['frame_start']<=frame<=row['frame_end']:
-                        candidates=[r for r in pads['intervals'] if r['hand_side']==row['hand_side'] and r['frame_start']<=frame<=r['frame_end']]
-                        if len(candidates)>1:raise ValueError('overlapping anatomical pad judgments')
-                        entry={**row,'frame_start':frame,'frame_end':frame}
-                        if candidates:entry['primary_contact_pads']={'digits':candidates[0]['digits'],'rationale':candidates[0]['rationale']}
-                        interaction['interaction_judgments'].append(entry)
+            assembled=assemble_interaction_batch(frame_ids=batch,object_id=object_id,
+                judgments={'contact':contact,'pads':pads,'occlusion':occlusion,
+                    'depth_reliability':reliability,'visibility':visibility},
+                source_hashes={name:sha(destination/f'{name}.json') for name in
+                    ('contact','pads','occlusion','depth_reliability','visibility')},
+                contract=interaction_contract)
+            interaction['interaction_judgments'].extend(assembled['interaction_judgments'])
+            interaction['assembly_sources'].append({'frame_ids':batch,'sources':assembled['sources']})
         @stage('interaction_assembly', inputs={'interaction':interaction},
-            parameters={'output':root/'state/agent_interaction_judgments'/f'{object_id}.json'})
+            parameters={'output':root/'state/agent_interaction_judgments'/f'{object_id}.json',
+                'interaction_adapter':interaction_contract})
         def _stage_interaction_assembly():
             judgments=root/'state/agent_interaction_judgments'/f'{object_id}.json';judgments.parent.mkdir(parents=True,exist_ok=True)
             judgments.write_text(json.dumps(interaction,indent=2));record('interaction_assembly',[(judgments,'interaction_judgment')])
