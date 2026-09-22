@@ -28,6 +28,8 @@ def main(argv=None):
         video.add_argument('--gpu-uuid')
         video.add_argument('--sensor-calibration',type=Path)
         video.add_argument('--target-description')
+        video.add_argument('--observation-bundle-version', type=int, choices=(1,2), default=2,
+            help='v2 adds complete preprocessing observations; v1 is legacy training compatibility')
     resume=commands.add_parser('resume',help='continue verified source-observation production')
     resume.add_argument('--run-root',type=Path,required=True)
     resume.add_argument('--assets-manifest',type=Path,required=True)
@@ -144,6 +146,17 @@ def owned_surface_arguments(root, case, object_id, track_id, output, *, anchor=N
     return list(map(str,argv))
 
 
+def rgb_source_worker_arguments(*, annotations, manifest, depth, object_id, frame_ids,
+                                adapter, assets_manifest, lightglue_root, output_npz, output_json):
+    """The cold worker consumes observations only; no source/refined pose input."""
+    return list(map(str, ['--observation-mode', 'source-world', '--annotations', annotations,
+        '--raw-frame-manifest', manifest, '--depth-npz', depth, '--p09-adapter-report', adapter,
+        '--object-id', object_id, '--frame-start', min(frame_ids), '--frame-end', max(frame_ids),
+        '--keyframe-seconds', .5, '--source-gap-seconds', 2., '--keyframe-neighbor-span', 4,
+        '--lightglue-root', lightglue_root, '--assets-manifest', assets_manifest,
+        '--device', 'cuda:0', '--output-npz', output_npz, '--output-json', output_json]))
+
+
 def annotate(args):
     """Cold single-object video annotation; every observation is produced in this run."""
     import importlib, os, shutil, uuid, re
@@ -168,7 +181,7 @@ def annotate(args):
     os.environ['EGO_ASTRA_CREDENTIAL_FILE']=assets['agent_credential_file']
     code_root=Path(__file__).resolve().parent
     code_files=[code_root/'main.py']
-    for directory in ('utils','observations','actions','envs'):
+    for directory in ('utils','observations','actions','envs','data'):
         code_files.extend((code_root/directory).rglob('*.py'))
     code_hashes={str(p.relative_to(code_root)):sha(p) for p in code_files}
     root=args.run_root.resolve()
@@ -189,6 +202,7 @@ def annotate(args):
         if sha(root/'input/model_asset_manifest.json')!=contract.get('model_asset_manifest_sha256') or recovery_asset_manifest(assets)!=load(root/'input/model_asset_manifest.json'):
             raise ValueError('declared model asset bytes changed; asset reuse refused')
         args.case=contract['case'];args.target_description=contract['target_description']
+        bundle_version=int(contract.get('observation_bundle_version',1))
         timing=read_cfr_video_timing(raw)
         if timing.report()!=contract['source_timing']:
             raise ValueError('raw timeline changed')
@@ -205,7 +219,8 @@ def annotate(args):
         sensor=None
         if args.sensor_calibration is not None:
             sensor=root/'input/sensor_calibration.json';shutil.copyfile(args.sensor_calibration,sensor)
-        contract={'schema':'rgb_scene_input_v1','run_id':str(uuid.uuid4()),'case':args.case,
+        bundle_version=int(getattr(args,'observation_bundle_version',2))
+        contract={'observation_bundle_version':bundle_version,'schema':'rgb_scene_input_v1','run_id':str(uuid.uuid4()),'case':args.case,
             'run_root':str(root),'input_video':str(raw),'input_video_sha256':sha(raw),
             'source_video_path':str(Path(args.video).resolve()),
             'source_sensor_calibration_path':str(Path(args.sensor_calibration).resolve()) if args.sensor_calibration is not None else None,
@@ -464,6 +479,15 @@ def annotate(args):
             record('surface',[(ann,'observations'),(visible/'v19_visible_geometry_adapter_report.json','surface_report')])
             return ann
         ann = _stage_surface
+        rgb_npz = root/'measurements/object_motion'/object_id/'rgb_source.npz'
+        rgb_report = rgb_npz.with_suffix('.json')
+        worker('rgb_source_measurements', assets['rgb_python'], 'observations.object.rgb_tracking',
+            rgb_source_worker_arguments(annotations=ann, manifest=manifest, depth=bound,
+                object_id=object_id, frame_ids=ids,
+                adapter=visible/'v19_visible_geometry_adapter_report.json',
+                assets_manifest=args.assets_manifest, lightglue_root=assets['lightglue_root'],
+                output_npz=rgb_npz, output_json=rgb_report),
+            [(rgb_npz, 'rgb_source_arrays'), (rgb_report, 'rgb_source_report')])
         @stage('rigidity_evidence', inputs={'root':root,'object_id':object_id,'plan':plan_path,'manifest':manifest,'track':track_path,'owned':owned/'sam2_track.json'},
             parameters={'output_dir':root/'state/rigidity_evidence'})
         def _stage_rigidity_evidence():
@@ -534,6 +558,43 @@ def annotate(args):
         choice=ask('appearance_anchor',{'frame_ids':appearance_candidates,'preferred_frame_idx':preferred,'appearance':load(appearance)},appearance_images,choice_path)
         selected=choice['selected_frame_idx'];selected_row=appearance_rows[selected]
         if selected not in appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred):raise ValueError('selected appearance anchor lacks same-frame metric alignment')
+        visual_report_path = None
+        if bundle_version == 2:
+            from observations.object.visual_geometry import can_reuse_native, build_visual_geometry
+            @stage('appearance_native_choice', inputs={'metric_qc':qc,'decision':choice_path,
+                'appearance':appearance,'metric_anchor':anchor},
+                parameters={'seed':42,'same_frame_and_same_bytes_required':True})
+            def _stage_appearance_native_choice():
+                reuse=can_reuse_native(qc,selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
+                    selected_frame=selected,native_frame=anchor,seed=42)
+                receipt=root/'state/appearance_native_reuse.json'
+                value={'reuse_same_run_native':reuse,'source_qc':str(qc),'source_qc_sha256':sha(qc),
+                    'selected_frame_idx':selected,'metric_anchor_frame_idx':anchor,
+                    'image_sha256':sha(selected_row['raw_rgb_path']),
+                    'mask_sha256':sha(selected_row['appearance_mask_path']),
+                    'scope':'same_verified_stage_prefix_not_foreign_cache_import',
+                    'new_model_execution_claimed':False}
+                receipt.write_text(json.dumps(value,indent=2))
+                record('appearance_native_choice',[(receipt,'native_reuse_decision')])
+                return value
+            if _stage_appearance_native_choice['reuse_same_run_native']:
+                appearance_qc=qc
+            else:
+                _,appearance_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],
+                    selected_row['appearance_mask_path'],root/'measurements/appearance_native'/object_id,selected)
+            visual_dir=root/'measurements/visual_geometry_observations'/object_id
+            @stage('appearance_geometry', inputs={'annotations':ann,'appearance':appearance,
+                'decision':choice_path,'native_qc':appearance_qc},
+                parameters={'object_id':object_id,'output_dir':visual_dir,
+                    'coordinate_frame':'opencv_camera_at_appearance_anchor','no_image_scale_search':True})
+            def _stage_appearance_geometry():
+                path=build_visual_geometry(annotations=ann,appearance=appearance,decision=choice_path,
+                    native_qc=appearance_qc,output_dir=visual_dir,object_id=object_id,run_root=root)
+                report_payload=load(path)
+                record('appearance_geometry',[(path,'visual_geometry_report'),
+                    (Path(report_payload['output_mesh']['path']),'visual_full_metric_camera_mesh')])
+                return path
+            visual_report_path=_stage_appearance_geometry
         @stage('depth_review', inputs={'bound':bound,'manifest':manifest},
             parameters={'output_dir':root/'renders/depth','percentiles':[2,98]})
         def _stage_depth_review():
@@ -553,8 +614,9 @@ def annotate(args):
                     depth_images[int(frame)]=path
             return depth_images
         depth_images = {int(key):value for key,value in _stage_depth_review.items()}
-        interaction={'object_id':object_id,'status':'ok','interaction_judgments':[],'frames':[],
-            'diagnostics':{'occlusion':[],'depth_reliability':[]},'timeline_evidence':{'contact':[],'pads':[]}}
+        from observations.interaction.adapter import (assemble_interaction_evidence,
+            SCHEMA as INTERACTION_SCHEMA, CONTACT_SUPPORT_UNCERTAINTY_PRIOR_M)
+        interaction_batches=[]
         for offset in range(0,len(ids),12):
             batch=ids[offset:offset+12];batch_images=[Path(raw_by_id[i]['raw_frame_path']) for i in batch]
             evidence_batch={'frame_ids':batch}
@@ -563,29 +625,22 @@ def annotate(args):
             pads=ask('contact_pads',{**evidence_batch,'contact':contact},batch_images,destination/'pads.json')
             occlusion=ask('occlusion',evidence_batch,batch_images,destination/'occlusion.json')
             reliability=ask('depth_reliability',evidence_batch,batch_images+[depth_images[i] for i in batch],destination/'depth_reliability.json')
-            for name,result in [('occlusion',occlusion),('depth_reliability',reliability)]:
-                interaction['diagnostics'][name].append({'role':'diagnostic_only_not_a_visual_fit_factor',
-                    'intervals':result['intervals'],'judgment_sha256':sha(destination/f'{name}.json')})
             visibility=ask('visibility',evidence_batch,batch_images,destination/'visibility.json')
-            interaction['frames'].extend(visibility['frames'])
-            interaction['timeline_evidence']['contact'].append({'judgment_sha256':sha(destination/'contact.json'),
-                'intervals':contact['interaction_judgments'],'provenance':contact['judgment_provenance']})
-            interaction['timeline_evidence']['pads'].append({'judgment_sha256':sha(destination/'pads.json'),
-                'intervals':pads['intervals'],'provenance':pads['judgment_provenance']})
-            for row in contact['interaction_judgments']:
-                # Expand supplied intervals only to attach the independently judged anatomical pads.
-                for frame in batch:
-                    if row['frame_start']<=frame<=row['frame_end']:
-                        candidates=[r for r in pads['intervals'] if r['hand_side']==row['hand_side'] and r['frame_start']<=frame<=r['frame_end']]
-                        if len(candidates)>1:raise ValueError('overlapping anatomical pad judgments')
-                        entry={**row,'frame_start':frame,'frame_end':frame}
-                        if candidates:entry['primary_contact_pads']={'digits':candidates[0]['digits'],'rationale':candidates[0]['rationale']}
-                        interaction['interaction_judgments'].append(entry)
-        @stage('interaction_assembly', inputs={'interaction':interaction},
-            parameters={'output':root/'state/agent_interaction_judgments'/f'{object_id}.json'})
+            results={'contact':contact,'contact_pads':pads,'occlusion':occlusion,
+                'depth_reliability':reliability,'visibility':visibility}
+            filenames={'contact':'contact','contact_pads':'pads','occlusion':'occlusion',
+                'depth_reliability':'depth_reliability','visibility':'visibility'}
+            interaction_batches.append({'frame_ids':batch,'judgments':results,
+                'sources':{name:{'path':str(destination/(filename+'.json')),
+                    'sha256':sha(destination/(filename+'.json'))} for name,filename in filenames.items()}})
+        @stage('interaction_assembly', inputs={'batches':interaction_batches},
+            parameters={'output':root/'state/agent_interaction_judgments'/f'{object_id}.json',
+                'schema':INTERACTION_SCHEMA,'contact_support_uncertainty_prior_m':CONTACT_SUPPORT_UNCERTAINTY_PRIOR_M})
         def _stage_interaction_assembly():
+            interaction=assemble_interaction_evidence(object_id=object_id,frame_ids=ids,
+                batches=interaction_batches,support_uncertainty_prior_m=CONTACT_SUPPORT_UNCERTAINTY_PRIOR_M)
             judgments=root/'state/agent_interaction_judgments'/f'{object_id}.json';judgments.parent.mkdir(parents=True,exist_ok=True)
-            judgments.write_text(json.dumps(interaction,indent=2));record('interaction_assembly',[(judgments,'interaction_judgment')])
+            judgments.write_text(json.dumps(interaction,indent=2,allow_nan=False));record('interaction_assembly',[(judgments,'interaction_judgment')])
             return judgments
         judgments = _stage_interaction_assembly
         factor_root=root/'measurements/contact_visibility_factors'
@@ -612,6 +667,8 @@ def annotate(args):
         if not collision_mesh_path.is_file():
             raise ValueError('completion report lacks a readable collision mesh for the source-observation contract')
         artifacts={
+            'rgb_source_npz':(rgb_npz,'rgb_source_arrays'),
+            'rgb_source_report':(rgb_report,'rgb_source_report'),
             'runtime_input_contract':(root/'input/runtime_input_contract.json','runtime_input_contract'),
             'code_manifest':(code_manifest,'code_manifest'),
             'model_asset_manifest':(root/'input/model_asset_manifest.json','model_asset_manifest'),
@@ -636,13 +693,21 @@ def annotate(args):
             'interaction_judgments':(judgments,'contact_visibility_occlusion_evidence'),
             'interaction_factors':(factor_path,'qualified_contact_visibility_factors'),
         }
+        if visual_report_path is not None:
+            visual_report=load(visual_report_path)
+            artifacts.update({
+                'visual_geometry_report':(visual_report_path,'visual_geometry_report'),
+                'visual_mesh_camera':(Path(visual_report['output_mesh']['path']),'visual_full_metric_camera_mesh'),
+                'visual_native_mesh':(Path(visual_report['source_native_mesh']['path']),'visual_full_native_mesh'),
+                'visual_native_qc':(appearance_qc,'visual_native_model_prior'),
+            })
         @stage('source_observations',inputs={'artifacts':artifacts,'object_id':object_id,'track_id':track},
-            parameters={'output':bundle_path,'schema':'ego.annotation.observation_bundle.v1'})
+            parameters={'output':bundle_path,'schema':f'ego.annotation.observation_bundle.v{bundle_version}'})
         def _stage_source_observations():
             result=write_source_observation_manifest(output=bundle_path,run_root=root,case=args.case,
                 object_id=object_id,track_id=track,frame_ids=ids,
                 time_s=list(timing.presentation_times_s),source_timing=timing.report(),artifacts=artifacts,
-                mano_assets=Path(assets['mano_models']),
+                bundle_version=bundle_version,mano_assets=Path(assets['mano_models']),
                 wilor_root=Path(assets['wilor_root']) if assets.get('wilor_root') else None)
             record('source_observations',[(bundle_path,'source_observations')])
             return result

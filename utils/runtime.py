@@ -14,6 +14,7 @@ import stat
 import subprocess
 import urllib.request
 from utils.state import sha
+from utils.astra_transport import astra_urlopen, POLICY as ASTRA_TRANSPORT_POLICY
 
 ASTRA_MODEL = 'gpt-6-astra'
 ASTRA_ENDPOINT = 'https://litellm.dex-gem.ai/v1/responses'
@@ -34,7 +35,9 @@ def stage_environment(environment, extra_keys=()):
         'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'TORCH_HOME', 'XDG_CACHE_HOME',
         'EGO_SAM2_SOURCE', 'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', 'TORCH_FORCE_WEIGHTS_ONLY_LOAD',
         'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
-        'CONDA_PREFIX', 'VIRTUAL_ENV', *extra_keys}
+        'CONDA_PREFIX', 'VIRTUAL_ENV',
+        'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy',
+        'SSL_CERT_FILE','SSL_CERT_DIR', *extra_keys}
     return {key: hashlib.sha256(str(environment[key]).encode()).hexdigest()
         if key in environment else None for key in sorted(keys)}
 
@@ -62,7 +65,7 @@ def review_encoding_policy(max_request_bytes):
 def astra_stage_inputs(prompt, schema, evidence, images, *, max_request_bytes=None, adaptive_review_images=False):
     """Plan exactly the ordered visual request inputs, without calling Astra."""
     inputs = {'model': ASTRA_MODEL, 'endpoint': ASTRA_ENDPOINT, 'disable_fallbacks': True,
-        'prompt': prompt, 'schema': schema, 'evidence': evidence,
+        'prompt': prompt, 'schema': schema, 'evidence': evidence, 'transport_policy': dict(ASTRA_TRANSPORT_POLICY),
         'images': [{'path': str(Path(image).resolve()), 'sha256': sha(image),
                     'mime': mimetypes.guess_type(str(image))[0]} for image in images]}
     if adaptive_review_images:
@@ -147,7 +150,7 @@ def encode_astra_request(prompt, schema, evidence, images, *, max_request_bytes=
         'effective_payload_bytes': len(request_bytes), 'image_sha256': image_hashes,
         'ordered_images': ordered_images, 'review_encoding_policy': policy, 'encoding_attempts': attempts,
         'budget_satisfied': max_request_bytes is None or len(request_bytes) <= max_request_bytes,
-        'prompt': prompt, 'schema': schema, 'gateway_model_group': None}
+        'prompt': prompt, 'schema': schema, 'gateway_model_group': None, 'transport_policy': dict(ASTRA_TRANSPORT_POLICY)}
 
 
 def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None, adaptive_review_images=False):
@@ -171,10 +174,11 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
     request=urllib.request.Request(ASTRA_ENDPOINT,data=request_bytes,
         headers={'Content-Type':'application/json','User-Agent':'ego-annotation/1.0','Authorization':'Bearer '+key},method='POST')
     try:
-        with urllib.request.urlopen(request,timeout=120) as response:
+        with astra_urlopen(request,timeout=120) as response:
             raw=json.load(response)
             group=response.headers.get('x-litellm-model-group')
             request_id=response.headers.get('x-request-id')
+            connection_attempts=getattr(response,'astra_connection_attempts',[])
     except Exception as exc:
         if audit_dir is not None:
             (audit_dir/'transport_failure.json').write_text(json.dumps({'error_type':type(exc).__name__, 'request_sha256':request_provenance['effective_payload_sha256'], 'retry':False, 'gateway_model_group':None}))
@@ -193,7 +197,7 @@ def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_reque
     jsonschema.validate(result,schema)
     return result, {'request_model':ASTRA_MODEL,'response_model':raw['model'],
         'gateway_model_group':group,'disable_fallbacks':True,'response_id':raw.get('id'),
-        'request_id':request_id,**{k:v for k,v in request_provenance.items() if k!='gateway_model_group'}}
+        'request_id':request_id,'connection_attempts':connection_attempts,**{k:v for k,v in request_provenance.items() if k!='gateway_model_group'}}
 
 
 def judgment_cli(judge, *, audit_requests=False):

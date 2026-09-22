@@ -82,7 +82,7 @@ class AdaptiveReviewTests(unittest.TestCase):
                 max_request_bytes=MAX_REQUEST_BYTES, adaptive_review_images=True)
             self.assertEqual(plan['review_encoding'], audit['review_encoding_policy'])
             credential = root/'credential'; credential.write_text('fixture-only'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=TimeoutError('CPU fixture')) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime.astra_urlopen', side_effect=TimeoutError('CPU fixture')) as send:
                 with self.assertRaises(TimeoutError): judge(evidence, images, audit_dir=root/'audit')
                 self.assertEqual(send.call_count, 1)
                 self.assertEqual(send.call_args.kwargs['timeout'], 120)
@@ -127,7 +127,7 @@ class AdaptiveReviewTests(unittest.TestCase):
             class Response(io.BytesIO):
                 headers = {'x-litellm-model-group': 'gpt-6-astra'}
             credential = root/'credential'; credential.write_text('fixture-only'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', return_value=Response(json.dumps(raw).encode())) as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime.astra_urlopen', return_value=Response(json.dumps(raw).encode())) as send:
                 actual = namespace['ask']('pose_trajectory', evidence, images, root/'state/judgment.json')
             self.assertFalse(actual['trajectory_consistent'])
             self.assertEqual(actual['judgment_provenance']['encoding_attempts'][-1]['encoding_level'], 'jpeg_q80')
@@ -149,7 +149,7 @@ class AdaptiveReviewTests(unittest.TestCase):
             self.assert_wire_binding(payload, audit, evidence, images)
             self.assertEqual(audit['ordered_images'][0]['effective_dimensions_wh'], [576, 932])
             credential = root/'credential'; credential.write_text('fixture-only'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen') as send:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime.astra_urlopen') as send:
                 with self.assertRaisesRegex(ValueError, 'exceeds 2000000'):
                     judge(evidence, images, audit_dir=root/'audit')
                 send.assert_not_called()
@@ -165,7 +165,7 @@ class AdaptiveReviewTests(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertEqual(len(audit['encoding_attempts']), 1)
             self.assertEqual(audit['ordered_images'][0]['original_sha256'], audit['ordered_images'][0]['effective_sha256'])
-            with patch('urllib.request.urlopen') as send:
+            with patch('utils.runtime.astra_urlopen') as send:
                 with self.assertRaisesRegex(ValueError, 'requires an exact payload audit directory'):
                     judge(evidence, images)
                 send.assert_not_called()

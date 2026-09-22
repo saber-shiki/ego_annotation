@@ -17,6 +17,11 @@ import threading
 
 import numpy as np
 
+from data.immutable import freeze, thaw, frozen_array
+from data.interaction import load_interaction_evidence
+from data.timeline import declared_ids, join_annotation_rows, timeline_times
+from observations.contracts import SUPPORTED_SCHEMAS, validate_v2
+
 SCHEMA = "ego.annotation.observation_bundle.v1"
 HAND_SLOTS = ("left", "right")
 
@@ -30,9 +35,7 @@ def file_sha256(path: str | Path) -> str:
 
 
 def _frozen_array(value: Any, dtype: Any | None = None) -> np.ndarray:
-    array = np.array(value, dtype=dtype, copy=True)
-    array.setflags(write=False)
-    return array
+    return frozen_array(value, dtype)
 
 
 def _absolute(base: Path, value: str | Path) -> Path:
@@ -100,7 +103,8 @@ def _verify_source_value(value: Any, base: Path, label: str) -> None:
 
 
 def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | None = None) -> None:
-    if manifest.get("schema") != SCHEMA:
+    manifest = thaw(manifest)
+    if manifest.get("schema") not in SUPPORTED_SCHEMAS:
         raise ValueError(f"unsupported observation bundle schema: {manifest.get('schema')!r}")
     if manifest.get("contains_optimized_state") is True or manifest.get("contains_policy_results") is True:
         raise ValueError("source observation bundle declares downstream optimized/policy state")
@@ -131,6 +135,23 @@ def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | N
     sources = manifest.get("sources")
     if not isinstance(sources, Mapping):
         raise ValueError("manifest requires sources")
+    from observations.object.rgb_evidence import SCHEMA as RGB_SCHEMA, EXTENSION
+    rgb_names = {'rgb_source_npz', 'rgb_source_report'}
+    extensions = manifest.get('extensions', {})
+    if not isinstance(extensions, Mapping):
+        raise ValueError('observation extensions must be a mapping')
+    rgb_extension = extensions.get(EXTENSION)
+    if rgb_names.intersection(sources) or rgb_extension is not None:
+        if not rgb_names.issubset(sources) or rgb_extension != RGB_SCHEMA:
+            raise ValueError('RGB source extension requires versioned paired NPZ/report')
+        for name, role in (('rgb_source_npz', 'rgb_source_arrays'), ('rgb_source_report', 'rgb_source_report')):
+            if not isinstance(sources[name], Mapping) or sources[name].get('role') != role:
+                raise ValueError('RGB source artifact role mismatch')
+        for name in ('conditioned_depth', 'raw_frames', 'surface_report'):
+            if name not in sources:
+                raise ValueError(f'RGB source extension missing bound input: {name}')
+    if 'visual_geometry_report' in sources and manifest.get('schema') != 'ego.annotation.observation_bundle.v2':
+        raise ValueError('complete visual geometry requires an explicit v2 bundle')
     for required in ("annotations", "mano_archive", "object_mesh"):
         value = sources.get(required)
         if not isinstance(value, Mapping):
@@ -157,6 +178,11 @@ def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | N
     if (not isinstance(frame_range, list) or len(frame_range) != 2 or any(type(v) is not int for v in frame_range)
             or frame_range[1] < frame_range[0]):
         raise ValueError("frame_range must be inclusive integer [start, end]")
+    if "frame_ids" in manifest:
+        declared_ids(manifest)
+    if "time_s" in manifest:
+        timeline_times(manifest["time_s"], len(declared_ids(manifest)))
+    validate_v2(manifest)
     slots = manifest.get("entity_slots")
     if not isinstance(slots, Mapping) or slots.get("hands") != list(HAND_SLOTS):
         raise ValueError("entity_slots.hands must be ['left', 'right']")
@@ -192,6 +218,8 @@ def prepared_manifest(
     factor_reports: Sequence[str | Path] = (), completion_report: str | Path | None = None,
     mano_assets: str | Path | None = None, signed_face_authority: str | Path | Mapping[str, str | Path] | None = None,
     collision_mesh: str | Path | Mapping[str, str | Path] | None = None,
+    frame_ids: Sequence[int] | None = None,
+    interaction_judgments: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create a source-only manifest over existing prepared observations.
 
@@ -236,7 +264,7 @@ def prepared_manifest(
             item["signed_face_authority"] = _artifact(authority)
         assets[entity] = item
     sources["object_assets"] = assets
-    for name, path in (("mano_bridge", mano_bridge), ("contact_factors", contact_factors), ("completion_report", completion_report)):
+    for name, path in (("mano_bridge", mano_bridge), ("contact_factors", contact_factors), ("completion_report", completion_report), ("interaction_judgments", interaction_judgments)):
         if path is not None:
             sources[name] = _artifact(path)
     if factor_reports:
@@ -252,6 +280,7 @@ def prepared_manifest(
         "identity": {"source_video": _artifact(source_video), "code": {"path": code_identity[0], "sha256": code_identity[1]},
                      "config": {"path": config_identity[0], "sha256": config_identity[1]}},
         "sources": sources, "frame_range": [int(frame_range[0]), int(frame_range[1])],
+        **({"frame_ids": list(frame_ids)} if frame_ids is not None else {}),
         "entity_slots": {"hands": list(HAND_SLOTS), "objects": [str(value) for value in object_ids]},
         "provenance": {"prediction_only": True, "legacy_optimizer_required": False,
                        "object_pose_role": "source_observation_initializer_not_solved_trajectory",
@@ -262,6 +291,7 @@ def prepared_manifest(
 
 def write_manifest(path: str | Path, manifest: Mapping[str, Any]) -> Path:
     path = Path(path)
+    manifest = thaw(manifest)
     validate_manifest(manifest)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -280,7 +310,7 @@ class EpisodeBundle:
         manifest_path = Path(path).expanduser().resolve()
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         validate_manifest(payload, manifest_path if verify else None)
-        return cls(manifest_path, MappingProxyType(json.loads(json.dumps(payload, allow_nan=False))))
+        return cls(manifest_path, freeze(json.loads(json.dumps(payload, allow_nan=False))))
 
     @property
     def bundle_id(self) -> str:
@@ -301,6 +331,19 @@ class EpisodeBundle:
             if "arrays" not in self._cache:
                 self._cache["arrays"] = MappingProxyType(_load_prepared_sources(self))
             return self._cache["arrays"]
+
+    def load_observations(self) -> Mapping[str, Any]:
+        """Load preprocessing views without creating the legacy solver contact patch.
+
+        This is not an environment reset and does not load MANO model weights.
+        Independent P17 first-surface queries remain available; frozen legacy
+        nearest-triangle membership is explicitly marked as not prepared.
+        """
+        with self._lock:
+            if "observation_arrays" not in self._cache:
+                self._cache["observation_arrays"] = MappingProxyType(
+                    _load_prepared_sources(self, prepare_legacy_contacts=False))
+            return self._cache["observation_arrays"]
 
 
 def _load_mesh_arrays(path: Path) -> tuple[np.ndarray, np.ndarray, bool]:
@@ -351,7 +394,7 @@ def _factor_reports(bundle: EpisodeBundle) -> list[dict[str, Any]]:
         raw = sources.get(name)
         if isinstance(raw, Mapping) and "path" in raw:
             values.append(raw)
-        elif isinstance(raw, list):
+        elif isinstance(raw, (list, tuple)):
             values.extend(value for value in raw if isinstance(value, Mapping))
     reports = []
     seen: set[Path] = set()
@@ -403,7 +446,7 @@ def _frozen_row(value: Mapping[str, Any], *, report_index: int, row_kind: str) -
     item = json.loads(json.dumps(dict(value), allow_nan=False))
     item["_report_index"] = report_index
     item["_row_kind"] = row_kind
-    return MappingProxyType(item)
+    return freeze(item)
 
 
 def _first_vector(row: Mapping[str, Any], names: Sequence[str], shape: tuple[int, ...], default: np.ndarray) -> np.ndarray:
@@ -415,22 +458,46 @@ def _first_vector(row: Mapping[str, Any], names: Sequence[str], shape: tuple[int
     return default
 
 
-def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
+def _load_prepared_sources(bundle: EpisodeBundle, *, prepare_legacy_contacts: bool = True) -> dict[str, Any]:
     manifest = bundle.manifest
     start, end = map(int, manifest["frame_range"])
     annotations = json.loads(bundle.source_path("annotations").read_text(encoding="utf-8"))
-    frames_by_id = {int(row.get("frame_idx", pos)): row for pos, row in enumerate(annotations.get("frames", []))}
-    frame_ids = np.arange(start, end + 1, dtype=np.int64)
-    if any(int(value) not in frames_by_id for value in frame_ids):
-        raise ValueError("annotations do not cover declared frame_range")
-    frames = [frames_by_id[int(value)] for value in frame_ids]
-    times = np.asarray([row["time_s"] for row in frames], dtype=np.float64)
-    if not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
-        raise ValueError("bundle timestamps must be finite and strictly increasing")
+    frame_ids, times, frames = join_annotation_rows(manifest, annotations.get("frames", []))
     camera_T = np.asarray([row["camera"].get("T_world_camera_metric", row["camera"].get("T_world_camera")) for row in frames], dtype=np.float64)
     intrinsics = np.asarray([row["camera"]["intrinsics_fx_fy_cx_cy"] for row in frames], dtype=np.float64)
     if camera_T.shape != (len(frames), 4, 4) or intrinsics.shape != (len(frames), 4) or not np.isfinite(camera_T).all() or not np.isfinite(intrinsics).all():
         raise ValueError("invalid camera timeline")
+    rgb_evidence = None  # Explicit missing capability in v1/prepared bundles without the extension.
+    if 'rgb_source_npz' in manifest['sources']:
+        from data.rgb import load_rgb_source_evidence
+        for name in ('rgb_source_npz', 'rgb_source_report'):
+            if file_sha256(bundle.source_path(name)) != manifest['sources'][name]['sha256']:
+                raise ValueError(f'RGB source artifact changed: {name}')
+        rgb_evidence = load_rgb_source_evidence(bundle.source_path('rgb_source_npz'),
+            bundle.source_path('rgb_source_report'), frame_ids=frame_ids, times=times,
+            frames=frames, object_ids=list(manifest['entity_slots']['objects']),
+            expected_inputs={key: bundle.source_path(name) for key, name in (
+                ('annotations', 'annotations'), ('depth_npz', 'conditioned_depth'),
+                ('raw_frame_manifest', 'raw_frames'), ('p09_adapter_report', 'surface_report'))})
+    motion_preprocessing = None
+    anchor = annotations.get('v19_visible_geometry_adapter', {}).get('anchor_frame_idx')
+    if rgb_evidence is not None and anchor is not None:
+        from data.motion import prepare_motion
+        motion_preprocessing = prepare_motion(rgb_evidence, frames, rgb_evidence.object_id, anchor)
+    interaction_payload = None
+    if "interaction_judgments" in manifest["sources"]:
+        interaction_path = bundle.source_path("interaction_judgments")
+        if file_sha256(interaction_path) != manifest["sources"]["interaction_judgments"]["sha256"]:
+            raise ValueError("interaction source identity changed before loading")
+        interaction_payload = json.loads(interaction_path.read_text())
+        if 'typed_interaction' in manifest.get('capabilities', ()):
+            from observations.interaction.adapter import SCHEMA as INTERACTION_SCHEMA
+            if interaction_payload.get('schema') != INTERACTION_SCHEMA:
+                raise ValueError('typed_interaction capability requires versioned source declarations')
+    interaction = load_interaction_evidence(interaction_payload, frame_ids, list(manifest["entity_slots"]["objects"]))
+    from data.interaction_features import compile_interaction_timeline
+    interaction_timelines = MappingProxyType({entity: compile_interaction_timeline(interaction, frame_ids, entity)
+        for entity in manifest["entity_slots"]["objects"]})
     size = np.asarray([frames[0].get("source_width"), frames[0].get("source_height")], dtype=np.int64)
 
     declared_mano = bundle.source_path("mano_archive")
@@ -529,6 +596,31 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
             authority=eligible; authority_state="active_mesh_bound_local_face_authority" if authority.any() else "inactive_zero_signed_faces"
         objects[entity]={"entity_id":entity,"present":_frozen_array(present),"pose_valid":_frozen_array(pose_valid),"valid":_frozen_array(np.asarray(present)&np.asarray(pose_valid)),"metric_observation_eligible":_frozen_array(metric_eligible),"rotation":_frozen_array(rotations),"translation":_frozen_array(translations),"pose_vertices_canonical":_frozen_array(pose_vertices),"pose_faces":_frozen_array(pose_faces),"pose_mesh_sha256":file_sha256(pose_path),"pose_mesh_face_count":int(len(pose_faces)),"vertices_canonical":_frozen_array(pose_vertices),"faces":_frozen_array(pose_faces),"collision_vertices_canonical":_frozen_array(collision_vertices),"collision_faces":_frozen_array(collision_faces),"collision_mesh_sha256":collision_sha,"collision_mesh_face_count":int(len(collision_faces)),"collision_mesh_role":collision_role,"watertight":bool(collision_watertight),"signed_geometry_ready":readiness.get("signed_geometry_ready") is True,"signed_authority":_frozen_array(authority),"signed_authority_state":authority_state,"raw_observed_points_world":tuple(_frozen_array(value) for value in raw_points),"observed_points_world":tuple(_frozen_array(value) for value in admitted),"observed_point_state":tuple(states),"pose_provenance":"source_observation_initializer_not_solved_trajectory","geometry_provenance":"completed_reconstructed_pose_mesh"}
 
+    visual_geometry = None
+    if 'visual_geometry_report' in manifest['sources']:
+        if len(object_ids) != 1:
+            raise ValueError('current complete visual observation supports one selected object')
+        from data.geometry import load_visual_geometry
+        for name in ('visual_geometry_report','visual_mesh_camera','visual_native_mesh','visual_native_qc','appearance_masks'):
+            if file_sha256(bundle.source_path(name)) != manifest['sources'][name]['sha256']:
+                raise ValueError('visual source artifact changed: '+name)
+        visual_geometry = load_visual_geometry(bundle.source_path('visual_geometry_report'),
+            frame_ids=frame_ids,frames=frames,object_id=object_ids[0],expected_inputs={
+                'annotations':bundle.source_path('annotations'),
+                'appearance':bundle.source_path('appearance_masks'),
+                'decision':bundle.source_path('appearance_anchor_decision'),
+                'native_qc':bundle.source_path('visual_native_qc'),
+                'native_mesh':bundle.source_path('visual_native_mesh'),
+                'output_mesh':bundle.source_path('visual_mesh_camera')})
+
+    source_visual = appearance_evidence = None
+    if manifest.get('schema') == 'ego.annotation.observation_bundle.v2':
+        from data.visual_preprocessing import source_hand_views, load_appearance_observations
+        source_visual = source_hand_views(hands, frame_ids, camera_T, intrinsics, size)
+        if 'appearance_masks' in manifest['sources']:
+            appearance_evidence = load_appearance_observations(bundle.source_path('appearance_masks'),
+                annotations_path=bundle.source_path('annotations'), frames=frames, object_id=object_ids[0])
+
     reports=_factor_reports(bundle)
     typed: dict[tuple[int,str|None,str|None,str],list[Mapping[str,Any]]]={}
     by_family: dict[str,list[Mapping[str,Any]]]={}
@@ -537,7 +629,7 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
             for raw in report.get(kind,[]):
                 if not isinstance(raw,Mapping): continue
                 frame=int(raw.get("frame_idx",-1)); side=str(raw["hand_side"]) if raw.get("hand_side") in HAND_SLOTS else None; target=_row_target(raw,aliases); family=str(raw.get("factor_family","unknown"))
-                if frame<start or frame>end: continue
+                if frame not in frame_ids: continue
                 frozen=_frozen_row(raw,report_index=report_index,row_kind=kind)
                 typed.setdefault((frame,side,target,family),[]).append(frozen); by_family.setdefault(family,[]).append(frozen)
     typed_frozen=MappingProxyType({key:tuple(value) for key,value in typed.items()})
@@ -577,27 +669,31 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
             vertices=hands[side]["vertices"][pos]; cam=(vertices-camera_T[pos,:3,3])@camera_T[pos,:3,:3]; fx,fy,cx,cy=intrinsics[pos]; uv=np.column_stack([fx*cam[:,0]/np.maximum(cam[:,2],1e-6)+cx,fy*cam[:,1]/np.maximum(cam[:,2],1e-6)+cy]); q=np.column_stack([uv,np.ones(len(uv))])@affine.T; q=q[:,:2]/np.maximum(q[:,2:3],1e-12); u=np.rint(q[:,0]).astype(int);v=np.rint(q[:,1]).astype(int); valid=(cam[:,2]>1e-5)&(u>=0)&(u<depth.shape[1])&(v>=0)&(v<depth.shape[0]); ids=np.flatnonzero(valid); ids=ids[support[v[ids],u[ids]]] if len(ids) else ids; zvals=depth[v[ids],u[ids]].astype(float) if len(ids) else np.zeros(0); finite=np.isfinite(zvals)&(zvals>1e-5); ids,zvals=ids[finite],zvals[finite]
             depth_by_hand[side][pos]={"state":"active_independent_P09_first_surface_depth_order_query" if len(ids) else "inactive_no_supported_projected_vertices","vertex_ids":_frozen_array(ids,np.int64),"surface_depth_m":_frozen_array(zvals,np.float64),"initial_delta_m":_frozen_array(cam[ids,2]-zvals,np.float64),"translation_support_count":int(len(ids)),"npz_path":str(path),"npz_sha256":expected,"factor_row":row}
 
-    # Freeze default contact membership against source MANO and source target mesh once.
-    try:
-        from utils.candidate_geometry import make_scene, contact_patch_targets_from_vertices
-        for (frame,side,target),entry in contact.items():
-            pos=frame_position[frame]; obj=objects[target]
-            if entry["state"]!="active_contact_patch" or not hands[side]["valid"][pos] or not obj["valid"][pos] or not len(obj["collision_faces"]):
-                entry.update({"vertex_ids":_frozen_array([],np.int64),"targets_object":_frozen_array(np.zeros((0,3))),"normals_object":_frozen_array(np.zeros((0,3))),"distances_m":_frozen_array([]),"initial_contact_geometry_target_probability":float(entry["prior"]),"membership_state":"inactive_contact_or_target_unavailable"}); continue
-            scene=make_scene(obj["collision_vertices_canonical"],obj["collision_faces"])
-            triangles=np.asarray(obj["collision_vertices_canonical"])[np.asarray(obj["collision_faces"],np.int64)]
-            normals=np.cross(triangles[:,1]-triangles[:,0],triangles[:,2]-triangles[:,0])
-            normals/=np.maximum(np.linalg.norm(normals,axis=1,keepdims=True),1e-12)
-            ids,targets,normals_world,dist=contact_patch_targets_from_vertices(
-                hands[side]["vertices"][pos],scene,obj["rotation"][pos],obj["translation"][pos],
-                np.ones(len(obj["collision_faces"]),bool),normals,
-                max_vertices=int(entry["factor_row"].get("max_vertices",160)),band_m=float(entry["band_m"]))
-            R=obj["rotation"][pos];t=obj["translation"][pos]
-            deadband=max(float(entry["margin_m"]+entry["support_uncertainty_m"]),1e-6)
-            target_probability=float(np.exp(-.5*(float(np.median(dist))/deadband)**2)) if len(dist) else float(entry["prior"])
-            entry.update({"vertex_ids":_frozen_array(ids,np.int64),"targets_object":_frozen_array((targets-t)@R if len(targets) else np.zeros((0,3))),"normals_object":_frozen_array(normals_world@R if len(normals_world) else np.zeros((0,3))),"distances_m":_frozen_array(dist),"initial_contact_geometry_target_probability":target_probability,"membership_state":"active_frozen_source_patch" if len(ids) else "inactive_no_source_patch_vertices"})
-    except ImportError as exc:
-        raise RuntimeError("source contact patch freezing requires declared geometry runtime") from exc
+    if not prepare_legacy_contacts:
+        for entry in contact.values():
+            entry['membership_state'] = 'not_prepared_observation_inspection'
+    else:
+        # Freeze default contact membership against source MANO and source target mesh once.
+        try:
+            from utils.candidate_geometry import make_scene, contact_patch_targets_from_vertices
+            for (frame,side,target),entry in contact.items():
+                pos=frame_position[frame]; obj=objects[target]
+                if entry["state"]!="active_contact_patch" or not hands[side]["valid"][pos] or not obj["valid"][pos] or not len(obj["collision_faces"]):
+                    entry.update({"vertex_ids":_frozen_array([],np.int64),"targets_object":_frozen_array(np.zeros((0,3))),"normals_object":_frozen_array(np.zeros((0,3))),"distances_m":_frozen_array([]),"initial_contact_geometry_target_probability":float(entry["prior"]),"membership_state":"inactive_contact_or_target_unavailable"}); continue
+                scene=make_scene(obj["collision_vertices_canonical"],obj["collision_faces"])
+                triangles=np.asarray(obj["collision_vertices_canonical"])[np.asarray(obj["collision_faces"],np.int64)]
+                normals=np.cross(triangles[:,1]-triangles[:,0],triangles[:,2]-triangles[:,0])
+                normals/=np.maximum(np.linalg.norm(normals,axis=1,keepdims=True),1e-12)
+                ids,targets,normals_world,dist=contact_patch_targets_from_vertices(
+                    hands[side]["vertices"][pos],scene,obj["rotation"][pos],obj["translation"][pos],
+                    np.ones(len(obj["collision_faces"]),bool),normals,
+                    max_vertices=int(entry["factor_row"].get("max_vertices",160)),band_m=float(entry["band_m"]))
+                R=obj["rotation"][pos];t=obj["translation"][pos]
+                deadband=max(float(entry["margin_m"]+entry["support_uncertainty_m"]),1e-6)
+                target_probability=float(np.exp(-.5*(float(np.median(dist))/deadband)**2)) if len(dist) else float(entry["prior"])
+                entry.update({"vertex_ids":_frozen_array(ids,np.int64),"targets_object":_frozen_array((targets-t)@R if len(targets) else np.zeros((0,3))),"normals_object":_frozen_array(normals_world@R if len(normals_world) else np.zeros((0,3))),"distances_m":_frozen_array(dist),"initial_contact_geometry_target_probability":target_probability,"membership_state":"active_frozen_source_patch" if len(ids) else "inactive_no_source_patch_vertices"})
+        except ImportError as exc:
+            raise RuntimeError("source contact patch freezing requires declared geometry runtime") from exc
 
     # Copy frozen first-surface rows into every target-pair contact record; this
     # preserves the legacy single-target compatibility view without changing pair identity.
@@ -617,4 +713,4 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
         matches=[v for (f,s,_),v in frozen_contact.items() if f==frame and s==side]
         if len(matches)==1: legacy_contact[frame,side]=value
 
-    return {"frame_idx":_frozen_array(frame_ids),"time_s":_frozen_array(times),"T_world_camera":_frozen_array(camera_T),"intrinsics":_frozen_array(intrinsics),"image_size_wh":_frozen_array(size),"hands":MappingProxyType({side:MappingProxyType(value) for side,value in hands.items()}),"objects":MappingProxyType({entity:MappingProxyType(value) for entity,value in objects.items()}),"contact":MappingProxyType(frozen_contact),"contact_legacy":MappingProxyType(legacy_contact),"factor_rows":typed_frozen,"factor_rows_by_family":by_family_frozen,"identity":manifest["identity"],"provenance":manifest.get("provenance",{})}
+    return {"annotation_frames":tuple(freeze(frame) for frame in frames),"legacy_contact_patch_prepared":prepare_legacy_contacts,"source_visual_preprocessing":source_visual,"appearance_evidence":appearance_evidence,"visual_geometry":visual_geometry,"motion_preprocessing":motion_preprocessing,"rgb_evidence":rgb_evidence,"interaction_timelines":interaction_timelines,"interaction_evidence":interaction,"frame_idx":_frozen_array(frame_ids),"time_s":_frozen_array(times),"T_world_camera":_frozen_array(camera_T),"intrinsics":_frozen_array(intrinsics),"image_size_wh":_frozen_array(size),"hands":MappingProxyType({side:MappingProxyType(value) for side,value in hands.items()}),"objects":MappingProxyType({entity:MappingProxyType(value) for entity,value in objects.items()}),"contact":MappingProxyType(frozen_contact),"contact_legacy":MappingProxyType(legacy_contact),"factor_rows":typed_frozen,"factor_rows_by_family":by_family_frozen,"identity":manifest["identity"],"provenance":manifest.get("provenance",{})}

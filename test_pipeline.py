@@ -389,7 +389,7 @@ class AstraTransportTests(unittest.TestCase):
                 self.assertIs(sent['store'],False)
                 self.assertEqual(sent['input'][0]['content'][-1]['type'],'input_image')
                 return Response(json.dumps(payload).encode())
-            with patch.dict(os.environ,{'EGO_ASTRA_CREDENTIAL_FILE':str(credential)}),patch('urllib.request.urlopen',endpoint):
+            with patch.dict(os.environ,{'EGO_ASTRA_CREDENTIAL_FILE':str(credential)}),patch('utils.runtime.astra_urlopen',endpoint):
                 result,receipt=astra_request('color?',schema,{},[image])
                 self.assertEqual(result,{'color':'red'})
                 self.assertEqual(receipt['response_model'],'gpt-6-astra')

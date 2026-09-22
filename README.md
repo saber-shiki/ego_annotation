@@ -1,12 +1,60 @@
 # RL-first ego annotation
 
-`python main.py` is the observation-only entry. It produces a hash-bound
-`ego.annotation.observation_bundle.v1` manifest and stops before numerical refinement,
-MANO fitting, policy inference, or rendering. The manifest binds raw camera/depth,
-HaWoR/MANO parameters, P09 observed geometry with its uncertain
-`reconstructed_geometry_pose` initializer, reconstructed mesh, masks/ownership,
-and independent interaction/P17 evidence. It never contains `pose_fits/**`,
-accepted hand archives, policy results, or rendered annotations.
+**Latest real-data validation (2026-09-22):** the real milk v2 cold run completed
+96 stages and passed full observation readback plus all-frame source MANO replay.
+An additive environment-side *validation-only* consumer passed zero/controlled
+geometry/export checks. This is NOT a trainable replacement for the old
+AnnotationEnv/480-feature actor: the policy compatibility check remains blocked.
+See [real v2 milestones](docs/REAL_V2_MILESTONES_RESULTS.md) for actual artifacts,
+visible seed errors, throughput limits, and the exact remaining integration work.
+The current default candidate is now the full-native, no-RGB-seed source baseline;
+the seed is retained only as an explicit comparison. See [no-seed RL baseline and
+V7 audit](docs/NO_RGB_SEED_RL_BASELINE_RESULTS.md).
+The earlier [original-RL comparison](docs/ORIGINAL_RL_SOURCE_COMPARISON.md) confirmed
+that the preserved source initializer remains close to the historical RL output,
+but the full-native/RGB-seed display has a real projection regression. The RGB seed
+is retained only for comparison and has not been corrected or made the default.
+
+
+`python main.py` is the observation-only entry. On this observation-alignment
+branch it defaults to a hash-bound `ego.annotation.observation_bundle.v2` manifest
+and stops before trajectory optimization, MANO fitting, policy inference, or
+rendering. V2 includes independent source-world RGB/PnP measurements, typed
+interaction/visibility evidence, and the complete appearance-native mesh in the
+selected frame's metric camera coordinates. Explicit
+`--observation-bundle-version 1` retains the legacy bundle interface.
+
+**Scope boundary:** training/PPO, policy encoders, actions, reward profiles,
+candidate dynamics and rendering are unchanged. V2 is marked `preprocessing_only`;
+the existing episode-index/dataset interface rejects it until an explicit future
+training adapter exists. Use `EpisodeBundle.open(...).load()` to inspect the new
+preprocessed observations, not `train.py`. V1 remains compatible with the old
+consumers but does not make them consume the new visual/interaction features.
+
+For independent v2 acceptance without PPO/model inference:
+
+```bash
+python -m observations.inspect --source-observations RUN/source_observations.json \
+  --output-dir NEW_DIRECTORY_OUTSIDE_RUN
+```
+
+This reads every declared timeline frame and runs source preprocessing, producing
+numeric NPZ/CSV, selected-frame geometry/matching QC images and an explicit
+pending-consumer matrix. It requires complete v2 capabilities, does not promote
+old v1 runs, and does not certify final annotation quality. The observation-only
+Python API is `EpisodeBundle.open(...).load_observations()`; unlike `.load()`, it
+does not prepare the legacy solver contact patch. See
+[observation inspection](docs/OBSERVATION_INSPECTION.md) for exit codes, actual
+synthetic acceptance artifacts and the remaining real-milk v2 validation boundary.
+
+See [the implementation report](docs/OBSERVATION_ALIGNMENT_IMPLEMENTATION.md)
+for APIs, tests and unvalidated real-worker/visual-quality boundaries.
+
+The manifest binds raw camera/depth, HaWoR/MANO parameters, P09 observed geometry
+with its uncertain `reconstructed_geometry_pose` initializer, separately named
+pose/collision/visual meshes, masks/ownership, and independent interaction/P17
+evidence. It never contains `pose_fits/**`, accepted hand archives, policy
+results, or rendered annotations.
 
 Preserved numerical reference commands are owned by `python optimize.py` and
 `legacy_optimize/`. Pure kernels live under `rewards/terms`; evidence qualification

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from utils.state import sha
+from observations.contracts import SCHEMA_V2, SUPPORTED_SCHEMAS, classification, validate_v2
+from data.timeline import timeline_ids, timeline_times
 
 SCHEMA = "ego.annotation.observation_bundle.v1"
 BUNDLE_VERSION = 1
@@ -50,11 +52,16 @@ def build_source_observation_manifest(
     artifacts: Mapping[str, tuple[Path, str]],
     mano_assets: Path | None = None,
     wilor_root: Path | None = None,
+    bundle_version: int = 1,
 ) -> dict[str, Any]:
     if not frame_ids or frame_ids != sorted(set(frame_ids)):
         raise ValueError("source observation frame_ids must be non-empty, sorted, and unique")
+    timeline_ids(frame_ids)
+    if bundle_version not in (1, 2):
+        raise ValueError("unsupported bundle version")
     if len(time_s) != len(frame_ids):
         raise ValueError("source observation timestamps must match frame_ids")
+    timeline_times(time_s, len(frame_ids))
     required = {
         "runtime_input_contract",
         "code_manifest",
@@ -105,6 +112,29 @@ def build_source_observation_manifest(
         "interaction_judgments": records["interaction_judgments"],
         "appearance_anchor_decision": records["appearance_anchor_decision"],
     }
+    rgb_names = {'rgb_source_npz', 'rgb_source_report'}
+    if rgb_names.intersection(records) and not rgb_names.issubset(records):
+        raise ValueError('RGB source extension requires paired NPZ/report')
+    extensions = {}
+    if rgb_names.issubset(records):
+        if 'surface_report' not in records:
+            raise ValueError('RGB source extension requires bound P09 surface_report')
+        from observations.object.rgb_evidence import SCHEMA as RGB_SCHEMA, EXTENSION
+        for name, role in (('rgb_source_npz', 'rgb_source_arrays'), ('rgb_source_report', 'rgb_source_report')):
+            if records[name]['role'] != role:
+                raise ValueError('RGB source artifact role mismatch')
+            sources[name] = records[name]
+        sources['raw_frames'] = records['raw_frames']
+        sources['surface_report'] = records['surface_report']
+        extensions[EXTENSION] = RGB_SCHEMA
+    visual_names = {'visual_geometry_report','visual_mesh_camera','visual_native_mesh','visual_native_qc'}
+    if visual_names.intersection(records):
+        if bundle_version != 2 or visual_names - records.keys() or 'appearance_masks' not in records:
+            raise ValueError('complete visual geometry requires v2 and all role-bound inputs')
+        for name in (*sorted(visual_names), 'appearance_masks', 'raw_frames', 'surface_report'):
+            sources[name] = records[name]
+        from observations.object.visual_geometry import SCHEMA as VISUAL_SCHEMA
+        extensions['visual_geometry_observation'] = VISUAL_SCHEMA
     if mano_assets is not None:
         asset_root = Path(mano_assets).expanduser().resolve()
         left = asset_root / "MANO_LEFT.pkl"
@@ -120,9 +150,10 @@ def build_source_observation_manifest(
             "wrapper_path": str(wrapper),
             "wrapper_sha256": sha(wrapper),
         }
-    return {
-        "schema": SCHEMA,
-        "bundle_version": BUNDLE_VERSION,
+    result = {
+        "extensions": extensions,
+        "schema": SCHEMA if bundle_version == 1 else SCHEMA_V2,
+        "bundle_version": bundle_version,
         "bundle_id": bundle_id,
         "clip_id": str(case),
         "source_video_id": records["raw_video"]["sha256"],
@@ -160,6 +191,22 @@ def build_source_observation_manifest(
         },
     }
 
+    if bundle_version == 2:
+        result.update(preprocessing_only=True, capabilities=["explicit_timeline"],
+                      observation_roles=classification(records))
+        from observations.interaction.adapter import SCHEMA as INTERACTION_SCHEMA
+        interaction_payload = json.loads(Path(artifacts['interaction_judgments'][0]).read_text()) if Path(artifacts['interaction_judgments'][0]).suffix == '.json' else {}
+        if interaction_payload.get('schema') == INTERACTION_SCHEMA:
+            from data.interaction import load_interaction_evidence
+            load_interaction_evidence(interaction_payload, frame_ids, [object_id])
+            result['capabilities'].append('typed_interaction')
+        if extensions.get('rgb_source_measurements'):
+            result['capabilities'].append('rgb_motion')
+        if visual_names.issubset(records):
+            result['capabilities'].append('full_visual_geometry')
+        validate_v2(result)
+    return result
+
 
 def write_source_observation_manifest(output: Path, **kwargs: Any) -> dict[str, Any]:
     output = Path(output)
@@ -176,10 +223,11 @@ def write_source_observation_manifest(output: Path, **kwargs: Any) -> dict[str, 
 def load_source_observation_manifest(path: Path) -> dict[str, Any]:
     path = Path(path).resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != SCHEMA or payload.get("bundle_version") != BUNDLE_VERSION:
+    if payload.get("schema") not in SUPPORTED_SCHEMAS or payload.get("bundle_version") != (2 if payload.get("schema") == SCHEMA_V2 else 1):
         raise ValueError("unsupported source observation bundle schema/version")
     if payload.get("contains_optimized_state") is not False or payload.get("contains_policy_results") is not False:
         raise ValueError("source observation bundle contains downstream state")
+    validate_v2(payload)
     root = path.parent
     for name, record in payload.get("artifacts", {}).items():
         artifact = (root / record["path"]).resolve()

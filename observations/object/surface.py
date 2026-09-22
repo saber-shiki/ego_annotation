@@ -121,7 +121,7 @@ def file_record(path: Path) -> dict[str, Any]:
 
 class MetricEligibility:
 
-    def __init__(self, manifest_path: Path, *, case: str, object_id: str, track_id: str, sam2_track: Path, depth_npz: Path, base_annotations: Path | None, calibration_contract: Path | None, frame_to_depth_i: dict[int, int], depth: np.ndarray):
+    def __init__(self, manifest_path: Path, *, case: str, object_id: str, track_id: str, sam2_track: Path, depth_npz: Path, base_annotations: Path | None, calibration_contract: Path | None, frame_to_depth_i: dict[int, int], depth: np.ndarray | None = None, depth_row_hashes: dict[int, str] | None = None):
         self.path = Path(manifest_path).expanduser().resolve()
         value = json.loads(self.path.read_text(encoding='utf-8'))
         if not isinstance(value, dict) or value.get('schema') != SCHEMA:
@@ -156,7 +156,12 @@ class MetricEligibility:
         if not isinstance(rows, list) or len(rows) != len(frame_to_depth_i):
             raise ValueError('metric eligibility frame coverage mismatch')
         self.rows = {}
-        self.depth = np.asarray(depth)
+        if depth is None:
+            if depth_row_hashes is None or set(depth_row_hashes) != set(frame_to_depth_i):
+                raise ValueError('streamed eligibility requires every depth row hash')
+            self.depth = None
+        else:
+            self.depth = np.asarray(depth)
         self.frame_to_depth_i = frame_to_depth_i
         for row in rows:
             if not isinstance(row, dict) or type(row.get('frame_idx')) is not int:
@@ -164,7 +169,8 @@ class MetricEligibility:
             idx = row['frame_idx']
             if idx in self.rows or idx not in frame_to_depth_i:
                 raise ValueError('duplicate/foreign metric eligibility frame')
-            if row.get('depth_array_sha256') != array_sha256(self.depth[frame_to_depth_i[idx]]):
+            observed_hash = depth_row_hashes[idx] if self.depth is None else array_sha256(self.depth[frame_to_depth_i[idx]])
+            if row.get('depth_array_sha256') != observed_hash:
                 raise ValueError(f'metric eligibility depth row changed: {idx}')
             self.rows[idx] = row
         if set(self.rows) != set(frame_to_depth_i):

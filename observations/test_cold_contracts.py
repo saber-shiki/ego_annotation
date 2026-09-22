@@ -157,7 +157,7 @@ class CompactTrajectoryTests(unittest.TestCase):
             self.assertEqual(receipt['ordered_images'][0]['sha256'], hashlib.sha256(image.read_bytes()).hexdigest())
             self.assertTrue(json.loads(payload)['disable_fallbacks'])
             credential=root/'credential'; credential.write_text('test-only'); credential.chmod(0o600)
-            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('urllib.request.urlopen', side_effect=TimeoutError('test')) as call:
+            with patch.dict(os.environ, {'EGO_ASTRA_CREDENTIAL_FILE': str(credential)}), patch('utils.runtime.astra_urlopen', side_effect=TimeoutError('test')) as call:
                 audit=root/'request'
                 with self.assertRaises(TimeoutError): astra_request('prompt', {'type':'object'}, evidence, [image], audit_dir=audit)
                 call.assert_called_once()

@@ -619,7 +619,7 @@ def finite_float(value: Any, *, field: str, path: Path) -> float:
 def agent_judgment_provenance(judgment: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(judgment, dict):
         return {'agent_interaction_judgment': None}
-    keys = ['source_path', 'judgment_id', 'frame_start', 'frame_end', 'contact_state', 'occlusion_relation', 'depth_reliability', 'contact_prior_probability', 'contact_support_uncertainty_m', 'evidence', 'uncertainty']
+    keys = ['source_path', 'judgment_id', 'frame_start', 'frame_end', 'contact_state', 'occlusion_relation', 'depth_reliability', 'contact_prior_probability', 'contact_support_uncertainty_m', 'contact_support_uncertainty_source', 'contact_prior_source', 'source_refs', 'evidence', 'uncertainty']
     return {'agent_interaction_judgment': {k: judgment.get(k) for k in keys if k in judgment}}
 
 def load_mask(path: Path) -> np.ndarray:
@@ -807,7 +807,7 @@ def make_review(raw_path: Path, object_mask: np.ndarray, hand_mask: np.ndarray, 
 def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
     from actions.filters.contact import combine_contact_prior
     from actions.filters.contact import contact_row_state_from_judgment
-    from actions.filters.contact import load_agent_interaction_judgments
+    from observations.interaction.loader import load_agent_interaction_judgments
     from actions.filters.visibility import ownership_quarantine_mode
     payload = load_json(args.annotations)
     frames = list_or_empty(payload.get('frames')) if isinstance(payload, dict) else []
@@ -819,7 +819,7 @@ def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
     contact_rows: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
     side_set = set((str(s) for s in args.sides))
-    (judgment_index, judgment_summary) = load_agent_interaction_judgments(args.agent_interaction_judgment, case=str(args.case), target_entity_id=str(args.target_entity_id), frame_span=(start, end), sides=side_set)
+    (judgment_index, judgment_summary) = load_agent_interaction_judgments(args.agent_interaction_judgment, case=str(args.case), target_entity_id=str(args.target_entity_id), frame_span=(start, end), sides=side_set, timeline=[int(frame['frame_idx']) for frame in frames if start <= int(frame['frame_idx']) <= end])
     for frame in frames:
         if not isinstance(frame, dict):
             continue
