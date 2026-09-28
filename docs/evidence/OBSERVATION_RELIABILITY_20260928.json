@@ -1,0 +1,766 @@
+{
+  "checkpoint_commit": "a42e974a8a7c51fd4484b1756ff4ff89f96977f5",
+  "diagnostics": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics",
+  "run": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2",
+  "prediction_or_source_changes": false,
+  "new_model_inference": false,
+  "thresholds": {
+    "strong_PnP_proxy_min_inliers": 20,
+    "strong_PnP_proxy_max_median_px": 2.0,
+    "posthoc_rotation_error_deg": 30.0,
+    "model_binding_behind_first_surface_m": 0.005,
+    "MANO_front_conflict_margin_m": 0.01,
+    "background_flow_FB_max_px": 1.0
+  },
+  "scope": "observation reliability is conditional and variable-specific; all numeric thresholds describe diagnostics, not production acceptance; post-hoc GT correlation is segregated from the GT-free replay",
+  "cases": [
+    {
+      "case": "milk_observation_v2_20260921_r2",
+      "frames": 150,
+      "metric_frames": 148,
+      "metric_gaps": [
+        [
+          94,
+          94
+        ],
+        [
+          143,
+          143
+        ]
+      ],
+      "owned_over_appearance_pixels": {
+        "n": 148,
+        "median": 0.9991611456189995,
+        "p05": 0.9919393641836659,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "explicit_ownership_filter_states": [
+        "disabled"
+      ],
+      "PnP_frames": 149,
+      "PnP_inliers": {
+        "n": 149,
+        "median": 78.0,
+        "p05": 65.4,
+        "p95": 86.6,
+        "max": 129.0
+      },
+      "PnP_median_reprojection_px": {
+        "n": 149,
+        "median": 1.0909864034340062,
+        "p05": 0.8891201563394375,
+        "p95": 1.6389003832717504,
+        "max": 1.8447334499006882
+      },
+      "point_planarity_eigenvalue_ratio": {
+        "n": 149,
+        "median": 0.010964050257170309,
+        "p05": 2.6199050220726758e-06,
+        "p95": 0.09071011284057719,
+        "max": 0.10481272386285787
+      },
+      "point_hull_over_mask_area": {
+        "n": 149,
+        "median": 0.6632283001227264,
+        "p05": 0.5544562018236834,
+        "p95": 0.7717270023756077,
+        "max": 0.8556070351842978
+      },
+      "behind_first_surface_fraction": {
+        "n": 149,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.013888888888888888,
+        "max": 0.03278688524590164
+      },
+      "MANO_front_conflict_fraction": {
+        "n": 148,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0012,
+        "max": 0.0028
+      },
+      "background_epipolar_pair_median_px": {
+        "n": 50,
+        "median": 0.014894469190702026,
+        "p05": 0.009407706191349901,
+        "p95": 0.03157595319715535,
+        "max": 0.04320214462576703
+      },
+      "background_test_pairs": 50,
+      "camera_provenance": [
+        "base_annotations_camera_T_world_camera_metric"
+      ],
+      "mesh": {
+        "vertices": 239430,
+        "faces": 478880,
+        "watertight": true,
+        "winding_consistent": true,
+        "signed_contact_authority": false
+      },
+      "replay_max_R_difference": 0.0,
+      "replay_max_t_difference_m": 0.0,
+      "GT_or_CAD_read": false,
+      "interpretation": "consistency/observability diagnostics, not proof that any entire modality is trustworthy",
+      "longest_metric_gap_frames": 1,
+      "hand_confidence_distinct_values": [
+        0.65
+      ],
+      "metric_gap_reason_counts": {
+        "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage": 1,
+        "None": 1
+      },
+      "frames_with_over_10percent_model_binding_self_visibility_conflict": [],
+      "evaluation_only": {
+        "strong_PnP_proxy_frames": 149,
+        "those_with_final_GT_rotation_error_over_30deg": 0,
+        "fraction": 0.0,
+        "GT_camera_rotation_median_deg": 6.690902118429465,
+        "scope": "post-hoc correlation of pre-contour PnP support with FINAL pose error, not proof of which stage caused error; one-anchor-aligned, not symmetry-adjusted; thresholds diagnostic only"
+      },
+      "evidence_files": {
+        "diagnostic": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics/milk_observation_v2_20260921_r2.json",
+          "sha256": "c6489faec341dbcb48f9c4e6392d0d71613efc1f5c1902b7d55464f95329bad0"
+        },
+        "frozen_bootstrap": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/milk_observation_v2_20260921_r2/bootstrap.npz",
+          "sha256": "60b2d196ba50ea58b5769ffc6fc19b86732ab6e109f30414047aec0a720d1b0b"
+        },
+        "frozen_prediction": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/milk_observation_v2_20260921_r2/coarse_scene.npz",
+          "sha256": "240b9ac36bdd653a07df82c38e181c1e1ea391ca96beb9405eda56c462e0680c"
+        },
+        "evaluation_only": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260928_jump_r2/milk_observation_v2_20260921_r2.json",
+          "sha256": "623fa20ee3b1d2c484ac158273d423194fd8edae0c26dd3c723dda3cfa1eae14"
+        }
+      }
+    },
+    {
+      "case": "hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low",
+      "frames": 150,
+      "metric_frames": 135,
+      "metric_gaps": [
+        [
+          74,
+          74
+        ],
+        [
+          102,
+          102
+        ],
+        [
+          104,
+          105
+        ],
+        [
+          107,
+          110
+        ],
+        [
+          142,
+          144
+        ],
+        [
+          146,
+          149
+        ]
+      ],
+      "owned_over_appearance_pixels": {
+        "n": 135,
+        "median": 0.9303861788617886,
+        "p05": 0.8867508011796018,
+        "p95": 0.9776249293054962,
+        "max": 0.9983323226197696
+      },
+      "explicit_ownership_filter_states": [
+        "disabled"
+      ],
+      "PnP_frames": 149,
+      "PnP_inliers": {
+        "n": 149,
+        "median": 80.0,
+        "p05": 40.6,
+        "p95": 101.0,
+        "max": 106.0
+      },
+      "PnP_median_reprojection_px": {
+        "n": 149,
+        "median": 0.9492250834105653,
+        "p05": 0.3304416224890622,
+        "p95": 1.6649069779853727,
+        "max": 1.8765155314331663
+      },
+      "point_planarity_eigenvalue_ratio": {
+        "n": 149,
+        "median": 0.05867903330872016,
+        "p05": 0.0036657582367589105,
+        "p95": 0.22054713395001233,
+        "max": 0.2979467675532262
+      },
+      "point_hull_over_mask_area": {
+        "n": 149,
+        "median": 0.7948689988556504,
+        "p05": 0.6030756856940684,
+        "p95": 0.9070168156887664,
+        "max": 0.9411264179763225
+      },
+      "behind_first_surface_fraction": {
+        "n": 149,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.023725055432372497,
+        "max": 0.10526315789473684
+      },
+      "MANO_front_conflict_fraction": {
+        "n": 135,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.002,
+        "max": 0.0036
+      },
+      "background_epipolar_pair_median_px": {
+        "n": 50,
+        "median": 0.022158809360942108,
+        "p05": 0.012057582802961915,
+        "p95": 0.06056102515242508,
+        "max": 0.19873564691405154
+      },
+      "background_test_pairs": 50,
+      "camera_provenance": [
+        "base_annotations_camera_T_world_camera_metric"
+      ],
+      "mesh": {
+        "vertices": 633800,
+        "faces": 1267564,
+        "watertight": true,
+        "winding_consistent": true,
+        "signed_contact_authority": false
+      },
+      "replay_max_R_difference": 0.0,
+      "replay_max_t_difference_m": 0.0,
+      "GT_or_CAD_read": false,
+      "interpretation": "consistency/observability diagnostics, not proof that any entire modality is trustworthy",
+      "longest_metric_gap_frames": 4,
+      "hand_confidence_distinct_values": [
+        0.65
+      ],
+      "metric_gap_reason_counts": {
+        "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage": 3,
+        "None": 12
+      },
+      "frames_with_over_10percent_model_binding_self_visibility_conflict": [
+        133
+      ],
+      "evaluation_only": {
+        "strong_PnP_proxy_frames": 148,
+        "those_with_final_GT_rotation_error_over_30deg": 16,
+        "fraction": 0.10810810810810811,
+        "GT_camera_rotation_median_deg": 6.111059596723258,
+        "scope": "post-hoc correlation of pre-contour PnP support with FINAL pose error, not proof of which stage caused error; one-anchor-aligned, not symmetry-adjusted; thresholds diagnostic only"
+      },
+      "evidence_files": {
+        "diagnostic": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low.json",
+          "sha256": "ca64a10c3e413bca4869ae9b35b3d95460c240ab4db2e1dcb0afac9c312f9817"
+        },
+        "frozen_bootstrap": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low/bootstrap.npz",
+          "sha256": "848c7f7c90b6bc47fbd735a83d1d440700637bd8f9a72c2ac7f7517e207e2163"
+        },
+        "frozen_prediction": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low/coarse_scene.npz",
+          "sha256": "7c4c7f5e9a48bbbe7029d44bb3a035b042ed2e40f89723db396aa4a287153a6e"
+        },
+        "evaluation_only": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260928_jump_r2/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low.json",
+          "sha256": "b92128c413fab2bfabe6190e19c8bc0d2f3ab14b4eb31b74e90b17206fd01f55"
+        }
+      }
+    },
+    {
+      "case": "hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low",
+      "frames": 150,
+      "metric_frames": 143,
+      "metric_gaps": [
+        [
+          10,
+          10
+        ],
+        [
+          52,
+          54
+        ],
+        [
+          56,
+          56
+        ],
+        [
+          59,
+          59
+        ],
+        [
+          62,
+          62
+        ]
+      ],
+      "owned_over_appearance_pixels": {
+        "n": 143,
+        "median": 0.888672719412019,
+        "p05": 0.6904113213882265,
+        "p95": 0.9917709951753542,
+        "max": 1.0
+      },
+      "explicit_ownership_filter_states": [
+        "disabled"
+      ],
+      "PnP_frames": 145,
+      "PnP_inliers": {
+        "n": 145,
+        "median": 35.0,
+        "p05": 9.0,
+        "p95": 61.0,
+        "max": 74.0
+      },
+      "PnP_median_reprojection_px": {
+        "n": 145,
+        "median": 1.3893696823245942,
+        "p05": 0.7410212734013591,
+        "p95": 1.8006753537968432,
+        "max": 3.9665553246796903
+      },
+      "point_planarity_eigenvalue_ratio": {
+        "n": 145,
+        "median": 0.01644941663861867,
+        "p05": 0.004849673638025902,
+        "p95": 0.03326778535247107,
+        "max": 0.06316180565349308
+      },
+      "point_hull_over_mask_area": {
+        "n": 145,
+        "median": 0.48920269166477753,
+        "p05": 0.09462618880276365,
+        "p95": 0.7024889192941046,
+        "max": 0.8136772080891078
+      },
+      "behind_first_surface_fraction": {
+        "n": 145,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0,
+        "max": 0.5714285714285714
+      },
+      "MANO_front_conflict_fraction": {
+        "n": 143,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0028,
+        "max": 0.007444168734491315
+      },
+      "background_epipolar_pair_median_px": {
+        "n": 50,
+        "median": 0.03562312816183452,
+        "p05": 0.02089368227073526,
+        "p95": 0.07527510107034058,
+        "max": 0.10945834414422997
+      },
+      "background_test_pairs": 50,
+      "camera_provenance": [
+        "base_annotations_camera_T_world_camera_metric"
+      ],
+      "mesh": {
+        "vertices": 173738,
+        "faces": 347460,
+        "watertight": true,
+        "winding_consistent": true,
+        "signed_contact_authority": false
+      },
+      "replay_max_R_difference": 0.0,
+      "replay_max_t_difference_m": 0.0,
+      "GT_or_CAD_read": false,
+      "interpretation": "consistency/observability diagnostics, not proof that any entire modality is trustworthy",
+      "longest_metric_gap_frames": 3,
+      "hand_confidence_distinct_values": [
+        0.65
+      ],
+      "metric_gap_reason_counts": {
+        "None": 7
+      },
+      "frames_with_over_10percent_model_binding_self_visibility_conflict": [
+        69,
+        71
+      ],
+      "evaluation_only": {
+        "strong_PnP_proxy_frames": 104,
+        "those_with_final_GT_rotation_error_over_30deg": 83,
+        "fraction": 0.7980769230769231,
+        "GT_camera_rotation_median_deg": 47.27487923115386,
+        "scope": "post-hoc correlation of pre-contour PnP support with FINAL pose error, not proof of which stage caused error; one-anchor-aligned, not symmetry-adjusted; thresholds diagnostic only"
+      },
+      "evidence_files": {
+        "diagnostic": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low.json",
+          "sha256": "48a0459f975665eca4a025884993e45160878d07bd0ecafc12b75a6cacbdf1a7"
+        },
+        "frozen_bootstrap": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low/bootstrap.npz",
+          "sha256": "be537b77f0163f74e88e35044c52345ec5c24ca44ab50e1c1320f160792113ed"
+        },
+        "frozen_prediction": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low/coarse_scene.npz",
+          "sha256": "5a3477a28ca5f8b8a8b818369d15031496080988112fe0c40226ecd93e7e27d2"
+        },
+        "evaluation_only": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low.json",
+          "sha256": "8e33b5d23369e8c2c15dfb7340b1dcd5cebafd65bba27622b8fed9512c35b4bf"
+        }
+      }
+    },
+    {
+      "case": "hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low",
+      "frames": 150,
+      "metric_frames": 136,
+      "metric_gaps": [
+        [
+          7,
+          12
+        ],
+        [
+          40,
+          40
+        ],
+        [
+          67,
+          68
+        ],
+        [
+          72,
+          73
+        ],
+        [
+          84,
+          84
+        ],
+        [
+          107,
+          107
+        ],
+        [
+          124,
+          124
+        ]
+      ],
+      "owned_over_appearance_pixels": {
+        "n": 136,
+        "median": 0.8789398622268052,
+        "p05": 0.7937272077876283,
+        "p95": 0.9866510053097234,
+        "max": 0.9914493373236426
+      },
+      "explicit_ownership_filter_states": [
+        "disabled"
+      ],
+      "PnP_frames": 141,
+      "PnP_inliers": {
+        "n": 141,
+        "median": 14.0,
+        "p05": 7.0,
+        "p95": 38.0,
+        "max": 44.0
+      },
+      "PnP_median_reprojection_px": {
+        "n": 141,
+        "median": 1.299658207866367,
+        "p05": 0.56955021381346,
+        "p95": 1.9022177117944294,
+        "max": 2.32757433722478
+      },
+      "point_planarity_eigenvalue_ratio": {
+        "n": 141,
+        "median": 0.07487399639933813,
+        "p05": 0.006319036083673777,
+        "p95": 0.34670211462768874,
+        "max": 0.4900370109767618
+      },
+      "point_hull_over_mask_area": {
+        "n": 141,
+        "median": 0.33885173195902396,
+        "p05": 0.06346146131779362,
+        "p95": 0.7077649969315937,
+        "max": 0.826280350864996
+      },
+      "behind_first_surface_fraction": {
+        "n": 141,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.3333333333333333,
+        "max": 0.5
+      },
+      "MANO_front_conflict_fraction": {
+        "n": 136,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0024,
+        "max": 0.0052
+      },
+      "background_epipolar_pair_median_px": {
+        "n": 50,
+        "median": 0.04783967147230442,
+        "p05": 0.02662187289916243,
+        "p95": 0.10240990067933735,
+        "max": 0.13981787060957354
+      },
+      "background_test_pairs": 50,
+      "camera_provenance": [
+        "base_annotations_camera_T_world_camera_metric"
+      ],
+      "mesh": {
+        "vertices": 312498,
+        "faces": 624436,
+        "watertight": true,
+        "winding_consistent": true,
+        "signed_contact_authority": false
+      },
+      "replay_max_R_difference": 0.0,
+      "replay_max_t_difference_m": 0.0,
+      "GT_or_CAD_read": false,
+      "interpretation": "consistency/observability diagnostics, not proof that any entire modality is trustworthy",
+      "longest_metric_gap_frames": 6,
+      "hand_confidence_distinct_values": [
+        0.45,
+        0.65
+      ],
+      "metric_gap_reason_counts": {
+        "None": 14
+      },
+      "frames_with_over_10percent_model_binding_self_visibility_conflict": [
+        33,
+        34,
+        36,
+        55,
+        56,
+        57,
+        70,
+        71,
+        72,
+        76,
+        77,
+        78,
+        104,
+        105,
+        112,
+        113,
+        114,
+        126,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        148
+      ],
+      "evaluation_only": {
+        "strong_PnP_proxy_frames": 39,
+        "those_with_final_GT_rotation_error_over_30deg": 31,
+        "fraction": 0.7948717948717948,
+        "GT_camera_rotation_median_deg": 111.185657391792,
+        "scope": "post-hoc correlation of pre-contour PnP support with FINAL pose error, not proof of which stage caused error; one-anchor-aligned, not symmetry-adjusted; thresholds diagnostic only"
+      },
+      "evidence_files": {
+        "diagnostic": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low.json",
+          "sha256": "805ffc1d3d07d177c5b5466a462b4f78eeeab7b0652caf1bbee8be6821dac22a"
+        },
+        "frozen_bootstrap": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low/bootstrap.npz",
+          "sha256": "2d507469725c09fb0b258d1fcb9e0c767d819c62db0b14a3b5082bbfac43dfe8"
+        },
+        "frozen_prediction": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low/coarse_scene.npz",
+          "sha256": "1b9fa7ce9ce0c487afaf09320afdf74cd1b88dd34a140651ab25ab968df7af32"
+        },
+        "evaluation_only": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260928_jump_r2/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low.json",
+          "sha256": "72b1f39fe789793e3d65aca8badfe28ca474e89397fbb36e1057009009fe22b7"
+        }
+      }
+    },
+    {
+      "case": "hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low",
+      "frames": 150,
+      "metric_frames": 108,
+      "metric_gaps": [
+        [
+          2,
+          4
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          9,
+          12
+        ],
+        [
+          44,
+          45
+        ],
+        [
+          53,
+          53
+        ],
+        [
+          55,
+          71
+        ],
+        [
+          81,
+          81
+        ],
+        [
+          88,
+          91
+        ],
+        [
+          111,
+          113
+        ],
+        [
+          125,
+          125
+        ],
+        [
+          127,
+          127
+        ],
+        [
+          144,
+          144
+        ],
+        [
+          147,
+          148
+        ]
+      ],
+      "owned_over_appearance_pixels": {
+        "n": 108,
+        "median": 0.77407341296247,
+        "p05": 0.6660385775550854,
+        "p95": 0.9765658161027897,
+        "max": 1.0
+      },
+      "explicit_ownership_filter_states": [
+        "disabled"
+      ],
+      "PnP_frames": 149,
+      "PnP_inliers": {
+        "n": 149,
+        "median": 27.0,
+        "p05": 11.0,
+        "p95": 55.0,
+        "max": 72.0
+      },
+      "PnP_median_reprojection_px": {
+        "n": 149,
+        "median": 1.2634432003449865,
+        "p05": 0.7944912221199543,
+        "p95": 1.6583318484758185,
+        "max": 5.959067376340067
+      },
+      "point_planarity_eigenvalue_ratio": {
+        "n": 149,
+        "median": 0.001025011785441708,
+        "p05": 0.00048023290432817406,
+        "p95": 0.0053648136930596535,
+        "max": 0.00797184587037959
+      },
+      "point_hull_over_mask_area": {
+        "n": 149,
+        "median": 0.7440616583680894,
+        "p05": 0.2162409288170038,
+        "p95": 1.0536192218188116,
+        "max": 1.2186223839015033
+      },
+      "behind_first_surface_fraction": {
+        "n": 149,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      },
+      "MANO_front_conflict_fraction": {
+        "n": 108,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      },
+      "background_epipolar_pair_median_px": {
+        "n": 50,
+        "median": 0.03813696364417442,
+        "p05": 0.02373726131266662,
+        "p95": 0.10045252366120692,
+        "max": 0.18496528007279653
+      },
+      "background_test_pairs": 50,
+      "camera_provenance": [
+        "base_annotations_camera_T_world_camera_metric"
+      ],
+      "mesh": {
+        "vertices": 45044,
+        "faces": 90100,
+        "watertight": true,
+        "winding_consistent": true,
+        "signed_contact_authority": false
+      },
+      "replay_max_R_difference": 0.0,
+      "replay_max_t_difference_m": 0.0,
+      "GT_or_CAD_read": false,
+      "interpretation": "consistency/observability diagnostics, not proof that any entire modality is trustworthy",
+      "longest_metric_gap_frames": 17,
+      "hand_confidence_distinct_values": [
+        0.45,
+        0.65
+      ],
+      "metric_gap_reason_counts": {
+        "None": 40,
+        "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage": 2
+      },
+      "frames_with_over_10percent_model_binding_self_visibility_conflict": [],
+      "evaluation_only": {
+        "strong_PnP_proxy_frames": 96,
+        "those_with_final_GT_rotation_error_over_30deg": 96,
+        "fraction": 1.0,
+        "GT_camera_rotation_median_deg": 65.51006085372904,
+        "scope": "post-hoc correlation of pre-contour PnP support with FINAL pose error, not proof of which stage caused error; one-anchor-aligned, not symmetry-adjusted; thresholds diagnostic only"
+      },
+      "evidence_files": {
+        "diagnostic": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/observation_reliability_20260928/prediction_only_diagnostics/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low.json",
+          "sha256": "129dc86873d8a00a3ea739d22100ef877405607f3a38a842a31d75cded424856"
+        },
+        "frozen_bootstrap": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low/bootstrap.npz",
+          "sha256": "5547830e6ebc0af13ece695e5e93a3efe3d0fa12d87bd6043373c70943572d68"
+        },
+        "frozen_prediction": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_preprocess_runs/monocular_visible_surface_20260928_jump_r2/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low/coarse_scene.npz",
+          "sha256": "fc0563f840f84123ca72f7630623babbd0f83b2494169be751aa32e348964657"
+        },
+        "evaluation_only": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260928_jump_r2/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low.json",
+          "sha256": "2af232f520024cdf7d0be4f02ee84f09d65bfaee1911242d75b9de2d41cf2f70"
+        }
+      }
+    }
+  ]
+}
