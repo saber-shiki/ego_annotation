@@ -16,6 +16,7 @@ dependencies = [
 visual = ["torch>=2", "smplx==0.1.28", "open3d==0.19.0", "rerun-sdk==0.37.2", "chumpy>=0.70"]
 rl = ["torch>=2.6", "gymnasium>=1.1", "skrl==2.1.0"]
 test = ["pytest>=8"]
+preprocess = ["open3d==0.19.0"]
 
 [project.scripts]
 ego-observe = "main:cli"
@@ -26,17 +27,18 @@ ego-evaluate = "evaluate:main"
 ego-train = "train:main"
 ego-rollout = "rollout:main"
 ego-index = "data.build_index:main"
+ego-preprocess = "preprocessing.__main__:cli"
 
 [tool.setuptools]
 py-modules = ["main", "optimize", "render", "evaluate", "train", "rollout"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["utils*", "observations*", "actions*", "data*", "envs*", "rewards*", "models*", "configs*", "legacy_optimize*"]
+include = ["utils*", "observations*", "actions*", "data*", "envs*", "rewards*", "models*", "configs*", "legacy_optimize*", "preprocessing*"]
 namespaces = true
 
 [tool.setuptools.package-data]
 configs = ["*.yaml"]
 
 [tool.pytest.ini_options]
-testpaths = ["test_pipeline.py", "tests", "observations", "actions", "data", "envs", "rewards", "models", "legacy_optimize"]
+testpaths = ["test_pipeline.py", "tests", "observations", "actions", "data", "envs", "rewards", "models", "legacy_optimize", "preprocessing"]

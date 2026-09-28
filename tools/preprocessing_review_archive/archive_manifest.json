@@ -1,0 +1,85 @@
+{
+  "purpose": "Historical external diagnosis/evaluation source preservation, not prediction inputs",
+  "files": [
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/evaluate.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/evaluate.py",
+      "sha256": "3430be8b4629234e06ba8b8d8c72385bed49b28108e43a2d4c30cbe6aa77b923"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/fetch.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/fetch.py",
+      "sha256": "e1cfe975cf6946f6e2606eb5bfa07efd6e06d66e8941747338c533785f752219"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/make_report.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/make_report.py",
+      "sha256": "3577b881fae325938052ec01ec540e2dc9b8b9958b5abef40be9372fbf6e8c59"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/render_review.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/render_review.py",
+      "sha256": "36fa81397c7ed9d938a827831460fdacd3fffc67c68556425067bd341a59d88c"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/shape_oracle.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/shape_oracle.py",
+      "sha256": "8b1bcbfeec6d37f1098ad589c4c2ae715b40d4b4e0e8c40337d1f16435a694fc"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/test_evaluation.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/test_evaluation.py",
+      "sha256": "d6b1f3142d1f3191478a67b91eba4c53ff438fb28bc2d9bd09207551fcca7dfc"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/hot3d_s3_pose_audit_20260927/verify_final.py",
+      "archived_path": "tools/preprocessing_review_archive/hot3d_s3_pose_audit_20260927/verify_final.py",
+      "sha256": "a0bee6ef5d825d6b2972ee1c32808184ef5c3124909174619d4a98cc8cad8c4a"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/evaluate_candidate.py",
+      "archived_path": "tools/preprocessing_review_archive/monocular_coarse_evaluation_20260927/evaluate_candidate.py",
+      "sha256": "e3bdbc1c70332a061e80db4711fd2a0a92a05426e303559883f19106844c9450"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/evaluate_visible_reference.py",
+      "archived_path": "tools/preprocessing_review_archive/monocular_coarse_evaluation_20260927/evaluate_visible_reference.py",
+      "sha256": "b298f44eaeefa8fac335d7e068e0aa1082e44dd49d247ce82a47583e34455620"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/verify_batch.py",
+      "archived_path": "tools/preprocessing_review_archive/monocular_coarse_evaluation_20260927/verify_batch.py",
+      "sha256": "3ca343b7831753a28fc95dbb00823500b9014b08cee12983ec42afcb8f2ed79d"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/verify_delivery.py",
+      "archived_path": "tools/preprocessing_review_archive/monocular_coarse_evaluation_20260927/verify_delivery.py",
+      "sha256": "e3c3292a3ff914f5431c784d322bc654cd0f2d88498566f355d3815b4faf0867"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/milk_jump_diagnosis_20260928/compare_repair.py",
+      "archived_path": "tools/preprocessing_review_archive/milk_jump_diagnosis_20260928/compare_repair.py",
+      "sha256": "e4b1ade7e7037ee5b081dd51b8fa302a036e6498ed22e88762d7e264983be7d5"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/milk_jump_diagnosis_20260928/compare_repair_r2.py",
+      "archived_path": "tools/preprocessing_review_archive/milk_jump_diagnosis_20260928/compare_repair_r2.py",
+      "sha256": "bc3c77b99b9dcb063d11d0dff709947398ba11270cf52d21e20513b447f3b466"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/milk_jump_diagnosis_20260928/plot_repair.py",
+      "archived_path": "tools/preprocessing_review_archive/milk_jump_diagnosis_20260928/plot_repair.py",
+      "sha256": "474a6e050732067e0788c2df9d8b2ff42262ca537559fd87457a7395e82339cf"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/milk_jump_diagnosis_20260928/replay_tracking_trace.py",
+      "archived_path": "tools/preprocessing_review_archive/milk_jump_diagnosis_20260928/replay_tracking_trace.py",
+      "sha256": "ee654c324e9c683aea17d0f97ca37f0a4f91d3020e8628a6bcdf08e053e4f51c"
+    },
+    {
+      "source_path": "/mnt/user-home/kupingxin/ego_annotation_experiments/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260927_r2/render_scale_only.py",
+      "archived_path": "tools/preprocessing_review_archive/monocular_coarse_evaluation_20260927/monocular_visible_surface_20260927_r2/render_scale_only.py",
+      "sha256": "28338c222c374f2c10b4913f4b49e8dd87dec1af80dd1239ab98212c7d7ea34e"
+    }
+  ]
+}
