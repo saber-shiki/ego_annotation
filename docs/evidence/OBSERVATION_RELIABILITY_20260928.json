@@ -762,5 +762,14 @@
         }
       }
     }
-  ]
+  ],
+  "ownership_interpretation_correction": {
+    "downstream_disabled_is_not_pipeline_disabled": true,
+    "upstream_state_all_750_frames": "front_only_first_hit_classified",
+    "upstream_method": "rgb_scene_depth_order_owned_sam2_v1",
+    "upstream_inputs_include_full_MANO_surfaces": true,
+    "evidence_file": "docs/evidence/UPSTREAM_OWNERSHIP_20260928.json",
+    "sha256": "96f4f1bbe6b281aee37fc1d624fc164b895b06d80e442433c8fa39c8d0ccfe0a",
+    "implication": "MANO-to-owned-surface agreement is correlated and selected, not independent confirmation"
+  }
 }

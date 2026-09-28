@@ -1,0 +1,262 @@
+[
+  {
+    "case": "milk_observation_v2_20260921_r2",
+    "source_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_rl_runs/milk_observation_v2_20260921_r2/measurements/object_tracks/depth_order_owned/track_1/sam2_track.json",
+    "frames": 150,
+    "states": {
+      "front_only_first_hit_classified": 150
+    },
+    "example": {
+      "schema": "rgb_scene_depth_order_owned_sam2_v1",
+      "status": "front_only_first_hit_classified",
+      "source_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_rl_runs/milk_observation_v2_20260921_r2/measurements/object_tracks/sam2_owlv2_box_points/track_1/sam2/sam2_masks/000000.png",
+        "bytes": 4865,
+        "sha256": "7e5164a0039e99a10b810fbd242b86cf700843192269e277081fc16c9ac63ebf"
+      },
+      "owned_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_rl_runs/milk_observation_v2_20260921_r2/measurements/object_tracks/depth_order_owned/track_1/sam2_masks/000000.png",
+        "bytes": 4865,
+        "sha256": "7e5164a0039e99a10b810fbd242b86cf700843192269e277081fc16c9ac63ebf"
+      },
+      "depth_order_tolerance_m": 0.005,
+      "classes": {
+        "raw_pixels": 83061,
+        "removed_front_pixels": 0,
+        "preserved_behind_pixels": 25527,
+        "preserved_near_pixels": 0,
+        "preserved_no_hit_pixels": 57534,
+        "preserved_unsupported_depth_pixels": 0
+      },
+      "metric_eligibility": {
+        "supported_raw_pixels": 83061,
+        "unsupported_raw_pixels": 0,
+        "policy": "owned appearance support is not metric eligibility; P09 robust depth quarantine remains required"
+      },
+      "hands": [
+        {
+          "side": "left",
+          "status": "full_mano_surface",
+          "bridge_row_index": 0,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "left_faces"
+        },
+        {
+          "side": "right",
+          "status": "full_mano_surface",
+          "bridge_row_index": 1,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "right_faces"
+        }
+      ]
+    }
+  },
+  {
+    "case": "hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low",
+    "source_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low/measurements/object_tracks/depth_order_owned/track_1/sam2_track.json",
+    "frames": 150,
+    "states": {
+      "front_only_first_hit_classified": 150
+    },
+    "example": {
+      "schema": "rgb_scene_depth_order_owned_sam2_v1",
+      "status": "front_only_first_hit_classified",
+      "source_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low/measurements/object_tracks/sam2_owlv2_box_points/track_1/sam2/sam2_masks/000000.png",
+        "bytes": 3756,
+        "sha256": "eed6dd521ac34bde7dce98d230734746a6960cf43b833b7e9dda0b143ca733d8"
+      },
+      "owned_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0015_7e95628d_can_soup_f1770_1919_rl_v2_low/measurements/object_tracks/depth_order_owned/track_1/sam2_masks/000000.png",
+        "bytes": 3780,
+        "sha256": "0d99eac6c113be2303b0204f918cd97a2c4168f00f02ad0b64acfff53c911531"
+      },
+      "depth_order_tolerance_m": 0.005,
+      "classes": {
+        "raw_pixels": 25996,
+        "removed_front_pixels": 1804,
+        "preserved_behind_pixels": 7,
+        "preserved_near_pixels": 261,
+        "preserved_no_hit_pixels": 23924,
+        "preserved_unsupported_depth_pixels": 0
+      },
+      "metric_eligibility": {
+        "supported_raw_pixels": 25996,
+        "unsupported_raw_pixels": 0,
+        "policy": "owned appearance support is not metric eligibility; P09 robust depth quarantine remains required"
+      },
+      "hands": [
+        {
+          "side": "left",
+          "status": "full_mano_surface",
+          "bridge_row_index": 0,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "left_faces"
+        },
+        {
+          "side": "right",
+          "status": "full_mano_surface",
+          "bridge_row_index": 1,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "right_faces"
+        }
+      ]
+    }
+  },
+  {
+    "case": "hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low",
+    "source_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low/measurements/object_tracks/depth_order_owned/track_1/sam2_track.json",
+    "frames": 150,
+    "states": {
+      "front_only_first_hit_classified": 150
+    },
+    "example": {
+      "schema": "rgb_scene_depth_order_owned_sam2_v1",
+      "status": "front_only_first_hit_classified",
+      "source_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low/measurements/object_tracks/sam2_owlv2_box_points/track_1/sam2/sam2_masks/000000.png",
+        "bytes": 4405,
+        "sha256": "ac80128af8c1d44d3dc79b859ca12beaf09ba0a134ce5ef23be5c2f7782e2b02"
+      },
+      "owned_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_ca1f6626_bottle_bbq_f1515_1664_rl_v2_low/measurements/object_tracks/depth_order_owned/track_1/sam2_masks/000000.png",
+        "bytes": 4654,
+        "sha256": "c470ef25752c329b15d0be36f746209eb100cea1b0c8b13be28020b6cbc90fae"
+      },
+      "depth_order_tolerance_m": 0.005,
+      "classes": {
+        "raw_pixels": 42551,
+        "removed_front_pixels": 19201,
+        "preserved_behind_pixels": 2765,
+        "preserved_near_pixels": 3496,
+        "preserved_no_hit_pixels": 17089,
+        "preserved_unsupported_depth_pixels": 0
+      },
+      "metric_eligibility": {
+        "supported_raw_pixels": 42551,
+        "unsupported_raw_pixels": 0,
+        "policy": "owned appearance support is not metric eligibility; P09 robust depth quarantine remains required"
+      },
+      "hands": [
+        {
+          "side": "left",
+          "status": "full_mano_surface",
+          "bridge_row_index": 0,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "left_faces"
+        },
+        {
+          "side": "right",
+          "status": "full_mano_surface",
+          "bridge_row_index": 1,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "right_faces"
+        }
+      ]
+    }
+  },
+  {
+    "case": "hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low",
+    "source_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low/measurements/object_tracks/depth_order_owned/track_mug_1/sam2_track.json",
+    "frames": 150,
+    "states": {
+      "front_only_first_hit_classified": 150
+    },
+    "example": {
+      "schema": "rgb_scene_depth_order_owned_sam2_v1",
+      "status": "front_only_first_hit_classified",
+      "source_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low/measurements/object_tracks/sam2_owlv2_box_points/track_mug_1/sam2/sam2_masks/000000.png",
+        "bytes": 3671,
+        "sha256": "1f1877e571d9fa3996acbb912b8824b2372d7d3a21471ac139fa83dded3af687"
+      },
+      "owned_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0012_73e66984_mug_white_f2145_2294_rl_v2_low/measurements/object_tracks/depth_order_owned/track_mug_1/sam2_masks/000000.png",
+        "bytes": 3877,
+        "sha256": "2a52347dc08391ac8809e9b6b50eec2d629e00aa1c12d39104bce86d19ac3e70"
+      },
+      "depth_order_tolerance_m": 0.005,
+      "classes": {
+        "raw_pixels": 34123,
+        "removed_front_pixels": 5221,
+        "preserved_behind_pixels": 245,
+        "preserved_near_pixels": 184,
+        "preserved_no_hit_pixels": 28473,
+        "preserved_unsupported_depth_pixels": 0
+      },
+      "metric_eligibility": {
+        "supported_raw_pixels": 34123,
+        "unsupported_raw_pixels": 0,
+        "policy": "owned appearance support is not metric eligibility; P09 robust depth quarantine remains required"
+      },
+      "hands": [
+        {
+          "side": "left",
+          "status": "full_mano_surface",
+          "bridge_row_index": 0,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "left_faces"
+        },
+        {
+          "side": "right",
+          "status": "full_mano_surface",
+          "bridge_row_index": 1,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "right_faces"
+        }
+      ]
+    }
+  },
+  {
+    "case": "hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low",
+    "source_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low/measurements/object_tracks/depth_order_owned/track_red_spatula/sam2_track.json",
+    "frames": 150,
+    "states": {
+      "front_only_first_hit_classified": 150
+    },
+    "example": {
+      "schema": "rgb_scene_depth_order_owned_sam2_v1",
+      "status": "front_only_first_hit_classified",
+      "source_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low/measurements/object_tracks/sam2_owlv2_box_points/track_red_spatula/sam2/sam2_masks/000000.png",
+        "bytes": 4633,
+        "sha256": "96889a6e42bab6ec60582c527e135448ce2b843ebe51f45b6bb9364a33893a7e"
+      },
+      "owned_mask": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_intermediate_artifacts/runs/hot3d_P0002_016222d1_spatula_red_f3285_3434_rl_v2_low/measurements/object_tracks/depth_order_owned/track_red_spatula/sam2_masks/000000.png",
+        "bytes": 4465,
+        "sha256": "aafe514b0830f09457bc209479739f38f0ff1e1a2ea9fba65df0ad7e6723dd32"
+      },
+      "depth_order_tolerance_m": 0.005,
+      "classes": {
+        "raw_pixels": 16832,
+        "removed_front_pixels": 1716,
+        "preserved_behind_pixels": 0,
+        "preserved_near_pixels": 0,
+        "preserved_no_hit_pixels": 15116,
+        "preserved_unsupported_depth_pixels": 0
+      },
+      "metric_eligibility": {
+        "supported_raw_pixels": 16832,
+        "unsupported_raw_pixels": 0,
+        "policy": "owned appearance support is not metric eligibility; P09 robust depth quarantine remains required"
+      },
+      "hands": [
+        {
+          "side": "left",
+          "status": "full_mano_surface",
+          "bridge_row_index": 0,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "left_faces"
+        },
+        {
+          "side": "right",
+          "status": "full_mano_surface",
+          "bridge_row_index": 1,
+          "vertices_array": "vertices_current_v18_camera_m",
+          "faces_array": "right_faces"
+        }
+      ]
+    }
+  }
+]

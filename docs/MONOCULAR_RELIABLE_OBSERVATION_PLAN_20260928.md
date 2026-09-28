@@ -35,7 +35,7 @@
 3. **Fixed visible-surface layer**
    - 继续使用原始UniDepth/P09候选，不回写 depth/cloud。
    - 把第一表面、深度置信、边界尾部和当前手深度顺序记录为不确定性，而非一个全帧5mm常数。
-   - 由于五例 `object_surface_ownership_filter.state` 全为 `disabled`，下一版必须把表面候选称为 `candidate_visible_surface`；可以作为条件参考，但不能把其点全部视为独立无手污染观测。
+   - 五例上游都已执行MANO/深度的 `front_only_first_hit_classified` 所有权过滤；下游 `object_surface_ownership_filter.state=disabled` 只是不重复过滤。下一版保留已有去遮挡，不重造该模块；传递raw/owned像素类别、深度支持与共同来源，避免把同一MANO筛选产生的一致性重复计权。仍把点看作 `candidate_visible_surface`，而非精确材料点。
 
 4. **MANO ordering layer**
    - 只作为软遮挡/深度顺序先验，并携带原始confidence和visibility state。
@@ -88,9 +88,9 @@ E = E_rgb_2d
 
 | 案例 | 当前最有用证据 | 主要不可观测方向/风险 | 第一优先修改 |
 |---|---|---|---|
-| milk | RGB纹理与点数较丰富；表面缺测只有2帧；相机背景一致 | P09 ownership并未独立认证；少数近平面帧 | 作为稳定基准，验证多候选不会破坏现有jump repair |
+| milk | RGB纹理与点数较丰富；表面缺测只有2帧；相机背景一致 | 已有MANO去遮挡但非独立认证；少数近平面帧 | 作为稳定基准，验证多候选不会破坏现有jump repair |
 | soup | PnP点数/覆盖最好，表面覆盖仍有15帧缺测 | mask/表面来源相关；f133有绑定自可见性矛盾 | 可见性重检与缺测不确定性，检查是否减少局部分支错误 |
-| BBQ | 局部RGB仍可用但点数中位35；表面候选7帧缺测；f69/f71有自可见性矛盾 | 3D绑定错误、遮挡/ownership不明确 | 解除矛盾绑定并保留候选姿态；不能只强化RGB点权重 |
+| BBQ | 局部RGB仍可用但点数中位35；表面候选7帧缺测；f69/f71有自可见性矛盾 | 3D绑定错误、去遮挡与MANO/深度误差相关 | 解除矛盾绑定并保留候选姿态；不能只强化RGB点权重 |
 | mug | 低点数中位14、mask覆盖中位0.339、表面缺测6帧 | 杯把/局部表面造成旋转多解和自遮挡绑定，30帧有明显矛盾 | top-K旋转候选与方向性可观测性；mask仅作可见投影约束 |
 | spatula | 2D mask覆盖尚可、相机一致 | 3D点极近平面，17帧最长表面缺测；薄物体前后面/旋转极易混淆 | 平面退化检测、法向/轮廓候选和长gap covariance；禁止用低重投影认证姿态 |
 
@@ -114,7 +114,7 @@ E = E_rgb_2d
 
 **改动**：在同一top-K框架内分别去掉RGB、mask、visible-surface、MANO ordering各一族；仅作诊断和完整视频，不让GT决定配置。
 
-**预测**：若删掉surface后姿态明显自由漂移，surface是位置/法向约束而非完整姿态真值；若删掉RGB后milk/soup退化而BBQ/mug变化小，说明各例的RGB支持差异真实；若删MANO几乎不变，现有大姿态错误不是手深度顺序主因。
+**预测**：若删掉surface后姿态明显自由漂移，surface是位置/法向约束而非完整姿态真值；若删掉RGB后milk/soup退化而BBQ/mug变化小，说明各例的RGB支持差异真实；若仅删后端MANO项几乎不变，不能排除上游MANO过滤造成的偏差，因为owned mask已依赖它。必须另做固定原始深度下raw/owned观测支持的配对诊断，检查删除的像素是手还是物体；这只调整派生支持权重，绝不回写源mask/depth。
 
 ### 实验4：缺测区间分层状态
 
