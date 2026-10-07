@@ -10,7 +10,8 @@ import math
 
 import numpy as np
 
-from actions.scaling import ActionScales, GateTrace, filter_scaled_action
+from actions.scaling import ActionScales, GateTrace
+from actions.safety import HardActionBounds, project_action
 from actions.space import ActionLayout
 from data.bundle import EpisodeBundle, file_sha256
 from envs.state import AnnotationState, EpisodeStatic
@@ -60,7 +61,9 @@ def build_episode(bundle: EpisodeBundle, cfg: Mapping[str, Any] | Any, device: s
     arrays = bundle.load(); max_objects = int(_cfg(cfg, "max_objects", 1))
     if max_objects < len(arrays["objects"]): raise ValueError("max_objects is smaller than declared object entities")
     layout = ActionLayout(object_slots=tuple(f"object:{i}" for i in range(max_objects)),
-                          contact_variables_per_hand=int(_cfg(cfg, "contact_variables_per_hand", 1)))
+                          contact_variables_per_hand=int(_cfg(cfg, "contact_variables_per_hand", 1)),
+                          include_hand_scale=bool(_cfg(cfg, "include_hand_scale", False)),
+                          include_object_shared_scale=bool(_cfg(cfg, "include_object_shared_scale", False)))
     source_objects = list(arrays["objects"].items()); count = len(arrays["frame_idx"]); objects: dict[str, Mapping[str, Any]] = {}
     for index, slot in enumerate(layout.object_slots):
         if index < len(source_objects):
@@ -68,7 +71,7 @@ def build_episode(bundle: EpisodeBundle, cfg: Mapping[str, Any] | Any, device: s
         else:
             objects[slot] = MappingProxyType({"entity_id": None, "rotation": np.tile(np.eye(3),(count,1,1)), "translation": np.zeros((count,3)), "present": np.zeros(count,bool), "pose_valid": np.zeros(count,bool), "metric_observation_eligible": np.zeros(count,bool), "valid": np.zeros(count,bool), "pose_vertices_canonical": np.zeros((0,3),np.float32), "pose_faces": np.zeros((0,3),np.int64), "vertices_canonical": np.zeros((0,3),np.float32), "faces": np.zeros((0,3),np.int64), "collision_vertices_canonical": np.zeros((0,3),np.float32), "collision_faces": np.zeros((0,3),np.int64), "watertight": False, "signed_geometry_ready": False, "signed_authority": np.zeros((0,),bool), "observed_points_world": tuple(np.zeros((0,3)) for _ in range(count)), "raw_observed_points_world": tuple(np.zeros((0,3)) for _ in range(count)), "observed_point_state": tuple("inactive_absent_entity" for _ in range(count)), "pose_provenance": "absent_entity_slot", "geometry_provenance": "absent_entity_slot"})
     episode = EpisodeStatic(bundle_id=bundle.bundle_id, clip_id=str(bundle.manifest["clip_id"]), source_video_id=bundle.source_video_id,
-        frame_idx=np.asarray(arrays["frame_idx"]), time_s=np.asarray(arrays["time_s"]), T_world_camera=np.asarray(arrays["T_world_camera"]), intrinsics=np.asarray(arrays["intrinsics"]), image_size_wh=np.asarray(arrays["image_size_wh"]), hands=arrays["hands"], objects=MappingProxyType(objects), contact=arrays["contact_legacy"], contacts=arrays["contact"], factor_rows=arrays["factor_rows"], layout=layout, mano_models=_load_mano_models(bundle,cfg,device), provenance=MappingProxyType({**dict(arrays["provenance"]),"sources":dict(bundle.manifest["sources"]),"observation_point_samples":int(_cfg(cfg,"observation_point_samples",8))}), identity=arrays["identity"])
+        frame_idx=np.asarray(arrays["frame_idx"]), time_s=np.asarray(arrays["time_s"]), T_world_camera=np.asarray(arrays["T_world_camera"]), intrinsics=np.asarray(arrays["intrinsics"]), image_size_wh=np.asarray(arrays["image_size_wh"]), hands=arrays["hands"], objects=MappingProxyType(objects), contact=arrays["contact_legacy"], contacts=arrays["contact"], factor_rows=arrays["factor_rows"], layout=layout, mano_models=_load_mano_models(bundle,cfg,device), provenance=MappingProxyType({**dict(arrays["provenance"]),"sources":dict(bundle.manifest["sources"]),"observation_point_samples":int(_cfg(cfg,"observation_point_samples",8)),"causal_history_frames":int(_cfg(cfg,"causal_history_frames",0))}), identity=arrays["identity"])
     if bool(_cfg(cfg,"verify_mano_replay",True)): _verify_mano_replay(episode,device=device,tolerance_m=float(_cfg(cfg,"mano_replay_tolerance_m",1e-4)))
     return episode
 
@@ -122,12 +125,53 @@ def _slot_for_entity(episode: EpisodeStatic, entity_id: str) -> str | None:
     return matches[0] if len(matches)==1 else None
 
 
+def _timeline_state(values: Mapping[str, Any], key: str, index: int) -> str | None:
+    states = values.get(key)
+    if isinstance(states, np.ndarray):
+        if states.ndim != 1:
+            return None
+        if 0 <= index < states.shape[0]:
+            value = states[index]
+            return str(value) if value is not None else None
+        return None
+    if isinstance(states, Sequence) and not isinstance(states, (str, bytes)) and 0 <= index < len(states):
+        value = states[index]
+        return str(value) if value is not None else None
+    return None
+
+
 def action_gate_mask(state: AnnotationState, cfg: Mapping[str,Any] | Any) -> tuple[np.ndarray,tuple[str,...]]:
-    episode=state.episode; i=state.position; frame=int(episode.frame_idx[i]); hand_present=[bool(episode.hands[side]["valid"][i]) for side in episode.layout.hand_slots]; object_present=[bool(episode.objects[slot].get("present",episode.objects[slot]["valid"])[i]) and bool(episode.objects[slot]["pose_valid"][i]) for slot in episode.layout.object_slots]
+    episode=state.episode; i=state.position; frame=int(episode.frame_idx[i])
+    hand_visibility = [_timeline_state(episode.hands[side], "declared_visibility_state", i) for side in episode.layout.hand_slots]
+    object_visibility = [_timeline_state(episode.objects[slot], "visibility_state", i) for slot in episode.layout.object_slots]
+    hand_present=[bool(episode.hands[side]["valid"][i]) and hand_visibility[index] != "out_of_frame"
+                  for index, side in enumerate(episode.layout.hand_slots)]
+    object_present=[bool(episode.objects[slot].get("present",episode.objects[slot]["valid"])[i])
+                    and bool(episode.objects[slot]["pose_valid"][i])
+                    and object_visibility[index] != "out_of_frame"
+                    for index, slot in enumerate(episode.layout.object_slots)]
     active=[]
     for side,present in zip(episode.layout.hand_slots,hand_present):
-        active.append(bool(present and any(row.get("state")=="active_contact_patch" and (slot:=_slot_for_entity(episode,target)) is not None and object_present[episode.layout.object_slots.index(slot)] for target,row in _contact_rows(episode,frame,side))))
-    allowed=episode.layout.presence_mask(hand_present,object_present,active); reasons=np.full(episode.layout.size,"allowed",object); reasons[~allowed]="absent_entity_or_inactive_contact"
+        active.append(bool(present and any(
+            row.get("state")=="active_contact_patch"
+            and (slot:=_slot_for_entity(episode,target)) is not None
+            and object_present[episode.layout.object_slots.index(slot)]
+            for target,row in _contact_rows(episode,frame,side))))
+    allowed=episode.layout.presence_mask(hand_present,object_present,active)
+    reasons=np.full(episode.layout.size,"allowed",object)
+    reasons[~allowed]="absent_entity_or_inactive_contact"
+    for index, visibility in enumerate(hand_visibility):
+        if visibility == "out_of_frame":
+            for name in ("root", "articulation", "translation"):
+                block = episode.layout.block(f"hand.{episode.layout.hand_slots[index]}.{name}")
+                allowed[block.slice] = False
+                reasons[block.slice] = "G9_hand_out_of_frame"
+    for index, visibility in enumerate(object_visibility):
+        if visibility == "out_of_frame":
+            for name in ("rotation", "translation"):
+                block = episode.layout.block(f"object.{episode.layout.object_slots[index]}.{name}")
+                allowed[block.slice] = False
+                reasons[block.slice] = "G9_object_out_of_frame"
     if bool(_cfg(cfg,"freeze_translation_without_visible_surface_support",False)):
         threshold=int(_cfg(cfg,"translation_gate_min_visible_surface_depth_vertices",0))
         for side,present in zip(episode.layout.hand_slots,hand_present):
@@ -142,28 +186,105 @@ def action_gate_mask(state: AnnotationState, cfg: Mapping[str,Any] | Any) -> tup
 
 
 def filter_action(state: AnnotationState, raw_action: Sequence[float], cfg: Mapping[str,Any] | Any) -> tuple[np.ndarray,GateTrace]:
-    value=_cfg(cfg,"action_scales",{}); scales=value if isinstance(value,ActionScales) else ActionScales(**dict(value)); allowed,reasons=action_gate_mask(state,cfg); trace=filter_scaled_action(raw_action,state.episode.layout,scales,allowed,reason_by_dimension=reasons); return trace.executed_delta.copy(),trace
+    value=_cfg(cfg,"action_scales",{}); scales=value if isinstance(value,ActionScales) else ActionScales(**dict(value))
+    allowed,reasons=action_gate_mask(state,cfg)
+    hard_bounds = HardActionBounds.from_config(_cfg(cfg, "hard_action_bounds", None))
+    projection = project_action(
+        raw_action,
+        state.episode.layout,
+        scales,
+        allowed,
+        T_world_camera=state.episode.T_world_camera[state.position],
+        object_translation_frame=str(_cfg(cfg, "object_translation_frame", "world")),
+        hard_bounds=hard_bounds,
+        reason_by_dimension=reasons,
+    )
+    trace = GateTrace(
+        np.asarray(raw_action, dtype=np.float32).copy(),
+        projection.normalized_action.copy(),
+        projection.executed_delta.copy(),
+        projection.allowed_mask.copy(),
+        projection.reasons,
+        metadata=projection.document(),
+    )
+    return trace.executed_delta.copy(), trace
+
+
+def _apply_hand_scale(vertices: np.ndarray, joints: np.ndarray, log_scale: float) -> tuple[np.ndarray, np.ndarray]:
+    factor = float(np.exp(float(log_scale)))
+    if not np.isfinite(factor) or factor <= 0:
+        raise ValueError("hand scale must be positive finite")
+    center = np.asarray(joints[0], dtype=np.float32)
+    return (
+        center[None, :] + (np.asarray(vertices, dtype=np.float32) - center[None, :]) * factor,
+        center[None, :] + (np.asarray(joints, dtype=np.float32) - center[None, :]) * factor,
+    )
 
 
 def decode_candidate(state: AnnotationState, executed_delta: Sequence[float], cfg: Mapping[str,Any] | Any, device: str="cpu") -> None:
     episode=state.episode
     if state.done: raise RuntimeError("cannot decode action after episode completion")
     i=state.position; decoded=episode.layout.decode(executed_delta)
+    if len(state.object_log_scale) != episode.frame_count:
+        state.object_log_scale = np.zeros(episode.frame_count, dtype=np.float32)
     for side in episode.layout.hand_slots:
-        if not bool(episode.hands[side]["valid"][i]): continue
-        root_delta,pose_delta,trans_delta=decoded[f"hand.{side}.root"],decoded[f"hand.{side}.articulation"],decoded[f"hand.{side}.translation"]; state.hand_root[side][i]=_matrix_rotvec(_rotvec_matrix(root_delta)@_rotvec_matrix(episode.hands[side]["root_orient"][i])); base=episode.hands[side]["articulation"][i].reshape(15,3); delta=pose_delta.reshape(15,3);state.hand_articulation[side][i]=np.stack([_matrix_rotvec(_rotvec_matrix(delta[j])@_rotvec_matrix(base[j])) for j in range(15)]).reshape(45);state.hand_translation[side][i]=episode.hands[side]["translation"][i]+trans_delta;state.hand_vertices[side][i],state.hand_joints[side][i]=_model_forward(episode.mano_models[side],state.hand_root[side][i],state.hand_articulation[side][i],episode.hands[side]["betas"][i],state.hand_translation[side][i],device)
+        if side not in state.hand_log_scale or len(state.hand_log_scale[side]) != episode.frame_count:
+            state.hand_log_scale[side] = np.zeros(episode.frame_count, dtype=np.float32)
+    if episode.layout.include_object_shared_scale:
+        # This is one video-level latent, not an independent per-frame object
+        # shape.  Keep the broadcast array for fixed-width observations and
+        # exports while ensuring every frame sees the same current value.
+        state.object_log_scale[:] = float(decoded["object.shared_scale"][0])
+    for side in episode.layout.hand_slots:
+        if not bool(episode.hands[side]["valid"][i]):
+            continue
+        root_delta = decoded[f"hand.{side}.root"]
+        pose_delta = decoded[f"hand.{side}.articulation"]
+        trans_delta = decoded[f"hand.{side}.translation"]
+        state.hand_root[side][i] = _matrix_rotvec(
+            _rotvec_matrix(root_delta) @ _rotvec_matrix(episode.hands[side]["root_orient"][i]))
+        base = episode.hands[side]["articulation"][i].reshape(15, 3)
+        delta = pose_delta.reshape(15, 3)
+        state.hand_articulation[side][i] = np.stack([
+            _matrix_rotvec(_rotvec_matrix(delta[j]) @ _rotvec_matrix(base[j]))
+            for j in range(15)
+        ]).reshape(45)
+        state.hand_translation[side][i] = episode.hands[side]["translation"][i] + trans_delta
+        if episode.layout.include_hand_scale:
+            state.hand_log_scale[side][i] = float(decoded[f"hand.{side}.scale"][0])
+        vertices, joints = _model_forward(
+            episode.mano_models[side], state.hand_root[side][i],
+            state.hand_articulation[side][i], episode.hands[side]["betas"][i],
+            state.hand_translation[side][i], device)
+        if episode.layout.include_hand_scale:
+            vertices, joints = _apply_hand_scale(vertices, joints, state.hand_log_scale[side][i])
+        state.hand_vertices[side][i], state.hand_joints[side][i] = vertices, joints
     for slot in episode.layout.object_slots:
         obj=episode.objects[slot]
-        if not bool(obj["valid"][i]): continue
-        state.object_rotation[slot][i]=_rotvec_matrix(decoded[f"object.{slot}.rotation"])@np.asarray(obj["rotation"][i]); delta_t=decoded[f"object.{slot}.translation"].astype(float); state.object_translation[slot][i]=np.asarray(obj["translation"][i])+(episode.T_world_camera[i,:3,:3]@delta_t if _cfg(cfg,"object_translation_frame","world")=="camera" else delta_t)
+        if not bool(obj["valid"][i]):
+            continue
+        state.object_rotation[slot][i] = _rotvec_matrix(decoded[f"object.{slot}.rotation"]) @ np.asarray(obj["rotation"][i])
+        delta_t = decoded[f"object.{slot}.translation"].astype(float)
+        state.object_translation[slot][i] = np.asarray(obj["translation"][i]) + (
+            episode.T_world_camera[i,:3,:3] @ delta_t
+            if _cfg(cfg,"object_translation_frame","world") == "camera" else delta_t)
     for index,side in enumerate(episode.layout.hand_slots):
         if episode.layout.contact_variables_per_hand:
-            priors=[float(row.get("prior",.5)) for _,row in _contact_rows(episode,int(episode.frame_idx[i]),side)];prior=float(np.clip(np.mean(priors) if priors else .5,1e-4,1-1e-4));state.contact_logits[i,index]=np.log(prior/(1-prior))+decoded[f"contact.{side}"]
+            priors=[float(row.get("prior",.5)) for _,row in _contact_rows(episode,int(episode.frame_idx[i]),side)]
+            prior=float(np.clip(np.mean(priors) if priors else .5,1e-4,1-1e-4))
+            state.contact_logits[i,index]=np.log(prior/(1-prior))+decoded[f"contact.{side}"]
     state.applied[i]=True;state.term_cache.pop(i,None)
 
 
+def _object_scale(state: AnnotationState, frame_position: int) -> float:
+    return float(np.exp(state.object_log_scale[frame_position])) if len(state.object_log_scale) else 1.0
+
+
 def transformed_object_geometry(state: AnnotationState, frame_position: int, slot_name: str) -> tuple[np.ndarray,np.ndarray]:
-    obj=state.episode.objects[slot_name];return np.asarray(obj["pose_vertices_canonical"],float)@state.object_rotation[slot_name][frame_position].T+state.object_translation[slot_name][frame_position],np.asarray(obj["pose_faces"],np.int64)
+    obj=state.episode.objects[slot_name]
+    scale = float(np.exp(state.object_log_scale[frame_position])) if len(state.object_log_scale) else 1.0
+    vertices = np.asarray(obj["pose_vertices_canonical"],float) * scale
+    return vertices @ state.object_rotation[slot_name][frame_position].T + state.object_translation[slot_name][frame_position], np.asarray(obj["pose_faces"],np.int64)
 
 
 def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str,Any] | Any, frame_position: int | None=None) -> dict[str,Any]:
@@ -180,7 +301,8 @@ def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str,Any] | Any,
         if eligible:
             from types import SimpleNamespace
             from utils.candidate_geometry import make_scene,active_constraints_from_vertices,dense_observed_surface_constraints_from_vertices
-            scene=make_scene(obj["collision_vertices_canonical"],obj["collision_faces"])
+            scale = _object_scale(state, i)
+            scene=make_scene(np.asarray(obj["collision_vertices_canonical"], dtype=float) * scale, obj["collision_faces"])
             for side in episode.layout.hand_slots:
                 if not bool(episode.hands[side]["valid"][i]): continue
                 row=SimpleNamespace(object_rotation_world_from_object=state.object_rotation[slot][i],object_translation_world_m=state.object_translation[slot][i],face_strict_observed=authority,current_vertices_world=episode.hands[side]["vertices"][i],observed_surface_support_uncertainty_m=float(_cfg(cfg,"signed_surface_support_uncertainty_m",0.)))
@@ -193,7 +315,7 @@ def refresh_candidate_terms(state: AnnotationState, cfg: Mapping[str,Any] | Any,
         side=row["factor_row"].get("hand_side");key=(side,target);slot=_slot_for_entity(episode,target)
         if slot is None or not bool(episode.objects[slot]["valid"][i]) or not bool(episode.hands[side]["valid"][i]): entry={**dict(row),"state":"inactive_contact_hand_or_target_absent","vertex_ids":np.zeros(0,np.int64),"targets_world":np.zeros((0,3)),"normals_world":np.zeros((0,3))}
         else:
-            R=state.object_rotation[slot][i];t=state.object_translation[slot][i];targets=np.asarray(row["targets_object"],float);normals=np.asarray(row["normals_object"],float);entry={**dict(row),"state":"active_frozen_source_patch" if len(targets) else str(row.get("membership_state","inactive_no_source_patch_vertices")),"vertex_ids":np.asarray(row["vertex_ids"],np.int64),"targets_world":targets@R.T+t if len(targets) else targets,"normals_world":normals@R.T if len(normals) else normals,"object_slot":slot}
+            R=state.object_rotation[slot][i];t=state.object_translation[slot][i];targets=np.asarray(row["targets_object"],float) * _object_scale(state, i);normals=np.asarray(row["normals_object"],float);entry={**dict(row),"state":"active_frozen_source_patch" if len(targets) else str(row.get("membership_state","inactive_no_source_patch_vertices")),"vertex_ids":np.asarray(row["vertex_ids"],np.int64),"targets_world":targets@R.T+t if len(targets) else targets,"normals_world":normals@R.T if len(normals) else normals,"object_slot":slot}
         result["contact_by_key"][key]=entry
         pair_entries.setdefault(side, []).append(entry)
     # Legacy two-key consumers are safe only for a single target. Multi-target

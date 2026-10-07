@@ -10,10 +10,10 @@ import numpy as np
 
 import gymnasium as gym
 
-from actions.space import ActionLayout
+from actions.space import ACTION_LAYOUT_VERSION, ActionLayout
 from data.bundle import EpisodeBundle
 from envs.dynamics import build_episode, decode_candidate, filter_action
-from envs.observation import ObservationLayout, observation_layout, pack_observation
+from envs.observation import OBSERVATION_LAYOUT_VERSION, ObservationLayout, history_row, observation_layout, pack_observation
 from envs.spaces import action_space, observation_space
 from envs.state import AnnotationState, initial_state
 from rewards.evaluator import RewardEvaluator
@@ -40,11 +40,27 @@ class AnnotationEnv(gym.Env):
         self.device = str(device)
         self.max_objects = int(self._get("max_objects", 1))
         self.contact_variables_per_hand = int(self._get("contact_variables_per_hand", 1))
+        self.include_hand_scale = bool(self._get("include_hand_scale", False))
+        self.include_object_shared_scale = bool(self._get("include_object_shared_scale", False))
         declared_layout = ActionLayout(object_slots=tuple(f"object:{i}" for i in range(self.max_objects)),
-                                       contact_variables_per_hand=self.contact_variables_per_hand)
+                                       contact_variables_per_hand=self.contact_variables_per_hand,
+                                       include_hand_scale=bool(self._get("include_hand_scale", False)),
+                                       include_object_shared_scale=bool(self._get("include_object_shared_scale", False)))
         declared_obs = ObservationLayout(declared_layout.size, 2, self.max_objects,
                                          self.contact_variables_per_hand,
-                                         int(self._get("observation_point_samples", 8)))
+                                         int(self._get("observation_point_samples", 8)),
+                                         int(self._get("causal_history_frames", 0)),
+                                         self.include_hand_scale,
+                                         self.include_object_shared_scale)
+        self.action_layout_version = ACTION_LAYOUT_VERSION
+        self.observation_layout_version = OBSERVATION_LAYOUT_VERSION
+        self.action_layout_document = declared_layout.document()
+        self.observation_layout_document = {
+            "schema": OBSERVATION_LAYOUT_VERSION,
+            "size": declared_obs.size,
+            "history_frames": declared_obs.history_frames,
+            "history_feature_size": 12,
+        }
         self.action_space = action_space(declared_layout)
         self.observation_space = observation_space(declared_obs.size)
         self.state: AnnotationState | None = None
@@ -73,6 +89,8 @@ class AnnotationEnv(gym.Env):
             raise RuntimeError("episode entity configuration violates constructor-declared spaces")
         self.episode_index = index
         self.state = initial_state(episode)
+        self.state.history_limit = int(self._get("causal_history_frames", 0))
+        self.state.history.clear()
         self.elapsed_steps = 0
         self._terminal = False
         observation = pack_observation(self.state)
@@ -99,6 +117,10 @@ class AnnotationEnv(gym.Env):
         decode_candidate(state, executed, self.cfg, self.device)
         state.last_gate_trace = trace
         reward, ledger = self.evaluator.transition(state, position + 1)
+        state.last_gate_trace = trace
+        if state.history_limit > 0:
+            state.history.append(history_row(state, reward, ledger, position))
+            del state.history[:-state.history_limit]
         state.position = position + 1
         self.elapsed_steps += 1
         terminated = bool(state.position >= state.episode.frame_count)
@@ -153,6 +175,7 @@ class AnnotationEnv(gym.Env):
             "object_faces": np.asarray(obj["faces"], dtype=np.int64),
             "object_rotation": np.asarray(state.object_rotation[object_slot], dtype=np.float64),
             "object_translation_world": np.asarray(state.object_translation[object_slot], dtype=np.float64),
+            "object_log_scale": np.asarray(state.object_log_scale, dtype=np.float32),
             "object_valid": np.asarray(obj["valid"], dtype=bool),
             "object_pose_valid": np.asarray(obj["valid"], dtype=bool),
             "object_entity_ids": np.asarray([episode.objects[slot]["entity_id"] for slot in object_slots]),
@@ -185,6 +208,7 @@ class AnnotationEnv(gym.Env):
             arrays[f"{side}_display_valid"] = np.asarray(episode.hands[side]["valid"], dtype=bool)
             arrays[f"{side}_vertices_world"] = np.asarray(state.hand_vertices[side], dtype=np.float32)
             arrays[f"{side}_joints_world"] = np.asarray(state.hand_joints[side], dtype=np.float32)
+            arrays[f"{side}_log_scale"] = np.asarray(state.hand_log_scale[side], dtype=np.float32)
             arrays[f"{side}_faces"] = np.asarray(episode.hands[side]["faces"], dtype=np.int64)
             for i, frame in enumerate(episode.frame_idx):
                 if episode.hands[side]["valid"][i]:

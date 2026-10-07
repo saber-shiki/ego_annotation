@@ -216,7 +216,8 @@ def mesh_overlay(state, position, image):
         key = scene.add_triangles(o3d.core.Tensor(vertices.astype('float32')), o3d.core.Tensor(np.asarray(faces, dtype='uint32')))
         colors[key] = np.asarray(color, float)
     if state['object_valid'][position]:
-        add(state['object_vertices_canonical'] @ state['object_rotation'][position].T + state['object_translation_world'][position], state['object_faces'], [183, 188, 80])
+        scale = float(np.exp(np.asarray(state.get('object_log_scale', np.zeros(len(state['object_valid']))))[position])) if 'object_log_scale' in state else 1.0
+        add((state['object_vertices_canonical'] * scale) @ state['object_rotation'][position].T + state['object_translation_world'][position], state['object_faces'], [183, 188, 80])
     for side in ('left', 'right'):
         display_key = side + '_display_valid'
         side_valid = state[display_key] if display_key in state else state[side + '_valid']
@@ -1123,7 +1124,8 @@ def scene_for_layer(state, index):
     T = state['T_world_camera'][index]
     pairs = []
     if state['object_valid'][index]:
-        world = state['object_vertices_canonical'] @ state['object_rotation'][index].T + state['object_translation_world'][index]
+        scale = float(np.exp(np.asarray(state.get('object_log_scale', np.zeros(len(state['object_valid']))))[index])) if 'object_log_scale' in state else 1.0
+        world = (state['object_vertices_canonical'] * scale) @ state['object_rotation'][index].T + state['object_translation_world'][index]
         pairs.append((world, state['object_faces'], 0))
     for (si, side) in enumerate(('left', 'right')):
         if state[side + '_valid'][index]:

@@ -11,6 +11,9 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
+ACTION_LAYOUT_VERSION = "ego.annotation.action_layout.v2"
+
+
 @dataclass(frozen=True)
 class ActionBlock:
     name: str
@@ -33,6 +36,8 @@ class ActionLayout:
     hand_slots: tuple[str, ...] = ("left", "right")
     object_slots: tuple[str, ...] = ("object:0",)
     contact_variables_per_hand: int = 1
+    include_hand_scale: bool = False
+    include_object_shared_scale: bool = False
 
     def __post_init__(self) -> None:
         if self.hand_slots != ("left", "right"):
@@ -43,6 +48,10 @@ class ActionLayout:
             raise ValueError("contact variable count must be nonnegative")
 
     @property
+    def version(self) -> str:
+        return ACTION_LAYOUT_VERSION
+
+    @property
     def blocks(self) -> tuple[ActionBlock, ...]:
         blocks: list[ActionBlock] = []
         offset = 0
@@ -50,10 +59,16 @@ class ActionLayout:
             for name, size in (("root", 3), ("articulation", 45), ("translation", 3)):
                 blocks.append(ActionBlock(f"hand.{side}.{name}", offset, offset + size, f"hand_{name}", slot))
                 offset += size
+            if self.include_hand_scale:
+                blocks.append(ActionBlock(f"hand.{side}.scale", offset, offset + 1, "hand_scale", slot))
+                offset += 1
         for slot, object_name in enumerate(self.object_slots):
             for name, size in (("rotation", 3), ("translation", 3)):
                 blocks.append(ActionBlock(f"object.{object_name}.{name}", offset, offset + size, f"object_{name}", slot))
                 offset += size
+        if self.include_object_shared_scale:
+            blocks.append(ActionBlock("object.shared_scale", offset, offset + 1, "object_scale", 0))
+            offset += 1
         for slot, side in enumerate(self.hand_slots):
             size = self.contact_variables_per_hand
             if size:
@@ -64,6 +79,21 @@ class ActionLayout:
     @property
     def size(self) -> int:
         return self.blocks[-1].stop if self.blocks else 0
+
+    def document(self) -> dict[str, object]:
+        return {
+            "schema": ACTION_LAYOUT_VERSION,
+            "size": self.size,
+            "hand_slots": list(self.hand_slots),
+            "object_slots": list(self.object_slots),
+            "contact_variables_per_hand": self.contact_variables_per_hand,
+            "include_hand_scale": self.include_hand_scale,
+            "include_object_shared_scale": self.include_object_shared_scale,
+            "blocks": [
+                {"name": block.name, "start": block.start, "stop": block.stop, "kind": block.kind, "slot": block.slot}
+                for block in self.blocks
+            ],
+        }
 
     def block(self, name: str) -> ActionBlock:
         matches = [block for block in self.blocks if block.name == name]

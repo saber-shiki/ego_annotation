@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Unit-explicit action scaling and semantic hard gating."""
 
-from dataclasses import dataclass
-from typing import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
 import numpy as np
 
 from actions.space import ActionLayout
@@ -17,6 +17,8 @@ class ActionScales:
     object_rotation_rad: float = 0.08
     object_translation_m: float = 0.02
     contact_logit: float = 1.0
+    hand_log_scale: float = 1.0
+    object_log_scale: float = 1.0
 
     def __post_init__(self) -> None:
         if any((not np.isfinite(value) or value <= 0.0) for value in self.__dict__.values()):
@@ -29,6 +31,8 @@ class ActionScales:
             "hand_translation": self.hand_translation_m,
             "object_rotation": self.object_rotation_rad,
             "object_translation": self.object_translation_m,
+            "hand_scale": self.hand_log_scale,
+            "object_scale": self.object_log_scale,
             "contact": self.contact_logit,
         }
         result = np.empty(layout.size, dtype=np.float32)
@@ -44,6 +48,7 @@ class GateTrace:
     executed_delta: np.ndarray
     allowed_mask: np.ndarray
     reasons: tuple[str, ...]
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for value in (self.raw_action, self.normalized_executed_action,
@@ -57,6 +62,7 @@ class GateTrace:
             "executed_delta": self.executed_delta.tolist(),
             "allowed_mask": self.allowed_mask.astype(bool).tolist(),
             "reasons": list(self.reasons),
+            "safety": dict(self.metadata),
         }
 
 

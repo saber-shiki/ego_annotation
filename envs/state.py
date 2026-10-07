@@ -48,11 +48,15 @@ class AnnotationState:
     object_translation: dict[str, np.ndarray]
     contact_logits: np.ndarray
     applied: np.ndarray
+    hand_log_scale: dict[str, np.ndarray] = field(default_factory=dict)
+    object_log_scale: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     position: int = 0
     previous_objective: float = 0.0
     last_gate_trace: GateTrace | None = None
     ledger: Any = None
     term_cache: dict[int, Any] = field(default_factory=dict)
+    history: list[np.ndarray] = field(default_factory=list)
+    history_limit: int = 0
 
     @property
     def done(self) -> bool:
@@ -64,14 +68,17 @@ class AnnotationState:
             hand_root={k: v.copy() for k, v in self.hand_root.items()},
             hand_articulation={k: v.copy() for k, v in self.hand_articulation.items()},
             hand_translation={k: v.copy() for k, v in self.hand_translation.items()},
+            hand_log_scale={k: v.copy() for k, v in self.hand_log_scale.items()},
             hand_vertices={k: v.copy() for k, v in self.hand_vertices.items()},
             hand_joints={k: v.copy() for k, v in self.hand_joints.items()},
             object_rotation={k: v.copy() for k, v in self.object_rotation.items()},
             object_translation={k: v.copy() for k, v in self.object_translation.items()},
             contact_logits=self.contact_logits.copy(), applied=self.applied.copy(),
+            object_log_scale=self.object_log_scale.copy(),
             position=self.position, previous_objective=self.previous_objective,
             last_gate_trace=self.last_gate_trace, ledger=copy.deepcopy(self.ledger),
             term_cache=copy.deepcopy(self.term_cache),
+            history=[row.copy() for row in self.history], history_limit=self.history_limit,
         )
 
 
@@ -97,6 +104,8 @@ def initial_state(episode: EpisodeStatic) -> AnnotationState:
                            for side, value in hands.items()},
         hand_translation={side: np.asarray(value["translation"], dtype=np.float32).copy()
                           for side, value in hands.items()},
+        hand_log_scale={side: np.zeros(count, dtype=np.float32)
+                        for side in episode.layout.hand_slots},
         hand_vertices={side: np.asarray(value["vertices"], dtype=np.float32).copy()
                        for side, value in hands.items()},
         hand_joints={side: np.asarray(value["joints"], dtype=np.float32).copy()
@@ -105,6 +114,7 @@ def initial_state(episode: EpisodeStatic) -> AnnotationState:
                          for name, value in objects.items()},
         object_translation={name: np.asarray(value["translation"], dtype=np.float64).copy()
                             for name, value in objects.items()},
+        object_log_scale=np.zeros(count, dtype=np.float32),
         contact_logits=contact_logits,
         applied=np.zeros(count, dtype=bool),
     )

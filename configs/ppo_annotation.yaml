@@ -8,6 +8,8 @@ environment:
   # declared slots rather than a hand-only fixed network width.
   max_objects: 1
   contact_variables_per_hand: 5
+  include_hand_scale: false
+  include_object_shared_scale: false
   causal_history_frames: 8
   action_scales:
     hand_root_rad: 0.05
@@ -16,6 +18,8 @@ environment:
     object_rotation_rad: 0.05
     object_translation_m: 0.01
     contact_logit: 1.0
+    hand_log_scale: 1.0
+    object_log_scale: 1.0
   object_translation_frame: world
   # Preserve formal factor ratios; scale only the scalar RL return to keep PPO
   # numerical ranges stable under legacy millimeter-weighted penalties.
@@ -25,6 +29,17 @@ environment:
     # Policy samples and log-probabilities remain raw; AnnotationEnv applies
     # semantic support masks and exports raw/executed action traces.
     mode: physical_residual_filter
+  # G8 is a hard physical projection, not a reward soft penalty. Object
+  # translation bounds are evaluated in the current camera frame.
+  hard_action_bounds:
+    enabled: true
+    hand_root_rad: 0.15
+    hand_articulation_rad: 0.35
+    hand_translation_m: 0.025
+    object_rotation_rad: 0.08
+    object_translation_xy_m: 0.015
+    object_translation_z_m: 0.035
+    contact_logit_abs: 4.0
   observation_contract:
     sources: [current_observations, accepted_causal_history]
     forbidden: [ground_truth, future_policy_results, legacy_optimized_results]
