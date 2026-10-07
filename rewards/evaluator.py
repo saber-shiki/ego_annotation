@@ -205,6 +205,10 @@ class RewardEvaluator:
             self._formal_object(state, end, add, activation)
         if self.profile.visual_joint_fixed_scale:
             self._visual_joint_fixed_scale(state, end, add, activation)
+        if self.profile.name == "scene_v7_rl":
+            self._scene_v7_shape_pad(state, end, add, activation)
+        if self.profile.enforce_activation and end == state.episode.frame_count:
+            self._validate_reward_contract(terms, statistics, activation)
         return FactorLedger(end, terms, statistics, activation, profile=self.profile.name,
                             reward_scale=scale)
 
@@ -233,6 +237,10 @@ class RewardEvaluator:
                 for j in range(15)]) for i in range(end)])
             trans, root, pose = (_tensor(trans_np, self.device), _tensor(root_np, self.device),
                                  _tensor(pose_np, self.device))
+            if episode.layout.include_hand_scale:
+                scale_delta = _tensor(state.hand_log_scale[side][:end] / 0.10, self.device)
+                add(f"hand/{side}/scale_prior", scale_delta.square().mean(),
+                    active_count=end, reduction="mean_squared_log_scale")
 
             row_vis = _array_or_none(source, "hand_observation_visibility_weight_multiplier",
                                      (episode.frame_count,))
@@ -610,6 +618,14 @@ class RewardEvaluator:
             trans = np.asarray(state.object_translation[slot][:end] - obj["translation"][:end], dtype=np.float64)
             rot = np.stack([_rotation_vector(state.object_rotation[slot][i] @ np.asarray(obj["rotation"][i]).T)
                             for i in range(end)])
+            if episode.layout.include_object_shared_scale:
+                scale_delta = np.asarray(state.object_log_scale[:end], dtype=np.float64)
+                add("object/shared_scale_prior", scipy_least_squares_cost(scale_delta / 0.10, loss),
+                    residual_count=len(scale_delta), active_count=len(scale_delta), reduction=f"scipy_0.5_rho/{loss}")
+                if len(scale_delta) > 1:
+                    add("object/shared_scale_velocity", scipy_least_squares_cost(np.diff(scale_delta) / 0.05, loss),
+                        residual_count=len(scale_delta) - 1, active_count=len(scale_delta) - 1,
+                        reduction=f"scipy_0.5_rho/{loss}")
             sigma_t_raw = obj.get("translation_sigma_m", _cfg(self.cfg, "object_translation_sigma_m", None))
             sigma_r_raw = obj.get("rotation_sigma_rad", _cfg(self.cfg, "object_rotation_sigma_rad", None))
             if (sigma_t_raw is None) != (sigma_r_raw is None):
@@ -950,6 +966,138 @@ class RewardEvaluator:
             add(key, scipy_least_squares_cost(residual, loss), residual_count=len(residual),
                 active_count=len(factor.weights), reduction=f"scipy_0.5_rho/{loss}")
             activation[key] = "active_declared_rgb_reprojection"
+
+    def _scene_v7_shape_pad(self, state: AnnotationState, end: int, add: Any,
+                            activation: dict[str, Any]) -> None:
+        """Evaluate scene-v7 shape and G7-qualified pad factors.
+
+        Generated display geometry can contribute silhouette/pad visual terms,
+        but this method never promotes it to pose, collision, sign, or contact
+        authority.  Pad rows must explicitly carry ``g7_active=true``; an
+        unqualified proximity row is diagnostic-only and remains inactive.
+        """
+        from rewards.terms.interaction.contact import unsigned_pad_loss
+
+        episode = state.episode
+        boundary_rows = _factor_rows(episode, {"visual_silhouette_endpoint"}, end)
+        if not boundary_rows:
+            activation["scene_v7/shape"] = "inactive_no_declared_visual_silhouette_evidence"
+        for index, row in enumerate(boundary_rows):
+            frame = _row_frame(row)
+            pos = _frame_position(episode, frame) if frame is not None else None
+            target = str(row.get("target_entity_id") or "")
+            slot = next((name for name in episode.layout.object_slots
+                         if _object_entity(episode.objects[name], name) == target), None)
+            key = f"scene_v7/shape/factor={index}"
+            points = np.asarray(row.get("points_canonical", []), dtype=np.float64).reshape(-1, 3)
+            targets = np.asarray(row.get("target_uv", []), dtype=np.float64).reshape(-1, 2)
+            active = bool(row.get("active") is True or str(row.get("state", "")).startswith("active_"))
+            if pos is None or pos >= end or slot is None:
+                activation[key] = "inactive_declared_entity_or_frame_unavailable"
+                continue
+            if len(points) != len(targets):
+                raise ValueError(f"{key}: malformed declared scene-v7 silhouette factor")
+            if not active or not len(points):
+                activation[key] = "inactive_unqualified_or_empty_shape_factor"
+                continue
+            R, t = state.object_rotation[slot][pos], state.object_translation[slot][pos]
+            scale = float(np.exp(state.object_log_scale[pos])) if len(state.object_log_scale) else 1.0
+            uv, _ = _project((points * scale) @ R.T + t, episode.T_world_camera[pos], episode.intrinsics[pos])
+            add(key, float(self.profile.get("visual_boundary_weight")) * residual.square().mean() / max(end, 1),
+                active_count=len(points), reduction="scene_v7_boundary_row_mean")
+            activation[key] = "active_declared_scene_v7_shape"
+            activation["scene_v7/shape"] = "active_declared_scene_v7_shape"
+
+        pad_rows = _factor_rows(episode, {"visual_unsigned_pad"}, end)
+        if not pad_rows:
+            activation["scene_v7/pad"] = "inactive_no_declared_g7_pad_evidence"
+        B = max(end, 1)
+        for index, row in enumerate(pad_rows):
+            frame, side, target = _row_frame(row), row.get("hand_side"), row.get("target_entity_id")
+            pos = _frame_position(episode, frame) if frame is not None else None
+            slot = next((name for name in episode.layout.object_slots
+                         if _object_entity(episode.objects[name], name) == str(target)), None)
+            key = f"scene_v7/pad/factor={index}"
+            ids = np.asarray(row.get("vertex_ids", []), dtype=np.int64)
+            targets = np.asarray(row.get("targets_object", []), dtype=np.float64).reshape(-1, 3)
+            g7_active = bool(row.get("g7_active") is True)
+            if pos is None or pos >= end:
+                activation[key] = "inactive_frame_outside_prefix"
+                continue
+            if side not in episode.layout.hand_slots or slot is None:
+                activation[key] = "inactive_declared_entity_unavailable"
+                continue
+            if not g7_active:
+                activation[key] = "inactive_g7_not_active"
+                continue
+            if len(ids) != len(targets) or len(ids) < 3:
+                activation[key] = "inactive_malformed_or_short_pad_factor"
+                continue
+            R, t = state.object_rotation[slot][pos], state.object_translation[slot][pos]
+            scale = float(np.exp(state.object_log_scale[pos])) if len(state.object_log_scale) else 1.0
+            object_vertices = np.asarray(episode.objects[slot]["collision_vertices_canonical"], dtype=float) * scale
+            object_faces = np.asarray(episode.objects[slot]["collision_faces"], dtype=np.int64)
+            if len(object_vertices) == 0 or len(object_faces) == 0:
+                activation[key] = "inactive_missing_triangle_mesh"
+                continue
+            from utils.candidate_geometry import closest, make_scene
+            hand_points_world = np.asarray(state.hand_vertices[side][pos, ids], dtype=float)
+            hand_points_object = (hand_points_world - t[None, :]) @ R
+            closest_object, _ = closest(make_scene(object_vertices, object_faces), hand_points_object)
+            targets_world = closest_object @ R.T + t
+            delta = hand_points_world - targets_world
+            value = unsigned_pad_loss(_tensor(delta, self.device), float(row.get("weight", 0.0))) / (B * 2)
+            add(key, float(self.profile.get("visual_unsigned_pad_weight")) * value,
+                active_count=len(ids), reduction="scene_v7_three_nearest_pad")
+            activation[key] = "active_g7_qualified_pad"
+            activation["scene_v7/pad"] = "active_g7_qualified_pad"
+
+    def _validate_reward_contract(self, terms: Mapping[str, float], statistics: Mapping[str, Mapping[str, Any]],
+                                 activation: dict[str, Any]) -> None:
+        """Fail closed when a named scene-v7 family lacks positive evidence."""
+        def term_active(predicate: Any) -> bool:
+            matches = [key for key in terms if predicate(key)]
+            if not matches:
+                return False
+            known_counts = []
+            for key in matches:
+                stats = statistics.get(key, {})
+                if "active_count" in stats:
+                    known_counts.append(float(stats["active_count"]))
+                elif "residual_count" in stats:
+                    known_counts.append(float(stats["residual_count"]))
+                elif isinstance(stats.get("contributions"), list):
+                    known_counts.extend(float(item.get("active_count", item.get("residual_count", 1)))
+                                       for item in stats["contributions"] if isinstance(item, Mapping))
+            return any(count > 0 for count in known_counts) if known_counts else True
+
+        def activation_active(prefix: str) -> bool:
+            return any(str(key).startswith(prefix) and str(value).startswith("active")
+                       for key, value in activation.items())
+
+        family_terms = {
+            "pose": term_active(lambda key: key.startswith("object/") and any(token in key for token in
+                         ("observed_", "rgb_", "/image/"))),
+            "prior": term_active(lambda key: "prior" in key),
+            "time": term_active(lambda key: any(token in key for token in ("velocity", "acceleration"))),
+            "depth": term_active(lambda key: any(token in key for token in ("depth", "first_hit"))),
+            "shape": activation_active("scene_v7/shape"),
+            "hand": term_active(lambda key: key.startswith("hand/") and any(token in key for token in
+                        ("joint_pixel", "translation_prior", "root_prior", "articulation_prior"))),
+            "pad": activation_active("scene_v7/pad"),
+        }
+        required = tuple(self.profile.required_families)
+        missing = [family for family in required if not family_terms.get(family, False)]
+        activation["reward_contract"] = {
+            "profile": self.profile.name,
+            "required_families": list(required),
+            "active_families": [family for family, active in family_terms.items() if active],
+            "missing_families": missing,
+            "checked_at": "natural_episode_end",
+        }
+        if missing:
+            raise RuntimeError(f"scene_v7_rl reward contract missing required families: {missing}")
+
 
     def _visual_joint_fixed_scale(self, state: AnnotationState, end: int, add: Any,
                       activation: dict[str, Any]) -> None:

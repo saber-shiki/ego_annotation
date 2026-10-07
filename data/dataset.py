@@ -66,7 +66,10 @@ class EpisodeDataset(Sequence[EpisodeBundle]):
         if index not in self._cache:
             bundle = EpisodeBundle.open(self._records[index]["manifest"], verify=self._verify)
             if bundle.manifest.get("preprocessing_only") is True:
-                raise ValueError("preprocessing-only v2 bundle requires a future explicit training adapter; use EpisodeBundle for observation inspection")
+                raise ValueError(
+                    "preprocessing-only v2 bundle requires an explicit v2->v3_rl "
+                    "training adapter; inspect with data.v2_rl_adapter.inspect_v2_manifest"
+                )
             self._cache[index] = bundle
         return self._cache[index]
 

@@ -1,0 +1,98 @@
+runtime:
+  skrl_version: "2.1.0"
+  dataset_class: "data.dataset:EpisodeDataset"
+  environment_class: "envs.annotation_env:AnnotationEnv"
+
+environment:
+  # Both MANO hands are invariant; object and contact blocks scale from these
+  # declared slots rather than a hand-only fixed network width.
+  max_objects: 1
+  contact_variables_per_hand: 5
+  include_hand_scale: true
+  include_object_shared_scale: true
+  causal_history_frames: 8
+  action_scales:
+    hand_root_rad: 0.05
+    hand_articulation_rad: 0.05
+    hand_translation_m: 0.01
+    object_rotation_rad: 0.05
+    object_translation_m: 0.01
+    contact_logit: 1.0
+    hand_log_scale: 1.0
+    object_log_scale: 1.0
+  object_translation_frame: world
+  # Preserve formal factor ratios; scale only the scalar RL return to keep PPO
+  # numerical ranges stable under legacy millimeter-weighted penalties.
+  reward_profile: scene_v7_rl
+  reward_scale: 0.00001
+  action_filter:
+    # Policy samples and log-probabilities remain raw; AnnotationEnv applies
+    # semantic support masks and exports raw/executed action traces.
+    mode: physical_residual_filter
+  # G8 is a hard physical projection, not a reward soft penalty. Object
+  # translation bounds are evaluated in the current camera frame.
+  hard_action_bounds:
+    enabled: true
+    hand_root_rad: 0.15
+    hand_articulation_rad: 0.35
+    hand_translation_m: 0.025
+    object_rotation_rad: 0.08
+    object_translation_xy_m: 0.015
+    object_translation_z_m: 0.035
+    contact_logit_abs: 4.0
+  observation_contract:
+    sources: [current_observations, accepted_causal_history]
+    forbidden: [ground_truth, future_policy_results, legacy_optimized_results]
+
+model:
+  encoder:
+    hidden_dims: [256, 256]
+    activation: elu
+    layer_norm: true
+  # Null means use AnnotationEnv's dynamic layout or the actual flattened space.
+  observation_feature_groups: null
+  state_feature_groups: null
+  policy:
+    initial_log_std: -1.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    zero_mean_init: true
+  value:
+    # The stock Gymnasium wrapper does not synthesize privileged state.
+    use_states: false
+
+ppo:
+  rollouts: 128
+  learning_epochs: 8
+  mini_batches: 8
+  # Finite video episodes use undiscounted return so prefix potential rewards
+  # reconstruct the declared final objective.
+  discount_factor: 1.0
+  gae_lambda: 0.95
+  learning_rate: 0.0003
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.0
+  time_limit_bootstrap: true
+  mixed_precision: false
+
+experiment:
+  write_interval: auto
+  checkpoint_interval: auto
+
+trainer:
+  timesteps: 100000
+  headless: true
+  disable_progressbar: false
+
+rollout:
+  # Null consumes AnnotationEnv.num_annotation_steps for the complete heldout split.
+  timesteps: null
+  headless: true
+  disable_progressbar: false
+  stochastic_evaluation: false

@@ -67,6 +67,10 @@ FORMAL_DEFAULTS: dict[str, Any] = {
     "rgb_reprojection_weight": 1.0,
     "sigma_rgb_reprojection_px": 2.0,
     "max_rgb_reprojection_residual_px": 40.0,
+    # Scene-v7 visual boundary/pad weights are kept separate from formal
+    # factor ratios and are only consumed by the named scene_v7_rl profile.
+    "visual_boundary_weight": 3.0,
+    "visual_unsigned_pad_weight": 1.7,
     "reward_scale": 1.0,
 }
 
@@ -86,6 +90,8 @@ class RewardProfile:
     formal_object: bool
     visual_joint_fixed_scale: bool
     values: Mapping[str, Any]
+    required_families: tuple[str, ...] = ()
+    enforce_activation: bool = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.values.get(key, default)
@@ -111,14 +117,19 @@ def resolve_profile(cfg: Mapping[str, Any] | Any) -> RewardProfile:
         # formal object trajectory factors. The hand solver's optional
         # translation-only object block is omitted, avoiding duplicate object
         # priors/temporal penalties.
-        "formal_annotation": (True, True, False, FORMAL_DEFAULTS),
-        "formal_interval": (True, False, False, FORMAL_DEFAULTS),
-        "formal_object": (False, True, False, FORMAL_DEFAULTS),
-        "visual_joint_fixed_scale": (False, False, True, VISUAL_DEFAULTS),
+        "formal_annotation": (True, True, False, FORMAL_DEFAULTS, (), False),
+        "formal_interval": (True, False, False, FORMAL_DEFAULTS, (), False),
+        "formal_object": (False, True, False, FORMAL_DEFAULTS, (), False),
+        "visual_joint_fixed_scale": (False, False, True, VISUAL_DEFAULTS, (), False),
+        # This is intentionally fail-closed: the profile composes the formal
+        # physical terms with explicit shape/pad terms and refuses a run whose
+        # required evidence families are absent at the natural episode end.
+        "scene_v7_rl": (True, True, False, FORMAL_DEFAULTS,
+                         ("pose", "prior", "time", "depth", "shape", "hand", "pad"), True),
     }
     if name not in shapes:
         raise ValueError(f"unreviewed reward profile {name!r}; expected one of {sorted(shapes)}")
-    hand, obj, visual, defaults = shapes[name]
+    hand, obj, visual, defaults, required_families, enforce_activation = shapes[name]
     values = dict(defaults)
     for key, default in defaults.items():
         value = _get(cfg, key, default)
@@ -130,4 +141,4 @@ def resolve_profile(cfg: Mapping[str, Any] | Any) -> RewardProfile:
             values[key] = value
     if float(values["reward_scale"]) <= 0:
         raise ValueError("reward_scale must be positive and is separate from factor weights")
-    return RewardProfile(name, hand, obj, visual, values)
+    return RewardProfile(name, hand, obj, visual, values, required_families, enforce_activation)

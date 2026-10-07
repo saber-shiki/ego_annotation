@@ -569,8 +569,10 @@ def _load_prepared_sources(bundle: EpisodeBundle, *, prepare_legacy_contacts: bo
         else:
             collision_vertices, collision_faces, collision_watertight = pose_vertices, pose_faces, pose_watertight
             collision_sha, collision_role = file_sha256(pose_path), "pose_mesh_fallback_no_collision_mesh_declared"
-        rotations=[]; translations=[]; present=[]; pose_valid=[]; metric_eligible=[]; raw_points=[]; admitted=[]; states=[]
-        for frame in frames:
+        rotations=[]; translations=[]; present=[]; pose_valid=[]; metric_eligible=[]; raw_points=[]; admitted=[]; states=[]; visibility_states=[]
+        for index, frame in enumerate(frames):
+            declared_visibility = interaction.visibility.get((int(frame_ids[index]), entity))
+            visibility_states.append(str(declared_visibility.state) if declared_visibility is not None else "unresolved")
             matches = [value for value in frame.get("objects", []) if aliases.get(str(value.get("object_id", value.get("track_id", ""))), aliases.get(_entity_alias(str(value.get("object_id", value.get("track_id", ""))))) ) == entity]
             if len(matches) > 1:
                 raise ValueError(f"duplicate object entity {entity} in one frame")
@@ -594,7 +596,7 @@ def _load_prepared_sources(bundle: EpisodeBundle, *, prepare_legacy_contacts: bo
             if not np.array_equal(ids,np.arange(len(collision_faces))) or eligible.shape!=(len(collision_faces),) or mesh_hash!=collision_sha or face_count!=len(collision_faces):
                 raise ValueError(f"signed authority does not bind exact collision mesh for {entity}")
             authority=eligible; authority_state="active_mesh_bound_local_face_authority" if authority.any() else "inactive_zero_signed_faces"
-        objects[entity]={"entity_id":entity,"present":_frozen_array(present),"pose_valid":_frozen_array(pose_valid),"valid":_frozen_array(np.asarray(present)&np.asarray(pose_valid)),"metric_observation_eligible":_frozen_array(metric_eligible),"rotation":_frozen_array(rotations),"translation":_frozen_array(translations),"pose_vertices_canonical":_frozen_array(pose_vertices),"pose_faces":_frozen_array(pose_faces),"pose_mesh_sha256":file_sha256(pose_path),"pose_mesh_face_count":int(len(pose_faces)),"vertices_canonical":_frozen_array(pose_vertices),"faces":_frozen_array(pose_faces),"collision_vertices_canonical":_frozen_array(collision_vertices),"collision_faces":_frozen_array(collision_faces),"collision_mesh_sha256":collision_sha,"collision_mesh_face_count":int(len(collision_faces)),"collision_mesh_role":collision_role,"watertight":bool(collision_watertight),"signed_geometry_ready":readiness.get("signed_geometry_ready") is True,"signed_authority":_frozen_array(authority),"signed_authority_state":authority_state,"raw_observed_points_world":tuple(_frozen_array(value) for value in raw_points),"observed_points_world":tuple(_frozen_array(value) for value in admitted),"observed_point_state":tuple(states),"pose_provenance":"source_observation_initializer_not_solved_trajectory","geometry_provenance":"completed_reconstructed_pose_mesh"}
+        objects[entity]={"entity_id":entity,"present":_frozen_array(present),"pose_valid":_frozen_array(pose_valid),"valid":_frozen_array(np.asarray(present)&np.asarray(pose_valid)),"metric_observation_eligible":_frozen_array(metric_eligible),"rotation":_frozen_array(rotations),"translation":_frozen_array(translations),"pose_vertices_canonical":_frozen_array(pose_vertices),"pose_faces":_frozen_array(pose_faces),"pose_mesh_sha256":file_sha256(pose_path),"pose_mesh_face_count":int(len(pose_faces)),"vertices_canonical":_frozen_array(pose_vertices),"faces":_frozen_array(pose_faces),"collision_vertices_canonical":_frozen_array(collision_vertices),"collision_faces":_frozen_array(collision_faces),"collision_mesh_sha256":collision_sha,"collision_mesh_face_count":int(len(collision_faces)),"collision_mesh_role":collision_role,"watertight":bool(collision_watertight),"signed_geometry_ready":readiness.get("signed_geometry_ready") is True,"signed_authority":_frozen_array(authority),"signed_authority_state":authority_state,"raw_observed_points_world":tuple(_frozen_array(value) for value in raw_points),"observed_points_world":tuple(_frozen_array(value) for value in admitted),"observed_point_state":tuple(states),"visibility_state":tuple(visibility_states),"pose_provenance":"source_observation_initializer_not_solved_trajectory","geometry_provenance":"completed_reconstructed_pose_mesh"}
 
     visual_geometry = None
     if 'visual_geometry_report' in manifest['sources']:
@@ -637,17 +639,19 @@ def _load_prepared_sources(bundle: EpisodeBundle, *, prepare_legacy_contacts: bo
 
     # Row/joint/finger/ray evidence stays in hand dictionaries for reward profiles.
     for side, hand in hands.items():
-        n=len(frame_ids); joint=np.zeros((n,21),np.float32); pose=np.zeros((n,15),np.float32); row_vis=np.zeros(n,np.float32); depth_res=np.full((n,21),np.nan,np.float32); mult=np.ones(n,np.float32); ray=np.zeros((n,3),np.float32); ray_source=np.full(n,np.nan,np.float32); ray_weight=np.zeros(n,np.float32); states=[]
+        n=len(frame_ids); joint=np.zeros((n,21),np.float32); pose=np.zeros((n,15),np.float32); row_vis=np.zeros(n,np.float32); depth_res=np.full((n,21),np.nan,np.float32); mult=np.ones(n,np.float32); ray=np.zeros((n,3),np.float32); ray_source=np.full(n,np.nan,np.float32); ray_weight=np.zeros(n,np.float32); states=[]; visibility_states=[]
         for i,frame in enumerate(frame_ids):
             candidates=[row for (f,s,_t,fam),rows in typed_frozen.items() if f==int(frame) and s==side for row in rows if fam in {"hand_observation_visibility","hand_depth_shift_prior"}]
             default=float(hand["valid"][i]); row_vis[i]=default; joint[i]=default; pose[i]=default; states.append("source_validity_only_no_joint_factor_row" if default else "inactive_hand_absent")
+            declared_visibility = interaction.visibility.get((int(frame), side))
+            visibility_states.append(str(declared_visibility.state) if declared_visibility is not None else "unresolved")
             for row in candidates:
                 family=row.get("factor_family")
                 if family=="hand_observation_visibility":
                     multiplier=float(row.get("joint_observation_weight_multiplier",row.get("weight_multiplier",1.0))); mult[i]=np.clip(multiplier,0,1); row_vis[i]=mult[i]; joint[i]=_first_vector(row,("joint_visibility_weights","joint_visibility"),(21,),joint[i]); pose[i]=_first_vector(row,("pose_visibility_weights","pose_visibility"),(15,),pose[i]); depth_res[i]=_first_vector(row,("joint_depth_residual_m",),(21,),depth_res[i]); states[-1]=str(row.get("state","active_hand_observation_visibility"))
                 elif family=="hand_depth_shift_prior":
                     ray[i]=_first_vector(row,("hand_ray_shift_prior_world_m","translation_world_m","target_world_m"),(3,),ray[i]); ray_source[i]=float(row.get("hand_ray_shift_prior_source_m",np.nan)); ray_weight[i]=float(row.get("hand_ray_shift_prior_weight",row.get("weight",0.0)))
-        hand.update({"row_visibility":_frozen_array(row_vis),"joint_visibility":_frozen_array(joint),"pose_visibility":_frozen_array(pose),"joint_depth_residual_m":_frozen_array(depth_res),"hand_observation_visibility_weight_multiplier":_frozen_array(mult),"hand_ray_shift_prior_world_m":_frozen_array(ray),"hand_ray_shift_prior_source_m":_frozen_array(ray_source),"hand_ray_shift_prior_weight":_frozen_array(ray_weight),"visibility_state":tuple(states)})
+        hand.update({"row_visibility":_frozen_array(row_vis),"joint_visibility":_frozen_array(joint),"pose_visibility":_frozen_array(pose),"joint_depth_residual_m":_frozen_array(depth_res),"hand_observation_visibility_weight_multiplier":_frozen_array(mult),"hand_ray_shift_prior_world_m":_frozen_array(ray),"hand_ray_shift_prior_source_m":_frozen_array(ray_source),"hand_ray_shift_prior_weight":_frozen_array(ray_weight),"visibility_state":tuple(states),"declared_visibility_state":tuple(visibility_states)})
 
     # Independent P09 first-surface depth evidence is frozen and bound to factor/NPZ hashes.
     contact: dict[tuple[int,str,str],dict[str,Any]]={}; depth_by_hand={side:[None]*len(frame_ids) for side in HAND_SLOTS}; frame_position={int(value):i for i,value in enumerate(frame_ids)}

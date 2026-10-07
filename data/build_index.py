@@ -26,7 +26,10 @@ def build_index(roots: Iterable[str | Path], output: str | Path | None = None) -
                 continue
             if isinstance(payload, dict) and payload.get("preprocessing_only") is True:
                 if root.is_file():
-                    raise ValueError("preprocessing-only v2 bundle requires a future explicit training adapter")
+                    raise ValueError(
+                        "preprocessing-only v2 bundle requires the explicit v2->v3_rl "
+                        "training adapter; inspect with data.v2_rl_adapter.inspect_v2_manifest"
+                    )
                 continue
             if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
                 continue
