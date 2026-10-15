@@ -1,0 +1,80 @@
+runtime:
+  skrl_version: 2.1.0
+  dataset_class: data.coarse_training:CoarseTrainingDataset
+  environment_class: envs.generated_collision_coarse_env:GeneratedCollisionCoarseEnv
+environment:
+  max_objects: 1
+  contact_variables_per_hand: 5
+  causal_history_frames: 8
+  action_scales:
+    hand_root_rad: 0.05
+    hand_articulation_rad: 0.05
+    hand_translation_m: 0.01
+    object_rotation_rad: 0.05
+    object_translation_m: 0.01
+    contact_logit: 1.0
+  object_translation_frame: world
+  reward_profile: formal_annotation
+  reward_scale: 1.0e-05
+  action_filter:
+    mode: physical_residual_filter
+  observation_contract:
+    sources:
+    - current_observations
+    - accepted_causal_history
+    forbidden:
+    - ground_truth
+    - future_policy_results
+    - legacy_optimized_results
+  preprocessed_state_adapter: coarse_scene_v1_source_v2_rgb
+  generated_collision:
+    contract: generated_mesh_collision_hypothesis.v1
+    trust_complete_generated_mesh: true
+    epsilon_m: 0.0001
+    nsamples: 5
+    weight: 300000.0
+model:
+  encoder:
+    hidden_dims:
+    - 256
+    - 256
+    activation: elu
+    layer_norm: true
+  observation_feature_groups: null
+  state_feature_groups: null
+  policy:
+    initial_log_std: -1.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    zero_mean_init: true
+  value:
+    use_states: false
+ppo:
+  rollouts: 128
+  learning_epochs: 8
+  mini_batches: 8
+  discount_factor: 1.0
+  gae_lambda: 0.95
+  learning_rate: 0.0003
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.0
+  time_limit_bootstrap: true
+  mixed_precision: false
+experiment:
+  write_interval: 0
+  checkpoint_interval: 0
+trainer:
+  timesteps: 1024
+  headless: true
+  disable_progressbar: true
+rollout:
+  timesteps: null
+  headless: true
+  disable_progressbar: false
+  stochastic_evaluation: false

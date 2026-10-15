@@ -42,11 +42,8 @@ class AnnotationEnv(gym.Env):
         self.contact_variables_per_hand = int(self._get("contact_variables_per_hand", 1))
         declared_layout = ActionLayout(object_slots=tuple(f"object:{i}" for i in range(self.max_objects)),
                                        contact_variables_per_hand=self.contact_variables_per_hand)
-        declared_obs = ObservationLayout(declared_layout.size, 2, self.max_objects,
-                                         self.contact_variables_per_hand,
-                                         int(self._get("observation_point_samples", 8)))
         self.action_space = action_space(declared_layout)
-        self.observation_space = observation_space(declared_obs.size)
+        self.observation_space = observation_space(self._observation_size(declared_layout))
         self.state: AnnotationState | None = None
         self.episode_index: int | None = None
         self.elapsed_steps = 0
@@ -59,6 +56,14 @@ class AnnotationEnv(gym.Env):
     def _get(self, name: str, default: Any) -> Any:
         return self.cfg.get(name, default) if isinstance(self.cfg, Mapping) else getattr(self.cfg, name, default)
 
+    def _observation_size(self, layout: ActionLayout) -> int:
+        return ObservationLayout(layout.size, 2, self.max_objects,
+                                 self.contact_variables_per_hand,
+                                 int(self._get("observation_point_samples", 8))).size
+
+    def _pack_observation(self, state: AnnotationState, *, terminal: bool = False) -> np.ndarray:
+        return pack_observation(state, terminal=terminal)
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
         options = options or {}
@@ -69,13 +74,13 @@ class AnnotationEnv(gym.Env):
         else:
             index = int(self.np_random.integers(0, len(self.dataset)))
         episode = build_episode(self.dataset[index], self.cfg, self.device)
-        if episode.layout.size != self.action_space.shape[0] or observation_layout(episode).size != self.observation_space.shape[0]:
+        if episode.layout.size != self.action_space.shape[0] or self._observation_size(episode.layout) != self.observation_space.shape[0]:
             raise RuntimeError("episode entity configuration violates constructor-declared spaces")
         self.episode_index = index
         self.state = initial_state(episode)
         self.elapsed_steps = 0
         self._terminal = False
-        observation = pack_observation(self.state)
+        observation = self._pack_observation(self.state)
         return observation, {
             "bundle_id": episode.bundle_id, "clip_id": episode.clip_id,
             "source_video_id": episode.source_video_id,
@@ -105,7 +110,7 @@ class AnnotationEnv(gym.Env):
         truncated = bool(not terminated and self.max_episode_steps is not None
                          and self.elapsed_steps >= int(self.max_episode_steps))
         self._terminal = bool(terminated or truncated)
-        observation = pack_observation(state, terminal=self._terminal)
+        observation = self._pack_observation(state, terminal=self._terminal)
         info = {
             "bundle_id": state.episode.bundle_id,
             "frame_idx": frame_idx,
@@ -226,6 +231,8 @@ class AnnotationEnv(gym.Env):
                 "source_pose": obj.get("pose_provenance"),
             },
         }
+        if "preprocessed_state_adapter" in episode.provenance:
+            document["preprocessed_state_adapter"] = dict(episode.provenance["preprocessed_state_adapter"])
         if path is not None:
             requested = Path(path)
             if requested.suffix.lower() == ".npz":

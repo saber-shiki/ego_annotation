@@ -29,7 +29,7 @@ class ResidualGaussianPolicy(GaussianMixin, Model):
         activation: str = "elu",
         layer_norm: bool = False,
         feature_groups: Sequence[Mapping[str, object]] | None = None,
-        initial_log_std: float = -1.0,
+        initial_log_std: float | Sequence[float] = -1.0,
         min_log_std: float = -5.0,
         max_log_std: float = 1.0,
         zero_mean_init: bool = True,
@@ -61,7 +61,14 @@ class ResidualGaussianPolicy(GaussianMixin, Model):
         if zero_mean_init:
             nn.init.zeros_(self.mean_head.weight)
             nn.init.zeros_(self.mean_head.bias)
-        self.log_std_parameter = nn.Parameter(torch.full((self.num_actions,), float(initial_log_std)))
+        initial = torch.as_tensor(initial_log_std, dtype=torch.float32)
+        if initial.ndim == 0:
+            initial = initial.repeat(self.num_actions)
+        if initial.shape != (self.num_actions,) or not torch.isfinite(initial).all():
+            raise ValueError("initial_log_std must be finite scalar or one value per policy action")
+        if torch.any(initial < float(min_log_std)) or torch.any(initial > float(max_log_std)):
+            raise ValueError("initial_log_std must lie inside declared policy bounds")
+        self.log_std_parameter = nn.Parameter(initial.clone())
 
     def compute(self, inputs, role):
         observations = inputs["observations"]
