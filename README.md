@@ -1,5 +1,11 @@
 # RL-first ego annotation
 
+Reusable observations/preprocessing now have an independent, content-addressed
+S3 store. See [intermediate artifact reuse](docs/INTERMEDIATE_ARTIFACT_CACHE.md)
+for upload, verified restore, same-run recovery and the HOT3D five-second batch.
+Downstream changes should consume frozen source bundles instead of re-running
+`main.py observe`.
+
 **Latest real-data validation (2026-09-22):** the real milk v2 cold run completed
 96 stages and passed full observation readback plus all-frame source MANO replay.
 An additive environment-side *validation-only* consumer passed zero/controlled
