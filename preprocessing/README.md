@@ -1,5 +1,26 @@
 # Monocular derived coarse scenes
 
+## Explicit surface-motion/envelope experiment (2026-10-07)
+
+```bash
+# Server only; use its provisioned interpreter and an immutable snapshot.
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  /ABS/PROVISIONED/PYTHON -m preprocessing.surface_ablation \
+  --source-observations /ABS/source_observations.json \
+  --baseline /ABS/FROZEN_R6/coarse_scene.json --output-dir /ABS/NEW_OUTPUT
+```
+
+This runs A (memoized R6), B (mesh-independent RGBD material motion plus observed surface/
+boundary factors), and C (B plus a soft open envelope). Run from an immutable
+snapshot using the provisioned server CPU interpreter; the output must be new.
+It does not run perception or PPO and does not change the default producer.
+Full mesh, source MANO, camera/K and the R6 shared scale remain frozen.
+
+The five-case study produced local improvements but persistent physical errors
+and new motion regressions, particularly on spatula. **Do not promote B/C to the
+RL/default baseline.** See [design](../docs/VISIBLE_ENVELOPE_ABLATION_20261007.md)
+and [complete results/videos](../docs/VISIBLE_ENVELOPE_RESULTS_20261007.md).
+
 This is a separate preprocessing consumer of frozen **v2 monocular-RGB observations**. It does not run observation models, use CAD/GT/additional cameras, change source MANO, load a policy, or bypass the old training guards.
 
 ## Fixed-depth surface alignment profile
