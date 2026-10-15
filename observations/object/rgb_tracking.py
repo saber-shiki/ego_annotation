@@ -163,6 +163,10 @@ def validate_depth_contract(depth_ids: np.ndarray, depths: np.ndarray, confidenc
         raise RuntimeError('depth/confidence raster shapes disagree')
     if intrinsics.shape != (len(depth_ids), 4):
         raise RuntimeError('per-frame depth intrinsics shape is invalid')
+    if depths.shape[0] != len(depth_ids):
+        raise RuntimeError('depth frame count differs from frame_idx')
+    if not np.isfinite(intrinsics).all() or np.any(intrinsics[:, :2] <= 0):
+        raise RuntimeError('invalid depth intrinsics')
     if len(np.unique(depth_ids)) != len(depth_ids):
         raise RuntimeError('depth frame_idx values are not unique')
     return source_wh
@@ -213,8 +217,8 @@ def valid_initial_poses(report: dict[str, Any]) -> dict[int, tuple[np.ndarray, n
             poses[int(row['frame_idx'])] = pose
     return poses
 
-def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict) -> str | None:
-    """A target need not have depth/pose; a source must have accepted P09 and P14."""
+def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict | None) -> str | None:
+    """Require retained observed P09 support; only legacy mode also requires P14."""
     from envs.qualification.object_observation import p09_geometry_validation as p09_geometry_validation
     obj = object_for_frame(frame, object_id)
     geom = obj.get('visible_geometry_candidate') if obj else None
@@ -225,7 +229,7 @@ def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict) -
     (points, reason, _) = p09_geometry_validation(obj, frame)
     if points is None:
         return reason
-    if int(frame['frame_idx']) not in poses:
+    if poses is not None and int(frame['frame_idx']) not in poses:
         return 'missing_or_invalid_p14_source_pose'
     return None
 
@@ -329,6 +333,10 @@ def preflight_manifest_images(manifest_path: Path, frames: dict[int, dict[str, A
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image is None or image.shape[1::-1] != manifest_wh:
             raise RuntimeError(f'RGB/manifest image plane mismatch at frame {idx}')
+        planes[idx] = {'source_size_wh': list(video_wh), 'manifest_size_wh': list(manifest_wh),
+            'owned_mask_size_wh': None, 'rgb_path': str(path), 'matching_plane': 'manifest_rgb',
+            'serialized_evidence_plane': 'original_owned_mask',
+            'pixel_affine': 'u_to=(u_from+0.5)*size_to/size_from-0.5'}
         obj = object_for_frame(frame, object_id)
         if obj is None:
             continue
@@ -345,12 +353,13 @@ def preflight_manifest_images(manifest_path: Path, frames: dict[int, dict[str, A
         images[idx] = image
         native_masks[idx] = mask
         matching_masks[idx] = cv2.resize(mask, manifest_wh, interpolation=cv2.INTER_NEAREST_EXACT)
-        planes[idx] = {'source_size_wh': list(video_wh), 'manifest_size_wh': list(manifest_wh), 'owned_mask_size_wh': list(mask.shape[::-1]), 'rgb_path': str(path), 'matching_plane': 'manifest_rgb', 'serialized_evidence_plane': 'original_owned_mask', 'pixel_affine': 'u_to=(u_from+0.5)*size_to/size_from-0.5'}
+        planes[idx]['owned_mask_size_wh'] = list(mask.shape[::-1])
     return (images, native_masks, matching_masks, planes)
 
-def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str, torch.Tensor]], masks: dict[int, np.ndarray], frames: dict[int, dict[str, Any]], depths: np.ndarray, confidences: np.ndarray, depth_pos: dict[int, int], depth_intrinsics: np.ndarray, source_wh: tuple[int, int], matcher: torch.nn.Module, device: torch.device, args: argparse.Namespace, initial_pose_by_frame: dict[int, tuple[np.ndarray, np.ndarray]], source_support_by_frame: dict[int, np.ndarray], target_evidence_size_wh: tuple[int, int] | None=None) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None, dict[str, np.ndarray] | None]:
+def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str, torch.Tensor]], masks: dict[int, np.ndarray], frames: dict[int, dict[str, Any]], depths: np.ndarray, confidences: np.ndarray, depth_pos: dict[int, int], depth_intrinsics: np.ndarray, source_wh: tuple[int, int], matcher: torch.nn.Module, device: torch.device, args: argparse.Namespace, initial_pose_by_frame: dict[int, tuple[np.ndarray, np.ndarray]], source_support_by_frame: dict[int, np.ndarray], target_evidence_size_wh: tuple[int, int] | None=None, source_evidence_size_wh: tuple[int, int] | None=None) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None, dict[str, np.ndarray] | None]:
     import torch
-    reason = rgb_source_eligibility(frames[source_idx], args.object_id, initial_pose_by_frame)
+    source_mode = getattr(args, 'observation_mode', 'legacy-canonical') == 'source-world'
+    reason = rgb_source_eligibility(frames[source_idx], args.object_id, None if source_mode else initial_pose_by_frame)
     if reason is not None or source_idx not in source_support_by_frame:
         return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected', 'reason': reason or 'missing_retained_p09_depth_support'}, None, None)
     from lightglue.utils import rbd
@@ -363,6 +372,9 @@ def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str,
     scores = np.asarray(raw_scores if raw_scores is not None else [], dtype=np.float64)
     if pairs.ndim != 2 or pairs.shape[1] != 2:
         pairs = np.empty((0, 2), dtype=np.int64)
+    if source_mode and (scores.shape != (len(pairs),) or not np.isfinite(scores).all()
+                        or np.any(scores < 0) or np.any(scores > 1)):
+        raise ValueError('LightGlue match scores must accompany every source observation match')
     kp0 = features[source_idx]['keypoints'].detach().cpu().numpy()
     kp1 = features[target_idx]['keypoints'].detach().cpu().numpy()
     if kp0.ndim == 3:
@@ -381,6 +393,12 @@ def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str,
         erode0 = cv2.erode((mask0 > 0).astype(np.uint8), np.ones((7, 7), np.uint8), iterations=1)
         erode1 = cv2.erode((mask1 > 0).astype(np.uint8), np.ones((7, 7), np.uint8), iterations=1)
         keep = (erode0[y0, x0] > 0) & (erode1[y1, x1] > 0)
+        if source_mode:
+            keep &= (np.isfinite(uv0).all(axis=1) & np.isfinite(uv1).all(axis=1)
+                & (uv0[:, 0] >= 0) & (uv0[:, 0] < mask0.shape[1])
+                & (uv0[:, 1] >= 0) & (uv0[:, 1] < mask0.shape[0])
+                & (uv1[:, 0] >= 0) & (uv1[:, 0] < mask1.shape[1])
+                & (uv1[:, 1] >= 0) & (uv1[:, 1] < mask1.shape[0]))
         uv0 = uv0[keep]
         uv1 = uv1[keep]
         scores = scores[keep] if len(scores) == len(keep) else np.ones(len(uv0))
@@ -398,25 +416,59 @@ def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str,
     scores = scores[retained] if len(scores) == len(retained) else np.ones(len(uv0))
     (source_world, valid) = lift_source_world(source_idx, uv0, mask0, depths[depth_pos[source_idx]], confidences[depth_pos[source_idx]], source_intr, source_camera, float(args.min_confidence))
     source_world = source_world[valid]
+    source_uv = uv0[valid]
     target_uv = uv1[valid]
+    scores = scores[valid]
     if len(source_world) < int(args.min_matches):
         return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected', 'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)), 'reason': 'too_few_object_matches'}, None, None)
     K_target = np.asarray([[target_intr[0], 0.0, target_intr[2]], [0.0, target_intr[1], target_intr[3]], [0.0, 0.0, 1.0]], dtype=np.float64)
     K_target = resize_intrinsics(K_target, source_wh, (mask1.shape[1], mask1.shape[0]))
-    (success, rvec, tvec, inliers) = cv2.solvePnPRansac(source_world.astype(np.float64), target_uv.astype(np.float64), K_target, np.zeros(5, dtype=np.float64), iterationsCount=int(args.pnp_iterations), reprojectionError=float(args.reprojection_threshold_px), confidence=0.999, flags=cv2.SOLVEPNP_EPNP)
-    if not success or inliers is None or len(inliers) < 3:
+    try:
+        (success, rvec, tvec, inliers) = cv2.solvePnPRansac(source_world.astype(np.float64), target_uv.astype(np.float64), K_target, np.zeros(5, dtype=np.float64), iterationsCount=int(args.pnp_iterations), reprojectionError=float(args.reprojection_threshold_px), confidence=0.999, flags=cv2.SOLVEPNP_EPNP)
+    except cv2.error as exc:
+        if not source_mode:
+            raise
+        return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected',
+                 'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)),
+                 'reason': 'pnp_degenerate_support', 'diagnostic': str(exc)}, None, None)
+    if source_mode:
+        rejection = None
+        if not success or inliers is None:
+            rejection = 'pnp_failed'
+        else:
+            inliers = np.asarray(inliers)
+            if (inliers.ndim != 2 or inliers.shape[1] != 1 or inliers.dtype.kind not in 'iu'
+                    or np.any(inliers < 0) or np.any(inliers >= len(source_world))
+                    or len(np.unique(inliers)) != len(inliers)):
+                rejection = 'invalid_pnp_inliers'
+            elif len(inliers) < 4:
+                rejection = 'insufficient_pnp_inliers'
+            elif (np.asarray(rvec).shape != (3, 1) or np.asarray(tvec).shape != (3, 1)
+                    or not np.isfinite(rvec).all() or not np.isfinite(tvec).all()):
+                rejection = 'invalid_pnp_transform'
+        if rejection:
+            return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected',
+                     'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)),
+                     'inliers': 0 if inliers is None else int(len(inliers)), 'reason': rejection}, None, None)
+    elif not success or inliers is None or len(inliers) < 3:
         return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected', 'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)), 'reason': 'pnp_failed'}, None, None)
     inliers = inliers[:, 0]
-    try:
-        (rvec, tvec) = cv2.solvePnPRefineLM(source_world[inliers], target_uv[inliers], K_target, np.zeros(5), rvec, tvec)
-    except cv2.error:
-        pass
+    if not source_mode:
+        try:
+            (rvec, tvec) = cv2.solvePnPRefineLM(source_world[inliers], target_uv[inliers], K_target, np.zeros(5), rvec, tvec)
+        except cv2.error:
+            pass
     (R_camera_source, _) = cv2.Rodrigues(rvec)
     T_wc_target = target_camera
     R_delta = T_wc_target[:3, :3] @ R_camera_source
     t_delta = T_wc_target[:3, :3] @ tvec[:, 0] + T_wc_target[:3, 3]
     (projected, _) = cv2.projectPoints(source_world[inliers], rvec, tvec, K_target, np.zeros(5))
     reprojection = np.linalg.norm(projected.reshape(-1, 2) - target_uv[inliers], axis=1)
+    if source_mode and (not np.isfinite(R_delta).all() or not np.isfinite(t_delta).all()
+                        or not np.isfinite(reprojection).all()):
+        return ({'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'status': 'rejected',
+                 'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)),
+                 'inliers': int(len(inliers)), 'reason': 'invalid_pnp_projection_or_world_transform'}, None, None)
     covariance = np.cov(source_world[inliers].T) if len(inliers) >= 4 else np.zeros((3, 3))
     eig = np.linalg.eigvalsh(covariance) if np.isfinite(covariance).all() else np.zeros(3)
     eig = np.maximum(eig, 0.0)
@@ -428,19 +480,45 @@ def feature_pair(source_idx: int, target_idx: int, features: dict[int, dict[str,
     reason = None if status == 'accepted' else 'invalid_pnp_cheirality_or_finite_support'
     row = {'source_frame_idx': source_idx, 'target_frame_idx': target_idx, 'frame_gap': target_idx - source_idx, 'status': status, 'reason': reason, 'source_samples_quarantined': int((~retained).sum()), 'target_initial_pose_present': target_idx in initial_pose_by_frame, 'uncertainty': 'RGB_PnP_measurement_not_direct_target_metric_surface', 'matches_total': int(len(pairs)), 'matches_object': int(len(source_world)), 'inliers': int(len(inliers)), 'inlier_fraction': inlier_fraction, 'matching_score_median': float(np.median(scores)) if len(scores) else None, 'rotation_deg': rotation_deg, 'translation_norm_m': float(np.linalg.norm(t_delta)), 'reprojection_median_px': float(np.median(reprojection)), 'reprojection_p95_px': float(np.percentile(reprojection, 95)), 'source_3d_covariance_eigenvalues': eig.tolist(), 'source_3d_conditioning': conditioning}
     evidence = None
+    if source_mode:
+        references = {'inliers': int(args.min_inliers), 'inlier_fraction': float(args.min_inlier_fraction),
+            'reprojection_median_px': float(args.max_reprojection_median_px),
+            'source_3d_conditioning': .02, 'rotation_deg': float(args.max_edge_rotation_deg)}
+        row['quality_state'] = 'uncertain_measurement' if status == 'accepted' else 'unavailable_measurement'
+        row['weak_reasons'] = [name for name, weak in (
+            ('few_inliers', len(inliers) < references['inliers']),
+            ('low_inlier_fraction', inlier_fraction < references['inlier_fraction']),
+            ('high_reprojection_error', float(np.median(reprojection)) > references['reprojection_median_px']),
+            ('underconditioned_source_surface', conditioning < references['source_3d_conditioning']),
+            ('large_relative_rotation', rotation_deg > references['rotation_deg'])) if weak]
+        row['diagnostic_reference_thresholds_not_gates'] = references
+        row['point_weights_role'] = 'uncalibrated_reprojection_heuristic_not_probability'
     if status == 'accepted':
-        if source_idx not in initial_pose_by_frame:
+        if not source_mode and source_idx not in initial_pose_by_frame:
             raise RuntimeError(f'initial pose report lacks RGB source frame {source_idx}')
-        (source_R0, source_t0) = initial_pose_by_frame[source_idx]
-        canonical_points = (source_world[inliers] - source_t0[None, :]) @ source_R0
+        if not source_mode:
+            (source_R0, source_t0) = initial_pose_by_frame[source_idx]
+            canonical_points = (source_world[inliers] - source_t0[None, :]) @ source_R0
         evidence_size = target_evidence_size_wh or (mask1.shape[1], mask1.shape[0])
         evidence_K = resize_intrinsics(K_target, (mask1.shape[1], mask1.shape[0]), evidence_size)
         evidence_uv = (target_uv[inliers] + 0.5) * (np.asarray(evidence_size) / np.asarray(mask1.shape[::-1])) - 0.5
         target_intrinsics = np.asarray([evidence_K[0, 0], evidence_K[1, 1], evidence_K[0, 2], evidence_K[1, 2]], dtype=np.float64)
         point_weights = np.clip(np.exp(-reprojection / 2.0), 0.25, 1.0)
-        evidence = {'canonical_points': np.asarray(canonical_points, dtype=np.float64), 'target_uv': np.asarray(evidence_uv, dtype=np.float64), 'target_intrinsics': target_intrinsics, 'target_camera': np.asarray(target_camera, dtype=np.float64), 'weights': point_weights}
-        row['reprojection_evidence_count'] = int(len(canonical_points))
-        row['reprojection_evidence_contract'] = 'source_initial_canonical_points_to_target_uv'
+        evidence = {'target_uv': np.asarray(evidence_uv, dtype=np.float64), 'target_intrinsics': target_intrinsics, 'target_camera': np.asarray(target_camera, dtype=np.float64), 'weights': point_weights}
+        if source_mode:
+            source_size = source_evidence_size_wh or tuple(mask0.shape[::-1])
+            source_K = np.array([[source_intr[0], 0, source_intr[2]], [0, source_intr[1], source_intr[3]], [0, 0, 1.]])
+            source_K = resize_intrinsics(source_K, source_wh, source_size)
+            evidence.update(source_world=source_world[inliers],
+                source_uv=(source_uv[inliers] + .5) * (np.asarray(source_size) / np.asarray(mask0.shape[::-1])) - .5,
+                source_camera=source_camera,
+                source_intrinsics=np.array([source_K[0, 0], source_K[1, 1], source_K[0, 2], source_K[1, 2]]),
+                source_size_wh=np.asarray(source_size), target_size_wh=np.asarray(evidence_size),
+                inlier_indices=inliers, matching_scores=scores[inliers])
+        else:
+            evidence['canonical_points'] = np.asarray(canonical_points, dtype=np.float64)
+        row['reprojection_evidence_count'] = int(len(inliers))
+        row['reprojection_evidence_contract'] = 'fixed_source_world_to_target_uv' if source_mode else 'source_initial_canonical_points_to_target_uv'
     return (row, (R_delta, t_delta) if status == 'accepted' else None, evidence)
 
 def build_edge_pairs(selected: list[int], key_ids: list[int], keyframe_neighbor_span: int) -> list[tuple[int, int]]:
@@ -471,13 +549,42 @@ def diagnostic_motion_chain(anchor: int, poses: dict, motions: dict) -> dict:
                 queue.append(b)
     return chain
 
+def extract_rgb_features(images, masks, selected, args, device):
+    """Separately provisioned model boundary; synthetic tests replace this only."""
+    import torch
+    from utils.runtime import bind_offline_weights
+    bind_offline_weights(load_json(args.assets_manifest)['lightglue_weights'], torch)
+    sys.path.insert(0, str(args.lightglue_root.expanduser().resolve()))
+    from lightglue import SuperPoint
+    extractor = SuperPoint(max_num_keypoints=int(args.max_keypoints)).eval().to(device)
+    features = {}
+    for n, idx in enumerate(selected, 1):
+        if idx not in images or idx not in masks:
+            continue
+        rgb = cv2.cvtColor(images.pop(idx), cv2.COLOR_BGR2RGB)
+        tensor = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.).to(device)
+        with torch.inference_mode():
+            features[idx] = {key: value.detach() for key, value in extractor.extract(tensor, resize=None).items()}
+        if n == 1 or n % 25 == 0 or n == len(selected):
+            print(f'[global-rgb] extracted {n}/{len(selected)}', flush=True)
+    return features
+
+
+def build_rgb_matcher(args, device):
+    from lightglue import LightGlue
+    return LightGlue(features='superpoint', depth_confidence=.9, width_confidence=.95,
+                     filter_threshold=.2).eval().to(device)
+
+
 def build_rgb_edges(argv=None) -> None:
     import torch
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--annotations', type=Path, required=True)
     parser.add_argument('--raw-frame-manifest', type=Path, help='Source P01 manifest; explicit for candidate-local annotations.')
     parser.add_argument('--depth-npz', type=Path, required=True)
-    parser.add_argument('--initial-pose-report', type=Path, required=True)
+    parser.add_argument('--initial-pose-report', type=Path)
+    parser.add_argument('--observation-mode', choices=('legacy-canonical', 'source-world'), default='legacy-canonical')
+    parser.add_argument('--p09-adapter-report', type=Path)
     parser.add_argument('--object-id', required=True)
     parser.add_argument('--frame-start', type=int, default=0)
     parser.add_argument('--frame-end', type=int, required=True)
@@ -504,18 +611,23 @@ def build_rgb_edges(argv=None) -> None:
     parser.add_argument('--max-bracketing-source-gap', type=int, default=None, help='Default: keyframe interval times neighbor span; at most one source per side.')
     parser.add_argument('--assets-manifest', type=Path, required=True)
     args = parser.parse_args(argv)
-    from utils.runtime import bind_offline_weights as bind_offline_weights
-    config = load_json(args.assets_manifest)
-    bind_offline_weights(config['lightglue_weights'], torch)
+    source_mode = args.observation_mode == 'source-world'
+    if source_mode and (args.min_matches < 4 or args.pnp_iterations < 1 or args.reprojection_threshold_px <= 0):
+        parser.error('source-world PnP needs at least four matches and positive RANSAC settings')
+    if source_mode and (args.initial_pose_report is not None or args.output_pose_report is not None):
+        parser.error('source-world mode forbids initial/output pose reports')
+    if not source_mode and args.initial_pose_report is None:
+        parser.error('legacy-canonical mode requires --initial-pose-report')
     device = torch.device(args.device)
     annotations = load_json(args.annotations)
     assert_prediction_only(annotations, label='RGB edge annotations', object_id=args.object_id)
-    initial_report_path = args.initial_pose_report.expanduser().resolve()
-    initial_report = load_json(initial_report_path)
-    assert_prediction_only(initial_report, label='RGB edge initial pose report', object_id=args.object_id)
+    initial_report = {}
+    if not source_mode:
+        initial_report = load_json(args.initial_pose_report)
+        assert_prediction_only(initial_report, label='RGB edge initial pose report', object_id=args.object_id)
     frames = {int(f['frame_idx']): f for f in annotations.get('frames', []) if isinstance(f, dict) and f.get('frame_idx') is not None}
-    annotation_root = args.annotations.expanduser().resolve()
-    case_root = find_case_root(annotation_root)
+    if len(frames) != len(annotations.get('frames', [])):
+        raise ValueError('invalid or duplicate annotation frame IDs')
     with np.load(args.depth_npz.expanduser().resolve(), allow_pickle=False) as data:
         required = {'frame_idx', 'depth', 'confidence', 'source_size', 'intrinsics_fx_fy_cx_cy'}
         missing_keys = sorted(required - set(data.files))
@@ -536,16 +648,22 @@ def build_rgb_edges(argv=None) -> None:
         if idx not in depth_pos:
             depth_pos[idx] = len(depth_intrinsics)
             depth_intrinsics = np.vstack([depth_intrinsics, frames[idx]['camera']['intrinsics_fx_fy_cx_cy']])
-    if len(selected) < 2:
+    if not selected or (len(selected) < 2 and not source_mode):
         raise RuntimeError('not enough selected frames')
+    if source_mode:
+        from observations.object.rgb_evidence import validate_source_frames
+        validate_source_frames(frames, selected, depth_pos, depths, depth_intrinsics, source_wh)
     initial_pose_by_frame = valid_initial_poses(initial_report)
     manifest_path = resolve_raw_frame_manifest(args.annotations, args.raw_frame_manifest)
     (images, native_masks, masks, image_planes) = preflight_manifest_images(manifest_path, frames, selected, args.object_id, source_wh)
-    source_rejections = {idx: rgb_source_eligibility(frames[idx], args.object_id, initial_pose_by_frame) for idx in selected}
+    source_rejections = {idx: rgb_source_eligibility(frames[idx], args.object_id, None if source_mode else initial_pose_by_frame) for idx in selected}
     eligible_sources = {idx for (idx, reason) in source_rejections.items() if reason is None and depth_pos[idx] < len(depths)}
-    if not eligible_sources:
+    if not eligible_sources and not source_mode:
         raise RuntimeError('no eligible P09/P14 RGB source/diagnostic anchor before feature extraction')
-    adapter_path = args.annotations.parent / 'v19_visible_geometry_adapter_report.json'
+    for idx in selected:
+        if source_rejections[idx] is None and depth_pos[idx] >= len(depths):
+            source_rejections[idx] = 'missing_source_depth'
+    adapter_path = args.p09_adapter_report or args.annotations.parent / 'v19_visible_geometry_adapter_report.json'
     adapter = load_json(adapter_path)
     assert_prediction_only(adapter, label='RGB P09 retained depth parameters', object_id=args.object_id)
     parameters = adapter['parameters']
@@ -563,30 +681,22 @@ def build_rgb_edges(argv=None) -> None:
             source_rejections[idx] = 'missing_source_mask'
             continue
         pos = depth_pos[idx]
-        source_support_by_frame[idx] = reproduce_source_depth_support(obj, mask, depths[pos], confidences[pos], depth_intrinsics[pos], parameters, metric_eligibility=metric_eligibility)
-    if not source_support_by_frame:
-        raise RuntimeError('no reproducible P09 RGB source/diagnostic anchor before feature extraction')
-    sys.path.insert(0, str(args.lightglue_root.expanduser().resolve()))
-    from lightglue import LightGlue, SuperPoint
-    extractor = SuperPoint(max_num_keypoints=int(args.max_keypoints)).eval().to(device)
-    matcher = LightGlue(features='superpoint', depth_confidence=0.9, width_confidence=0.95, filter_threshold=0.2).eval().to(device)
-    features: dict[int, dict[str, torch.Tensor]] = {}
-    for (n, idx) in enumerate(selected, 1):
-        if idx not in images or idx not in masks:
+        support = reproduce_source_depth_support(obj, mask, depths[pos], confidences[pos], depth_intrinsics[pos], parameters, metric_eligibility=metric_eligibility)
+        if source_mode and not support.any():
+            source_rejections[idx] = 'empty_retained_p09_depth_support'
             continue
-        image = images.pop(idx)
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).float().div(255.0).to(device)
-        with torch.inference_mode():
-            features[idx] = {key: value.detach() for (key, value) in extractor.extract(tensor, resize=None).items()}
-        if n == 1 or n % 25 == 0 or n == len(selected):
-            print(f'[global-rgb] extracted {n}/{len(selected)}', flush=True)
+        source_support_by_frame[idx] = support
+    if not source_support_by_frame and not source_mode:
+        raise RuntimeError('no reproducible P09 RGB source/diagnostic anchor before feature extraction')
+    features = extract_rgb_features(images, masks, selected, args, device) if source_support_by_frame and len(selected) > 1 else {}
     from utils.data import time_keyframes as time_keyframes
     from utils.data import time_source_pairs as time_source_pairs
-    key_ids = time_keyframes([i for i in selected if i in features], times, args.keyframe_seconds)
+    feature_ids = [i for i in selected if i in features]
+    key_ids = time_keyframes(feature_ids, times, args.keyframe_seconds) if feature_ids else []
     eligible_sources = set(source_support_by_frame) & set(features)
-    if not eligible_sources:
+    if not eligible_sources and not source_mode:
         raise RuntimeError('no eligible source has RGB features')
+    matcher = build_rgb_matcher(args, device) if eligible_sources else None
     (edge_pairs, rejected_pairs) = time_source_pairs(selected, key_ids, eligible_sources, int(args.keyframe_neighbor_span), times, args.source_gap_seconds)
     unavailable_pairs = [{'source_frame_idx': a, 'target_frame_idx': b, 'status': 'rejected', 'reason': 'missing_RGB_features'} for (a, b) in edge_pairs if a not in features or b not in features]
     edge_pairs = [(a, b) for (a, b) in edge_pairs if a in features and b in features]
@@ -594,7 +704,7 @@ def build_rgb_edges(argv=None) -> None:
     edge_motions: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
     edge_reprojection_evidence: dict[tuple[int, int], dict[str, np.ndarray]] = {}
     for (n, (a, b)) in enumerate(edge_pairs, 1):
-        (row, motion, evidence) = feature_pair(a, b, features, masks, frames, depths, confidences, depth_pos, depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame, source_support_by_frame, target_evidence_size_wh=tuple(native_masks[b].shape[::-1]))
+        (row, motion, evidence) = feature_pair(a, b, features, masks, frames, depths, confidences, depth_pos, depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame, source_support_by_frame, target_evidence_size_wh=tuple(native_masks[b].shape[::-1]), source_evidence_size_wh=tuple(native_masks[a].shape[::-1]))
         row['topological_role'] = 'adjacent' if abs(selected.index(a) - selected.index(b)) == 1 else 'keyframe_loop'
         (row['source_time_s'], row['target_time_s']) = (times[a], times[b])
         edges.append(row)
@@ -603,6 +713,13 @@ def build_rgb_edges(argv=None) -> None:
         if evidence is not None:
             edge_reprojection_evidence[a, b] = evidence
         print(f"[global-rgb] edge {n}/{len(edge_pairs)} {a}->{b} {row['status']} matches={row.get('matches_object')} inliers={row.get('inliers')}", flush=True)
+    if source_mode:
+        from observations.object.rgb_evidence import write_rgb_source_evidence
+        return write_rgb_source_evidence(args=args, frames=frames, selected=selected,
+            rows=edges, motions=edge_motions, evidence=edge_reprojection_evidence,
+            image_planes=image_planes, manifest_path=manifest_path, adapter_path=adapter_path,
+            source_rejections=source_rejections, planning_rejections=rejected_pairs + unavailable_pairs,
+            metric_eligibility=metric_eligibility)
     diagnostic_anchor = min(eligible_sources)
     chain = diagnostic_motion_chain(diagnostic_anchor, initial_pose_by_frame, edge_motions)
     chain_rows = []
@@ -666,7 +783,6 @@ def build_rgb_edges(argv=None) -> None:
 import copy
 import heapq
 import numpy as np
-from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from typing import Mapping
 from utils.geometry import valid_rotation
@@ -674,6 +790,7 @@ from observations.common import pose_from_values
 from envs.qualification.object_observation import p09_geometry_validation
 
 def initialize(base, annotations, object_id, edge_arrays, edge_rows, anchor):
+    from scipy.optimize import least_squares
     original = _timeline_rows(base)
     timeline = sorted((int(f['frame_idx']) for f in annotations['frames']))
     if len(set(timeline)) != len(timeline) or anchor not in timeline:
@@ -983,3 +1100,7 @@ def estimate_optical_flow_pnp_bridge(*, source_idx: int, target_idx: int, frames
     if not quality_passed:
         raise RuntimeError(f'optical-flow PnP bridge failed closed: {report}')
     return (rotation_world_from_object, translation_world, report, observability)
+
+
+if __name__ == '__main__':
+    build_rgb_edges()

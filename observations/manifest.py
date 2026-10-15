@@ -105,6 +105,21 @@ def build_source_observation_manifest(
         "interaction_judgments": records["interaction_judgments"],
         "appearance_anchor_decision": records["appearance_anchor_decision"],
     }
+    rgb_names = {'rgb_source_npz', 'rgb_source_report'}
+    if rgb_names.intersection(records) and not rgb_names.issubset(records):
+        raise ValueError('RGB source extension requires paired NPZ/report')
+    extensions = {}
+    if rgb_names.issubset(records):
+        if 'surface_report' not in records:
+            raise ValueError('RGB source extension requires bound P09 surface_report')
+        from observations.object.rgb_evidence import SCHEMA as RGB_SCHEMA, EXTENSION
+        for name, role in (('rgb_source_npz', 'rgb_source_arrays'), ('rgb_source_report', 'rgb_source_report')):
+            if records[name]['role'] != role:
+                raise ValueError('RGB source artifact role mismatch')
+            sources[name] = records[name]
+        sources['raw_frames'] = records['raw_frames']
+        sources['surface_report'] = records['surface_report']
+        extensions[EXTENSION] = RGB_SCHEMA
     if mano_assets is not None:
         asset_root = Path(mano_assets).expanduser().resolve()
         left = asset_root / "MANO_LEFT.pkl"
@@ -121,6 +136,7 @@ def build_source_observation_manifest(
             "wrapper_sha256": sha(wrapper),
         }
     return {
+        'extensions': extensions,
         "schema": SCHEMA,
         "bundle_version": BUNDLE_VERSION,
         "bundle_id": bundle_id,

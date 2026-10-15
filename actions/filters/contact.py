@@ -392,7 +392,7 @@ def load_surface_eligibility_rows(report_path: Path | None, *, target_entity_id:
     from pathlib import Path
     return load_factor_rows(report_path, 'factor_rows', expected_family='surface_eligibility', target_entity_id=target_entity_id)
 
-def load_agent_interaction_judgments(path: Path | None, *, case: str, target_entity_id: str, frame_span: tuple[int, int], sides: set[str]) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+def load_agent_interaction_judgments(path: Path | None, *, case: str, target_entity_id: str, frame_span: tuple[int, int], sides: set[str], timeline: list[int] | None = None) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
     from collections import Counter
     from observations.interaction.evidence import finite_float
     from observations.interaction.evidence import CONTACT_STATES
@@ -417,6 +417,19 @@ def load_agent_interaction_judgments(path: Path | None, *, case: str, target_ent
     if not isinstance(rows, list) or not rows:
         raise ValueError(f'agent interaction judgment has no non-empty interaction_judgments/judgments/segments list: {path}')
     (start_default, end_default) = frame_span
+    from observations.interaction.adapter import SCHEMA as ADAPTER_SCHEMA, timeline_ids
+    declared = payload.get('frame_ids')
+    if declared is not None:
+        declared = timeline_ids(declared)
+    if timeline is not None:
+        timeline = timeline_ids(timeline)
+        if declared is not None and declared != timeline:
+            raise ValueError('interaction judgment timeline differs from annotation timeline')
+    else:
+        timeline = declared
+    strict_adapter = payload.get('schema') == ADAPTER_SCHEMA
+    if strict_adapter and timeline is None:
+        raise ValueError('adapted interaction evidence requires an explicit timeline')
     index: dict[tuple[int, str], dict[str, Any]] = {}
     kept_segments = 0
     state_counts: Counter[str] = Counter()
@@ -424,6 +437,17 @@ def load_agent_interaction_judgments(path: Path | None, *, case: str, target_ent
     for raw in rows:
         if not isinstance(raw, dict):
             raise ValueError(f'agent interaction judgment segment is not an object in {path}: {raw!r}')
+        if strict_adapter:
+            from data.interaction import validate_adapted_interaction_row
+            validate_adapted_interaction_row(raw)
+            from observations.interaction.adapter import matches_object_identity
+            if not matches_object_identity(raw.get('target_entity_id'), target_entity_id):
+                raise ValueError('adapted interaction judgment foreign target identity')
+            if raw.get('hand_side') not in SIDES:
+                raise ValueError('adapted interaction judgment invalid hand identity')
+            bounds = (raw.get('frame_start'), raw.get('frame_end'))
+            if any(type(value) is not int or value not in timeline for value in bounds):
+                raise ValueError('adapted interaction judgment bounds outside timeline')
         if not target_matches(raw.get('target_entity_id', raw.get('object_id', raw.get('track_id'))), target_entity_id):
             continue
         hand_side = str(raw.get('hand_side', raw.get('side', '')))
@@ -459,7 +483,7 @@ def load_agent_interaction_judgments(path: Path | None, *, case: str, target_ent
         kept_segments += 1
         state_counts[contact_state] += 1
         occlusion_counts[occlusion_relation] += 1
-        for frame_idx in range(s, e + 1):
+        for frame_idx in (range(s, e + 1) if timeline is None else (f for f in timeline if s <= f <= e)):
             key = (frame_idx, hand_side)
             if key in index:
                 raise ValueError(f'overlapping agent interaction judgments for frame/side {key} in {path}: {index[key]} and {raw}')

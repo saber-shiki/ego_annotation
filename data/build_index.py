@@ -36,7 +36,7 @@ def build_index(roots: Iterable[str | Path], output: str | Path | None = None) -
                 "clip_id": str(payload["clip_id"]),
                 "source_video_id": str(payload["source_video_id"]),
                 "manifest": str(path),
-                "frame_count": int(payload["frame_range"][1] - payload["frame_range"][0] + 1),
+                "frame_count": len(payload["frame_ids"]) if "frame_ids" in payload else int(payload["frame_range"][1] - payload["frame_range"][0] + 1),
                 "manifest_sha256": sha256(path.read_bytes()).hexdigest(),
             })
     records.sort(key=lambda row: (row["source_video_id"], row["clip_id"], row["bundle_id"]))

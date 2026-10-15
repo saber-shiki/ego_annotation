@@ -17,6 +17,8 @@ import threading
 
 import numpy as np
 
+from data.interaction import freeze_evidence, load_interaction_evidence, thaw_evidence
+
 SCHEMA = "ego.annotation.observation_bundle.v1"
 HAND_SLOTS = ("left", "right")
 
@@ -31,8 +33,8 @@ def file_sha256(path: str | Path) -> str:
 
 def _frozen_array(value: Any, dtype: Any | None = None) -> np.ndarray:
     array = np.array(value, dtype=dtype, copy=True)
-    array.setflags(write=False)
-    return array
+    # Immutable bytes backing also forbids callers from re-enabling writeability.
+    return np.frombuffer(array.tobytes(), dtype=array.dtype).reshape(array.shape)
 
 
 def _absolute(base: Path, value: str | Path) -> Path:
@@ -100,6 +102,7 @@ def _verify_source_value(value: Any, base: Path, label: str) -> None:
 
 
 def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | None = None) -> None:
+    manifest = thaw_evidence(manifest)
     if manifest.get("schema") != SCHEMA:
         raise ValueError(f"unsupported observation bundle schema: {manifest.get('schema')!r}")
     if manifest.get("contains_optimized_state") is True or manifest.get("contains_policy_results") is True:
@@ -131,6 +134,21 @@ def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | N
     sources = manifest.get("sources")
     if not isinstance(sources, Mapping):
         raise ValueError("manifest requires sources")
+    from observations.object.rgb_evidence import SCHEMA as RGB_SCHEMA, EXTENSION
+    rgb_names = {'rgb_source_npz', 'rgb_source_report'}
+    extensions = manifest.get('extensions', {})
+    if not isinstance(extensions, Mapping):
+        raise ValueError('observation extensions must be a mapping')
+    rgb_extension = extensions.get(EXTENSION)
+    if rgb_names.intersection(sources) or rgb_extension is not None:
+        if not rgb_names.issubset(sources) or rgb_extension != RGB_SCHEMA:
+            raise ValueError('RGB source extension requires versioned paired NPZ/report')
+        for name, role in (('rgb_source_npz', 'rgb_source_arrays'), ('rgb_source_report', 'rgb_source_report')):
+            if not isinstance(sources[name], Mapping) or sources[name].get('role') != role:
+                raise ValueError('RGB source artifact role mismatch')
+        for name in ('conditioned_depth', 'raw_frames', 'surface_report'):
+            if name not in sources:
+                raise ValueError(f'RGB source extension missing bound input: {name}')
     for required in ("annotations", "mano_archive", "object_mesh"):
         value = sources.get(required)
         if not isinstance(value, Mapping):
@@ -157,6 +175,11 @@ def validate_manifest(manifest: Mapping[str, Any], manifest_path: str | Path | N
     if (not isinstance(frame_range, list) or len(frame_range) != 2 or any(type(v) is not int for v in frame_range)
             or frame_range[1] < frame_range[0]):
         raise ValueError("frame_range must be inclusive integer [start, end]")
+    if "frame_ids" in manifest:
+        from observations.interaction.adapter import timeline_ids
+        declared_ids = timeline_ids(manifest["frame_ids"])
+        if [declared_ids[0], declared_ids[-1]] != frame_range:
+            raise ValueError("frame_ids endpoints must match frame_range")
     slots = manifest.get("entity_slots")
     if not isinstance(slots, Mapping) or slots.get("hands") != list(HAND_SLOTS):
         raise ValueError("entity_slots.hands must be ['left', 'right']")
@@ -192,6 +215,7 @@ def prepared_manifest(
     factor_reports: Sequence[str | Path] = (), completion_report: str | Path | None = None,
     mano_assets: str | Path | None = None, signed_face_authority: str | Path | Mapping[str, str | Path] | None = None,
     collision_mesh: str | Path | Mapping[str, str | Path] | None = None,
+    interaction_judgments: str | Path | None = None, frame_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Create a source-only manifest over existing prepared observations.
 
@@ -236,7 +260,7 @@ def prepared_manifest(
             item["signed_face_authority"] = _artifact(authority)
         assets[entity] = item
     sources["object_assets"] = assets
-    for name, path in (("mano_bridge", mano_bridge), ("contact_factors", contact_factors), ("completion_report", completion_report)):
+    for name, path in (("mano_bridge", mano_bridge), ("contact_factors", contact_factors), ("completion_report", completion_report), ("interaction_judgments", interaction_judgments)):
         if path is not None:
             sources[name] = _artifact(path)
     if factor_reports:
@@ -252,6 +276,7 @@ def prepared_manifest(
         "identity": {"source_video": _artifact(source_video), "code": {"path": code_identity[0], "sha256": code_identity[1]},
                      "config": {"path": config_identity[0], "sha256": config_identity[1]}},
         "sources": sources, "frame_range": [int(frame_range[0]), int(frame_range[1])],
+        **({"frame_ids": list(frame_ids)} if frame_ids is not None else {}),
         "entity_slots": {"hands": list(HAND_SLOTS), "objects": [str(value) for value in object_ids]},
         "provenance": {"prediction_only": True, "legacy_optimizer_required": False,
                        "object_pose_role": "source_observation_initializer_not_solved_trajectory",
@@ -262,6 +287,7 @@ def prepared_manifest(
 
 def write_manifest(path: str | Path, manifest: Mapping[str, Any]) -> Path:
     path = Path(path)
+    manifest = thaw_evidence(manifest)
     validate_manifest(manifest)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -280,7 +306,7 @@ class EpisodeBundle:
         manifest_path = Path(path).expanduser().resolve()
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         validate_manifest(payload, manifest_path if verify else None)
-        return cls(manifest_path, MappingProxyType(json.loads(json.dumps(payload, allow_nan=False))))
+        return cls(manifest_path, freeze_evidence(json.loads(json.dumps(payload, allow_nan=False))))
 
     @property
     def bundle_id(self) -> str:
@@ -351,7 +377,7 @@ def _factor_reports(bundle: EpisodeBundle) -> list[dict[str, Any]]:
         raw = sources.get(name)
         if isinstance(raw, Mapping) and "path" in raw:
             values.append(raw)
-        elif isinstance(raw, list):
+        elif isinstance(raw, (list, tuple)):
             values.extend(value for value in raw if isinstance(value, Mapping))
     reports = []
     seen: set[Path] = set()
@@ -403,7 +429,7 @@ def _frozen_row(value: Mapping[str, Any], *, report_index: int, row_kind: str) -
     item = json.loads(json.dumps(dict(value), allow_nan=False))
     item["_report_index"] = report_index
     item["_row_kind"] = row_kind
-    return MappingProxyType(item)
+    return freeze_evidence(item)
 
 
 def _first_vector(row: Mapping[str, Any], names: Sequence[str], shape: tuple[int, ...], default: np.ndarray) -> np.ndarray:
@@ -419,8 +445,12 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
     manifest = bundle.manifest
     start, end = map(int, manifest["frame_range"])
     annotations = json.loads(bundle.source_path("annotations").read_text(encoding="utf-8"))
-    frames_by_id = {int(row.get("frame_idx", pos)): row for pos, row in enumerate(annotations.get("frames", []))}
-    frame_ids = np.arange(start, end + 1, dtype=np.int64)
+    annotation_rows = annotations.get("frames", [])
+    frames_by_id = {int(row.get("frame_idx", pos)): row for pos, row in enumerate(annotation_rows)}
+    if len(frames_by_id) != len(annotation_rows):
+        raise ValueError("duplicate annotation frame IDs")
+    # v1 prepared bundles without explicit IDs retain their consecutive contract.
+    frame_ids = np.asarray(manifest["frame_ids"], dtype=np.int64) if "frame_ids" in manifest else np.arange(start, end + 1, dtype=np.int64)
     if any(int(value) not in frames_by_id for value in frame_ids):
         raise ValueError("annotations do not cover declared frame_range")
     frames = [frames_by_id[int(value)] for value in frame_ids]
@@ -431,6 +461,24 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
     intrinsics = np.asarray([row["camera"]["intrinsics_fx_fy_cx_cy"] for row in frames], dtype=np.float64)
     if camera_T.shape != (len(frames), 4, 4) or intrinsics.shape != (len(frames), 4) or not np.isfinite(camera_T).all() or not np.isfinite(intrinsics).all():
         raise ValueError("invalid camera timeline")
+    if "time_s" in manifest and not np.array_equal(times, np.asarray(manifest["time_s"], dtype=np.float64)):
+        raise ValueError("manifest timestamps differ from annotation timeline")
+    rgb_evidence = None  # Explicit missing capability in v1/prepared bundles without the extension.
+    if 'rgb_source_npz' in manifest['sources']:
+        from data.rgb import load_rgb_source_evidence
+        for name in ('rgb_source_npz', 'rgb_source_report'):
+            if file_sha256(bundle.source_path(name)) != manifest['sources'][name]['sha256']:
+                raise ValueError(f'RGB source artifact changed: {name}')
+        rgb_evidence = load_rgb_source_evidence(bundle.source_path('rgb_source_npz'),
+            bundle.source_path('rgb_source_report'), frame_ids=frame_ids, times=times,
+            frames=frames, object_ids=list(manifest['entity_slots']['objects']),
+            expected_inputs={key: bundle.source_path(name) for key, name in (
+                ('annotations', 'annotations'), ('depth_npz', 'conditioned_depth'),
+                ('raw_frame_manifest', 'raw_frames'), ('p09_adapter_report', 'surface_report'))})
+    interaction_payload = None
+    if "interaction_judgments" in manifest["sources"]:
+        interaction_payload = json.loads(bundle.source_path("interaction_judgments").read_text(encoding="utf-8"))
+    interaction = load_interaction_evidence(interaction_payload, frame_ids, list(manifest["entity_slots"]["objects"]))
     size = np.asarray([frames[0].get("source_width"), frames[0].get("source_height")], dtype=np.int64)
 
     declared_mano = bundle.source_path("mano_archive")
@@ -537,7 +585,7 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
             for raw in report.get(kind,[]):
                 if not isinstance(raw,Mapping): continue
                 frame=int(raw.get("frame_idx",-1)); side=str(raw["hand_side"]) if raw.get("hand_side") in HAND_SLOTS else None; target=_row_target(raw,aliases); family=str(raw.get("factor_family","unknown"))
-                if frame<start or frame>end: continue
+                if frame not in frame_ids: continue
                 frozen=_frozen_row(raw,report_index=report_index,row_kind=kind)
                 typed.setdefault((frame,side,target,family),[]).append(frozen); by_family.setdefault(family,[]).append(frozen)
     typed_frozen=MappingProxyType({key:tuple(value) for key,value in typed.items()})
@@ -617,4 +665,4 @@ def _load_prepared_sources(bundle: EpisodeBundle) -> dict[str, Any]:
         matches=[v for (f,s,_),v in frozen_contact.items() if f==frame and s==side]
         if len(matches)==1: legacy_contact[frame,side]=value
 
-    return {"frame_idx":_frozen_array(frame_ids),"time_s":_frozen_array(times),"T_world_camera":_frozen_array(camera_T),"intrinsics":_frozen_array(intrinsics),"image_size_wh":_frozen_array(size),"hands":MappingProxyType({side:MappingProxyType(value) for side,value in hands.items()}),"objects":MappingProxyType({entity:MappingProxyType(value) for entity,value in objects.items()}),"contact":MappingProxyType(frozen_contact),"contact_legacy":MappingProxyType(legacy_contact),"factor_rows":typed_frozen,"factor_rows_by_family":by_family_frozen,"identity":manifest["identity"],"provenance":manifest.get("provenance",{})}
+    return {"rgb_evidence":rgb_evidence,"interaction_evidence":interaction,"frame_idx":_frozen_array(frame_ids),"time_s":_frozen_array(times),"T_world_camera":_frozen_array(camera_T),"intrinsics":_frozen_array(intrinsics),"image_size_wh":_frozen_array(size),"hands":MappingProxyType({side:MappingProxyType(value) for side,value in hands.items()}),"objects":MappingProxyType({entity:MappingProxyType(value) for entity,value in objects.items()}),"contact":MappingProxyType(frozen_contact),"contact_legacy":MappingProxyType(legacy_contact),"factor_rows":typed_frozen,"factor_rows_by_family":by_family_frozen,"identity":manifest["identity"],"provenance":manifest.get("provenance",{})}

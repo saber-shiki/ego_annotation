@@ -11,6 +11,7 @@ import numpy as np
 import gymnasium as gym
 
 from actions.space import ActionLayout
+from data.interaction import thaw_evidence
 from data.bundle import EpisodeBundle
 from envs.dynamics import build_episode, decode_candidate, filter_action
 from envs.observation import ObservationLayout, observation_layout, pack_observation
@@ -205,7 +206,7 @@ class AnnotationEnv(gym.Env):
             "bundle_id": episode.bundle_id,
             "clip_id": episode.clip_id,
             "source_video_id": episode.source_video_id,
-            "inputs": {"annotations": annotations, "identity": dict(episode.identity)},
+            "inputs": {"annotations": annotations, "identity": thaw_evidence(episode.identity)},
             "policy_rollout_array_layer": {
                 "role": "direct_policy_candidate_full_geometry",
                 "path": None,
