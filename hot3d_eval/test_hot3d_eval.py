@@ -99,7 +99,8 @@ class MetricsTest(unittest.TestCase):
     def test_rpe_rotation_closed_form(self):
         gt = np.tile(np.eye(4), (4, 1, 1))
         pred = gt.copy()
-        pred[:, :3, :3] = Rotation.from_euler('z', [0, 10, 20, 30], degrees=True).as_matrix()
+        # Explicit (N,1) batch shape is accepted by both old and SciPy 1.17+.
+        pred[:, :3, :3] = Rotation.from_euler('z', np.array([0, 10, 20, 30])[:, None], degrees=True).as_matrix()
         m = evaluate_camera(pred, gt, range(4))
         self.assertAlmostEqual(m['RPE_R_deg']['value'], 10)
         self.assertEqual(m['RPE_T_mm']['value'], 0)
