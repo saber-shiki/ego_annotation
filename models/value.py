@@ -30,6 +30,7 @@ class AnnotationValue(DeterministicMixin, Model):
         layer_norm: bool = False,
         feature_groups: Sequence[Mapping[str, object]] | None = None,
         use_states: bool = False,
+        zero_value_init: bool = False,
     ) -> None:
         Model.__init__(
             self,
@@ -51,6 +52,9 @@ class AnnotationValue(DeterministicMixin, Model):
             feature_groups=feature_groups,
         )
         self.value_head = nn.Linear(self.encoder.output_dim, 1)
+        if zero_value_init:
+            nn.init.zeros_(self.value_head.weight)
+            nn.init.zeros_(self.value_head.bias)
 
     def compute(self, inputs, role):
         values = inputs.get("states") if self.use_states else inputs["observations"]

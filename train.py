@@ -163,6 +163,17 @@ def _ppo_cfg(env, cfg: Mapping[str, object], *, experiment_dir: Path, experiment
         agent_cfg.state_preprocessor_kwargs = {"size": env.state_space, "device": env.device}
     agent_cfg.value_preprocessor = RunningStandardScaler
     agent_cfg.value_preprocessor_kwargs = {"size": 1, "device": env.device}
+    contract = _mapping(cfg.get("runtime"), "runtime config").get("training_contract")
+    if contract is not None:
+        from models.fixed_preprocessor import CONTRACT, FixedAsinh
+        if contract != CONTRACT or cfg.get("environment", {}).get("training_contract") != contract:
+            raise ValueError("unknown or environment-inconsistent fixed PPO contract")
+        if not cfg.get("model", {}).get("value", {}).get("zero_value_init", False):
+            raise ValueError("fixed PPO v1 requires zero initialized critic")
+        agent_cfg.observation_preprocessor = FixedAsinh
+        agent_cfg.observation_preprocessor_kwargs = {}
+        agent_cfg.state_preprocessor = None
+        agent_cfg.value_preprocessor = None
     agent_cfg.experiment.directory = str(experiment_dir)
     agent_cfg.experiment.experiment_name = experiment_name
     experiment_cfg = _mapping(cfg.get("experiment"), "experiment config")
@@ -253,6 +264,7 @@ def compatibility_contract(env, cfg: Mapping[str, object]) -> dict[str, Any]:
         "environment_class": str(runtime["environment_class"]),
         "environment_config": _canonical(_mapping(cfg.get("environment"), "environment config")),
         "model_config": _canonical(_mapping(cfg.get("model"), "model config")),
+        **({"training_contract": runtime["training_contract"]} if "training_contract" in runtime else {}),
         "observation_space": repr(env.observation_space),
         "state_space": repr(env.state_space),
         "action_space": repr(env.action_space),
@@ -315,7 +327,8 @@ def checkpoint_provenance(
         "compatibility": compatibility_contract(env, cfg),
         "training_identity": {"dataset": _jsonable_dataset_identity(env), "split": str(split)},
         "ppo": _canonical(_mapping(cfg.get("ppo"), "ppo config")),
-        "preprocessors": {
+        "preprocessors": ({"observation": "models.fixed_preprocessor.FixedAsinh", "state": None, "value": None}
+            if cfg.get("runtime", {}).get("training_contract") else {
             "observation": "skrl.resources.preprocessors.torch.RunningStandardScaler",
             "state": (
                 "skrl.resources.preprocessors.torch.RunningStandardScaler"
@@ -323,7 +336,7 @@ def checkpoint_provenance(
                 else None
             ),
             "value": "skrl.resources.preprocessors.torch.RunningStandardScaler",
-        },
+        }),
         "optimizer_update_changed_policy": True,
         "checkpoint_tensors_finite": True,
     }

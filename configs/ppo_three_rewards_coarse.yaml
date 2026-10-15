@@ -1,0 +1,94 @@
+runtime:
+  skrl_version: 2.1.0
+  dataset_class: data.coarse_training:CoarseTrainingDataset
+  environment_class: envs.three_rewards_coarse_env:ThreeRewardsCoarseEnv
+  training_contract: fixed_asinh_raw_value_zero_critic.v1
+environment:
+  max_objects: 1
+  contact_variables_per_hand: 5
+  causal_history_frames: 8
+  action_scales:
+    hand_root_rad: 0.05
+    hand_articulation_rad: 0.05
+    hand_translation_m: 0.01
+    object_rotation_rad: 0.05
+    object_translation_m: 0.01
+    contact_logit: 1.0
+  object_translation_frame: world
+  reward_profile: formal_annotation
+  reward_scale: 1.0
+  action_filter:
+    mode: physical_residual_filter
+  observation_contract:
+    sources:
+    - current_observations
+    - accepted_causal_history
+    forbidden:
+    - ground_truth
+    - future_policy_results
+    - legacy_optimized_results
+  preprocessed_state_adapter: coarse_scene_v1_source_v2_rgb
+  three_rewards:
+    contract: r6_three_geometric_rewards.v1
+    trust_complete_generated_mesh: true
+    reference_sigma_m: 0.005
+    pixel_sigma_px: 5.0
+    penetration_sigma_m: 0.0005
+    penetration_epsilon_m: 0.0001
+    deepest_weight: 0.1
+    contact_separation_margin_m: 0.002
+    contact_sigma_m: 0.005
+    correction_velocity_sigma_m_s: 0.03
+    correction_acceleration_sigma_m_s2: 1.0
+    contact_logit_reference_weight: 0.05
+    weights:
+      reference_alignment: 1.0
+      nonpenetration_contact: 5.0
+      temporal_continuity: 0.25
+  training_contract: fixed_asinh_raw_value_zero_critic.v1
+model:
+  encoder:
+    hidden_dims:
+    - 256
+    - 256
+    activation: elu
+    layer_norm: true
+  observation_feature_groups: null
+  state_feature_groups: null
+  policy:
+    initial_log_std: -2.5
+    min_log_std: -5.0
+    max_log_std: -2.0
+    zero_mean_init: true
+  value:
+    use_states: false
+    zero_value_init: true
+ppo:
+  rollouts: 150
+  learning_epochs: 2
+  mini_batches: 5
+  discount_factor: 1.0
+  gae_lambda: 1.0
+  learning_rate: 0.0001
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.1
+  value_clip: 0.2
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.01
+  time_limit_bootstrap: true
+  mixed_precision: false
+experiment:
+  write_interval: 0
+  checkpoint_interval: 0
+trainer:
+  timesteps: 600
+  headless: true
+  disable_progressbar: true
+rollout:
+  timesteps: null
+  headless: true
+  disable_progressbar: false
+  stochastic_evaluation: false
