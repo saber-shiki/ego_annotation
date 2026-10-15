@@ -44,6 +44,11 @@ def preflight_providers(assets, *, include_optional=False):
         ('sam2','unidepth_python','sam2_source','sam2.build_sam','sam2/build_sam.py'),
         ('rgb','rgb_python','lightglue_root','lightglue','lightglue'),
         ('sam3d','sam3d_python','sam3d_repo',None,'notebook/inference.py')]
+    if assets.get('hand_backend')=='wilor_only':
+        consumers=[row for row in consumers if row[0]!='hawor']
+        consumers.extend([
+            ('wilor','wilor_prediction_python','wilor_prediction_root','wilor.models','wilor/models'),
+            ('droid','droid_python','droid_root',None,'droid_slam/droid.py')])
     if include_optional:consumers.extend([
         ('wilor','wilor_prediction_python','wilor_prediction_root','wilor.models','wilor/models'),
         ('trellis','trellis_python','trellis_repo',None,'trellis/pipelines/trellis_image_to_3d.py')])
@@ -80,6 +85,9 @@ def recovery_asset_manifest(assets):
             'lightglue_root','sam3d_repo','sam3d_config','sam3d_moge_checkpoint',
             'sam3d_dinov2_repo','sam3d_dinov2_checkpoint','unidepth_repo','unidepth_model',
             'sam2_source','hawor_root')
+    if assets.get('hand_backend')=='wilor_only':
+        keys=tuple(key for key in keys if key not in ('hawor_python','hawor_root'))
+        keys+=('wilor_prediction_python','wilor_prediction_root','droid_python','droid_root','droid_weights')
     roots = {key: Path(assets[key]).expanduser().absolute() for key in keys}
     # SAM3D config resolves sibling checkpoint files through its checkpoint root.
     roots['sam3d_checkpoint_root'] = roots['sam3d_config'].parent

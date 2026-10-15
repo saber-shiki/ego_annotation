@@ -79,8 +79,13 @@ def repair_hands(inputs,archive,output_dir):
   rot=tensor(raw[side+'_root_orient_axis_angle']);pose=tensor(raw[side+'_hand_pose_axis_angle']);trans=tensor(raw[side+'_trans_world_m']);betas=tensor(raw[side+'_betas'])
   with torch.no_grad():V,J=fk(models[side],rot,pose,betas,trans)
   err=float(torch.max(torch.abs(V-tensor(raw[side+'_vertices_world_m']))));jerr=float(torch.max(torch.abs(J-tensor(raw[side+'_joints_world_m']))))
-  if err>2e-6 or jerr>2e-6:raise ValueError(f'MANO source replay mismatch {side} V={err} J={jerr}')
-  replay[side]=dict(max_vertex_error_m=err,max_joint_error_m=jerr)
+  if str(np.asarray(raw.get('hand_backend',['hawor'])).reshape(-1)[0])=='wilor':
+   from utils.hand_contract import FK_REPLAY_TOLERANCE_M,validate_replay_errors
+   validate_replay_errors(err,jerr);replay_tolerance=FK_REPLAY_TOLERANCE_M
+  else:
+   replay_tolerance=2e-6
+   if err>replay_tolerance or jerr>replay_tolerance:raise ValueError(f'MANO source replay mismatch {side} V={err} J={jerr}')
+  replay[side]=dict(max_vertex_error_m=err,max_joint_error_m=jerr,numerical_replay_tolerance_m=replay_tolerance)
   track=image_tracks(inputs,archive,side);tracks[side]=track;np.savez_compressed(Path(output_dir)/f'{side}_RGB_material_tracks.npz',**track)
   valid=tensor(raw[side+'_valid']).bool();beta=torch.nn.Parameter(torch.median(betas[valid],dim=0).values);dr=torch.nn.Parameter(torch.zeros_like(rot));dp=torch.nn.Parameter(torch.zeros_like(pose));dt=torch.nn.Parameter(torch.zeros_like(trans))
   parameters.extend([dict(params=[beta],lr=.002),dict(params=[dr,dp],lr=.001),dict(params=[dt],lr=.0005)])

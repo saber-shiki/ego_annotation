@@ -336,7 +336,8 @@ def camera_from_hawor(arrays: dict[str, np.ndarray]) -> dict[int, tuple[np.ndarr
         mat[:3, :3] = np.asarray(rr, dtype=float)
         mat[:3, 3] = np.asarray(tt, dtype=float)
         if np.all(np.isfinite(mat)):
-            out[int(idx)] = (mat, 'hawor_npz_R_c2w_t_c2w')
+            backend = str(np.asarray(arrays.get('hand_backend', ['hawor'])).reshape(-1)[0])
+            out[int(idx)] = (mat, 'independent_droid_unidepth_R_c2w_t_c2w' if backend == 'wilor' else 'hawor_npz_R_c2w_t_c2w')
     return out
 
 def source_hawor_intrinsics(arrays: dict[str, np.ndarray], *, source_image_size_wh: tuple[int, int] | None) -> np.ndarray | None:
@@ -481,8 +482,9 @@ def save_hawor_bridge(*, arrays: dict[str, np.ndarray], path: Path, poses: dict[
     if not bridge_frame_idx:
         return ({}, {'status': 'not_written_no_valid_hawor_hands'})
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, frame_idx=np.asarray(bridge_frame_idx, dtype=np.int32), hand_side=np.asarray(bridge_side), source_frame_index=np.asarray(source_frame_index, dtype=np.int32), vertices_current_v18_world_from_hawor_projection_relift_m=np.stack(vertices_w, axis=0).astype(np.float32), joints_current_v18_world_from_hawor_projection_relift_m=np.stack(joints_w, axis=0).astype(np.float32), vertices_current_v18_camera_m=np.stack(vertices_c, axis=0).astype(np.float32), joints_current_v18_camera_m=np.stack(joints_c, axis=0).astype(np.float32), vertices_hawor_camera_m=np.stack(vertices_c, axis=0).astype(np.float32), v19_bridge_status=np.asarray(['direct_hawor_world_to_v19_base_no_cached_v18_bridge']))
-    return (row_index, {'status': 'ok', 'path': str(path), 'rows': int(len(bridge_frame_idx)), 'claim_scope': 'V19 compatibility bridge from freshly exported HaWoR world vertices/joints; no cached V18 bridge root consumed'})
+    independent = str(np.asarray(arrays.get('hand_backend', ['hawor'])).reshape(-1)[0]) == 'wilor'
+    np.savez_compressed(path, frame_idx=np.asarray(bridge_frame_idx, dtype=np.int32), hand_side=np.asarray(bridge_side), source_frame_index=np.asarray(source_frame_index, dtype=np.int32), vertices_current_v18_world_from_hawor_projection_relift_m=np.stack(vertices_w, axis=0).astype(np.float32), joints_current_v18_world_from_hawor_projection_relift_m=np.stack(joints_w, axis=0).astype(np.float32), vertices_current_v18_camera_m=np.stack(vertices_c, axis=0).astype(np.float32), joints_current_v18_camera_m=np.stack(joints_c, axis=0).astype(np.float32), vertices_hawor_camera_m=np.stack(vertices_c, axis=0).astype(np.float32), v19_bridge_status=np.asarray(['independent_wilor_canonical_MANO_legacy_array_aliases_only' if independent else 'direct_hawor_world_to_v19_base_no_cached_v18_bridge']))
+    return (row_index, {'status': 'ok', 'path': str(path), 'rows': int(len(bridge_frame_idx)), 'claim_scope': 'Canonical independent WiLoR vertices/joints; historical array names are schema aliases only; no HaWoR state consumed' if independent else 'V19 compatibility bridge from freshly exported HaWoR world vertices/joints; no cached V18 bridge root consumed'})
 
 def parse_sam2_track_arg(value: str) -> tuple[str, Path]:
     if '=' in value:
@@ -587,6 +589,11 @@ def object_row(track_id: str, object_plan: dict[str, Any] | None, sam2_row: dict
     return row
 
 def build_hand_row(*, side: str, frame_idx: int, raw_frame: dict[str, Any], arrays: dict[str, np.ndarray], hawor_path: str | None, hawor_pos: int | None, bridge_path: Path | None, bridge_row_index: dict[tuple[int, str], int], T_world_camera: np.ndarray, intrinsics: list[float] | None, intrinsics_source: str | None, camera_hand_contract_alignment: dict[str, Any]) -> dict[str, Any]:
+    if camera_hand_contract_alignment.get('backend') == 'wilor':
+        from utils.hand_contract import hand_row
+        return hand_row(side=side, frame_idx=frame_idx, arrays=arrays, archive_path=hawor_path,
+            position=hawor_pos, bridge_path=bridge_path, bridge_rows=bridge_row_index,
+            T_world_camera=T_world_camera, intrinsics=intrinsics, alignment=camera_hand_contract_alignment)
     alignment_warning = ['hawor_camera_mano_intrinsics_differ_from_active_camera_contract_reinference_required'] if camera_hand_contract_alignment.get('active_contract_reinference_required') else []
     base = {'hand_side': side, 'visibility_state': 'not_measured', 'confidence': 0.0, 'uncertainty': ['fresh_v19_base_no_valid_hawor_row'] + alignment_warning, 'camera_contract_alignment': camera_hand_contract_alignment}
     if not arrays or hawor_pos is None or hawor_path is None or (f'{side}_valid' not in arrays):
@@ -640,7 +647,9 @@ def build_base_annotations(args: argparse.Namespace) -> dict[str, Any]:
     sam2_tracks = load_sam2_tracks(args.sam2_track, args.sam2_output_root)
     for track_id in sam2_tracks:
         object_plan.setdefault(track_id, {'track_id': track_id, 'description': f'SAM2 track {track_id}'})
-    bridge_path = args.output_dir / 'v19_mano_bridge_from_hawor_world.npz' if hawor_arrays else None
+    independent_backend = str(np.asarray(hawor_arrays.get('hand_backend', ['hawor'])).reshape(-1)[0]) == 'wilor'
+    bridge_name = 'mano_bridge_wilor_world.npz' if independent_backend else 'v19_mano_bridge_from_hawor_world.npz'
+    bridge_path = args.output_dir / bridge_name if hawor_arrays else None
     (bridge_rows, bridge_report) = save_hawor_bridge(arrays=hawor_arrays, path=bridge_path or args.output_dir / 'unused.npz', poses=poses)
     hawor_focal = None
     if hawor_arrays and 'img_focal' in hawor_arrays:
@@ -664,7 +673,9 @@ def build_base_annotations(args: argparse.Namespace) -> dict[str, Any]:
             hawor_source_video = Path(str(raw_video_paths[0]))
     raw_input_video_value = raw_payload.get('input_video')
     raw_input_video = Path(str(raw_input_video_value)) if raw_input_video_value else None
-    hawor_camera_image_plane_contract = validate_hawor_camera_image_plane_contract(hawor_arrays, source_intrinsics=hawor_intrinsics, source_size_wh=hawor_source_size, source_video=hawor_source_video, expected_source_video=raw_input_video) if hawor_arrays else {'status': 'no_source_hawor_state', 'validated': False}
+    from utils.hand_contract import MODE as WILOR_MODE
+    independent_wilor = hawor_camera_contract_mode == WILOR_MODE
+    hawor_camera_image_plane_contract = ({'status':'independent_wilor_not_a_hawor_plane', 'validated':False} if independent_wilor else validate_hawor_camera_image_plane_contract(hawor_arrays, source_intrinsics=hawor_intrinsics, source_size_wh=hawor_source_size, source_video=hawor_source_video, expected_source_video=raw_input_video)) if hawor_arrays else {'status': 'no_source_hawor_state', 'validated': False}
     if hawor_camera_contract_mode == FULL_K_RECTIFIED_MODE and hawor_camera_image_plane_contract.get('validated') is not True:
         raise RuntimeError('HaWoR full-K mode lacks a validated source/inference image-plane contract')
     active_intrinsics_rows: list[list[float]] = []
@@ -674,6 +685,10 @@ def build_base_annotations(args: argparse.Namespace) -> dict[str, Any]:
             active_intrinsics_rows.append(pair[0])
     camera_hand_contract_alignment = hawor_active_camera_contract_alignment(hawor_focal, active_intrinsics_rows, source_hawor_state_present=bool(hawor_arrays), source_hawor_image_size_wh=hawor_source_size, source_hawor_intrinsics_fx_fy_cx_cy=hawor_intrinsics, source_hawor_camera_contract_mode=hawor_camera_contract_mode, source_hawor_camera_image_plane_contract_validated=hawor_camera_image_plane_contract.get('validated') is True)
     camera_hand_contract_alignment['hawor_camera_image_plane_contract'] = hawor_camera_image_plane_contract
+    if independent_wilor:
+        from utils.hand_contract import validate_independent_archive
+        camera_hand_contract_alignment = validate_independent_archive(hawor_arrays, hawor_path, raw_input_video,
+            hawor_source_size, np.asarray(active_intrinsics_rows))
     output_frames: list[dict[str, Any]] = []
     counts: Counter[str] = Counter()
     missing_camera: list[int] = []
@@ -710,7 +725,7 @@ def build_base_annotations(args: argparse.Namespace) -> dict[str, Any]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     annotations_path = args.output_dir / 'annotations_v19_base.json'
     write_json_payload(annotations_path, annotations)
-    physical_state = {'status': 'ok', 'method': 'build_v19_base_annotations_state_sidecar', 'case': args.case, 'annotations': str(annotations_path), 'raw_frame_manifest': str(args.raw_frame_manifest), 'camera_source_count': dict(Counter((frame['camera']['v19_camera_pose_source'] for frame in output_frames))), 'intrinsics_source_count': dict(Counter((frame['camera'].get('intrinsics_source') for frame in output_frames))), 'calibration_contract': calibration_summary, 'hand_state_source': 'fresh_hawor_world_npz' if hawor_arrays else 'none', 'object_roster': sorted(object_plan), 'mano_bridge': bridge_report, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract, 'claim_scope': 'base physical measurement backbone only; final pose/contact/occlusion/interval correction state must be added by later V19 components'}
+    physical_state = {'status': 'ok', 'method': 'build_v19_base_annotations_state_sidecar', 'case': args.case, 'annotations': str(annotations_path), 'raw_frame_manifest': str(args.raw_frame_manifest), 'camera_source_count': dict(Counter((frame['camera']['v19_camera_pose_source'] for frame in output_frames))), 'intrinsics_source_count': dict(Counter((frame['camera'].get('intrinsics_source') for frame in output_frames))), 'calibration_contract': calibration_summary, 'hand_state_source': 'independent_wilor_canonical_MANO' if independent_wilor else 'fresh_hawor_world_npz' if hawor_arrays else 'none', 'object_roster': sorted(object_plan), 'mano_bridge': bridge_report, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract, 'claim_scope': 'base physical measurement backbone only; final pose/contact/occlusion/interval correction state must be added by later V19 components'}
     state_path = args.output_dir / 'v19_base_physical_state.json'
     write_json_payload(state_path, physical_state)
     report = {'status': 'ok', 'method': 'build_v19_base_annotations', 'case': args.case, 'outputs': {'annotations': str(annotations_path), 'physical_state': str(state_path), 'mano_bridge': bridge_report.get('path')}, 'frame_count': int(len(output_frames)), 'camera_source_count': physical_state['camera_source_count'], 'intrinsics_source_count': physical_state['intrinsics_source_count'], 'calibration_contract': calibration_summary, 'counts': dict(counts), 'object_track_count': int(len(object_plan)), 'sam2_track_count': int(len(sam2_tracks)), 'mano_bridge': bridge_report, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract}

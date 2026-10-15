@@ -17,6 +17,12 @@ def active_frame_intrinsics(frame: dict[str, Any], side: str, *, require_full_k:
     camera = frame.get('camera') if isinstance(frame.get('camera'), dict) else {}
     active = finite_intrinsics(camera.get('intrinsics_fx_fy_cx_cy'), 'active frame camera intrinsics')
     alignment = metric.get('camera_contract_alignment') if isinstance(metric.get('camera_contract_alignment'), dict) else hand.get('camera_contract_alignment') if isinstance(hand.get('camera_contract_alignment'), dict) else {}
+    if require_full_k and alignment.get('backend') == 'wilor':
+        from utils.hand_contract import independent_alignment_valid
+        independent_alignment_valid(alignment, active)
+        if not np.allclose(active, mano, atol=.01, rtol=0):
+            raise RuntimeError('independent WiLoR hand K differs from active camera')
+        return active.astype(float).tolist()
     if require_full_k:
         if alignment.get('active_contract_reinference_required') is not False:
             raise RuntimeError(f"frame {frame.get('frame_idx')} {side}: active camera/MANO reinference is still required; refusing P18 promotion")

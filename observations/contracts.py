@@ -17,7 +17,7 @@ ARTIFACT_CLASSES = {
     'raw_video': ['R0'], 'raw_frames': ['R2'], 'runtime_input_contract': ['R0'],
     'code_manifest': ['R0'], 'model_asset_manifest': ['R0'],
     'camera_calibration': ['R0', 'R1'], 'conditioned_depth': ['R1'],
-    'hawor_world': ['R1'], 'mano_bridge': ['R2'], 'object_plan': ['R1'],
+    'hawor_world': ['R1'], 'independent_camera':['R1'], 'independent_mano_contract':['R2'], 'mano_bridge': ['R2'], 'object_plan': ['R1'],
     'candidate_identity': ['R1', 'R2'], 'raw_object_masks': ['R1'],
     'owned_object_masks': ['R2'], 'metric_eligibility': ['R2'],
     'visible_annotations': ['R2', 'R4'], 'surface_report': ['R2'],

@@ -191,6 +191,14 @@ def build_source_observation_manifest(
         },
     }
 
+    for independent_name in ('independent_camera','independent_mano_contract'):
+        if independent_name in records:
+            sources[independent_name]=records[independent_name]
+    if records['hawor_world']['role']=='raw_wilor_independent_world_mano':
+        if not {'independent_camera','independent_mano_contract'}.issubset(records):
+            raise ValueError('independent WiLoR bundle lacks its camera/MANO producers')
+        result['provenance'].update(hand_backend='wilor',camera_backend='independent_droid_unidepth',HaWoR_prediction_inputs=False,
+            legacy_hawor_world_slot_is_schema_alias_only=True)
     if bundle_version == 2:
         result.update(preprocessing_only=True, capabilities=["explicit_timeline"],
                       observation_roles=classification(records))

@@ -375,6 +375,12 @@ def frame_evidence(frame_idx: int, frame: dict[str, Any], object_id: str, pose_r
         alignment = metric.get('camera_contract_alignment') if isinstance(metric.get('camera_contract_alignment'), dict) else hand.get('camera_contract_alignment') if isinstance(hand.get('camera_contract_alignment'), dict) else {}
         plane = alignment.get('hawor_camera_image_plane_contract') if isinstance(alignment.get('hawor_camera_image_plane_contract'), dict) else {}
         hand_K = np.asarray(hand_report.get('source_camera_intrinsics_fx_fy_cx_cy') or [], dtype=np.float64)
+        if alignment.get('backend') == 'wilor':
+            from utils.hand_contract import independent_alignment_valid
+            independent_alignment_valid(alignment, intrinsics)
+            if hand_K.shape != (4,) or not np.allclose(hand_K, intrinsics, atol=.01, rtol=0):
+                raise RuntimeError('independent WiLoR projection differs from depth K')
+            continue
         if alignment.get('active_contract_reinference_required') is not False or alignment.get('source_hawor_full_K_bound_to_inference') is not True or alignment.get('source_hawor_state_intrinsics_match_active_contract') is not True or (plane.get('validated') is not True) or (hand_K.shape != (4,)) or (not np.allclose(hand_K, intrinsics, atol=0.01, rtol=0.0)):
             raise RuntimeError(f"frame {frame_idx} {hand.get('hand_side')}: D15b requires active-K centered-plane MANO binding")
     (accepted_depth_mask, accepted_depth_report) = accepted_first_surface_depth_in_mask_plane(candidate, intrinsics, A_mask_from_source, mask.shape, float(accepted_depth_radius_px))

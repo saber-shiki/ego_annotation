@@ -176,6 +176,12 @@ def annotate(args):
     from utils.runtime import stage_environment, astra_stage_inputs
     from utils.config import recovery_asset_manifest
     assets=load(args.assets_manifest)
+    hand_backend=assets.get('hand_backend','hawor')
+    if hand_backend not in {'hawor','wilor_only'}:
+        raise ValueError('unsupported hand backend')
+    if hand_backend=='wilor_only' and any(key in assets for key in ('hawor_root','hawor_python')):
+        raise ValueError('WiLoR-only asset contract must exclude HaWoR providers')
+    shared_gpu=assets.get('scene_gpu_policy',{}).get('mode')=='resource_aware_shared'
     if assets.get('agent_model')!='gpt-6-astra' or assets.get('agent_provider')!='dexgem-responses' or assets.get('agent_disable_fallbacks') is not True:
         raise ValueError('asset manifest must pin Astra without fallbacks')
     os.environ['EGO_ASTRA_CREDENTIAL_FILE']=assets['agent_credential_file']
@@ -265,20 +271,37 @@ def annotate(args):
             command=[str(python),'-m',module,*map(str,argv)]
             worker_environment={**environment,**(overlay or {})}
             executable=Path(shutil.which(str(python),path=worker_environment.get('PATH')) or python).absolute()
+            min_free=int(assets.get('sam3d_min_free_mib',12000))
+            selected=None
+            if shared_gpu:
+                from utils.gpu_sharing import select
+                min_free=int(assets['scene_gpu_policy']['stage_min_free_mib'].get(stage_name,8000))
+                resource_path=root/'logs'/f'{stage_name}.resources.json'
+                if recovering and resource_path.is_file():
+                    selected=load(resource_path)
+                else:
+                    selected=select(min_free,assets['scene_gpu_policy'].get('max_utilization',25))
+                worker_environment['CUDA_VISIBLE_DEVICES']=selected['uuid']
             planned=planned_stage_contract(module,'subprocess',
                 parameters={'command':command,'outputs':outputs,'object_id':object_id,'frame_ids':ids},
                 inputs={'argv':command[3:]},execution={'executable':executable,
                     'resolved_executable':executable.resolve(),'executable_sha256':sha(executable),
                     'argv':command[1:],'cwd':code_root,
                     'environment':stage_environment(worker_environment,(overlay or {}).keys()),
-                    'gpu':args.gpu,'expected_uuid':gpu_uuid,
-                    'min_free_mib':int(assets.get('sam3d_min_free_mib',12000))})
+                    'gpu':selected['index'] if shared_gpu else args.gpu,'expected_uuid':selected['uuid'] if shared_gpu else gpu_uuid,
+                    'gpu_policy':'resource_aware_shared' if shared_gpu else 'exclusive',
+                    'min_free_mib':min_free})
             def execute():
                 verify_code()
                 (root/'logs').mkdir(parents=True,exist_ok=True)
                 with (root/'logs'/f'{stage_name}.log').open('x') as log:
-                    resources=run_model(command,cwd=code_root,environment=worker_environment,
-                        gpu=args.gpu,expected_uuid=gpu_uuid,min_free_mib=int(assets.get('sam3d_min_free_mib',12000)),stdout=log)
+                    if shared_gpu:
+                        from utils.gpu_sharing import run_shared
+                        resources=run_shared(command,cwd=code_root,environment=worker_environment,selected=selected,
+                            min_free_mib=min_free,max_utilization=assets['scene_gpu_policy'].get('max_utilization',25),stdout=log)
+                    else:
+                        resources=run_model(command,cwd=code_root,environment=worker_environment,
+                            gpu=args.gpu,expected_uuid=gpu_uuid,min_free_mib=min_free,stdout=log)
                 (root/'logs'/f'{stage_name}.resources.json').write_text(json.dumps(resources,indent=2))
                 record(stage_name,outputs,command)
                 return resources
@@ -358,10 +381,25 @@ def annotate(args):
             calibration.bind_depth_contract(calibration.depth_parse_args(list(map(str,['--source-depth-npz',depth,
                 '--camera-contract',camera,'--depth-plane','source_rgb','--output-dir',bound.parent]))))
             record('depth_binding',[(bound,'depth')])
-        hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
-        worker('hawor',assets['hawor_python'],'observations.hand.hawor',
-            ['--hawor-root',assets['hawor_root'],'--run-root',root,'--video_path',raw,
-             '--camera-intrinsics',*K,'--output-dir',hawor.parent],[(hawor,'hands')])
+        independent_camera=None
+        if hand_backend=='hawor':
+            hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
+            worker('hawor',assets['hawor_python'],'observations.hand.hawor',
+                ['--hawor-root',assets['hawor_root'],'--run-root',root,'--video_path',raw,
+                 '--camera-intrinsics',*K,'--output-dir',hawor.parent],[(hawor,'hands')])
+        else:
+            local_dir=root/'measurements/hand_candidates/wilor_camera'
+            local_wilor=local_dir/'wilor_hands.npz'
+            worker('wilor_camera',assets['wilor_prediction_python'],'observations.hand.wilor_calibrated',
+                ['--clip',raw,'--camera-contract',camera,'--wilor-root',assets['wilor_prediction_root'],
+                 '--output',local_dir,'--compute-host',assets['compute_host'],'--batch-size',2],
+                [(local_wilor,'camera_local_wilor'),(local_wilor.with_suffix('.completed.json'),'wilor_producer')])
+            perspective_dir=root/'measurements/hand_candidates/wilor_perspective'
+            local_perspective=perspective_dir/'wilor_hands.npz'
+            worker('wilor_perspective',assets['main_python'],'observations.hand.wilor_perspective',
+                ['--source',local_wilor,'--output',perspective_dir],
+                [(local_perspective,'camera_local_wilor'),(local_perspective.with_suffix('.completed.json'),'wilor_producer')])
+            hawor=root/'measurements/hand_candidates/wilor_world/wilor_world_hands.npz'
         detector=root/'measurements/object_candidates/object_box_prompts_owlv2'
         owlargs=['--raw-frame-manifest',manifest,'--output-root',detector,'--review-dir',root/'renders/owlv2',
             '--case-id',args.case,'--object-id',object_id,'--track-id',track,'--description',obj['description'],
@@ -441,6 +479,16 @@ def annotate(args):
             mask_judgment=ask('mask_track',{'track':track_payload,'selected_object_plan':obj,'candidate_identity_checks':load(root/'state/candidate_mask_identity.json'),'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
         if mask_judgment['identity_consistent'] is False:
             raise ValueError('mask identity review rejected the selected-object track; no scene is published')
+        if hand_backend=='wilor_only':
+            independent_camera=root/'measurements/camera/droid_independent/droid_camera.npz'
+            worker('independent_droid',assets['droid_python'],'observations.camera.droid_independent',
+                ['--manifest',manifest,'--depth',bound,'--wilor',local_perspective,'--object-track',track_path,
+                 '--droid-root',assets['droid_root'],'--weights',assets['droid_weights'],'--output',independent_camera.parent],
+                [(independent_camera,'independent_camera'),(independent_camera.with_suffix('.json'),'independent_camera_provenance')])
+            worker('wilor_world',assets['main_python'],'observations.hand.wilor_world',
+                ['--wilor',local_perspective,'--camera',independent_camera,'--video',raw,
+                 '--mano-models',assets['mano_models'],'--output',hawor.parent],
+                [(hawor,'hands'),(hawor.parent/'mano_contract.json','independent_mano_contract')])
         base=root/'state/base_annotations/annotations_v19_base.json'
         @stage('base', inputs={'manifest':manifest,'depth':bound,'camera':camera,'hawor':hawor,'object_plan':plan_path,'sam2':sam2},
             parameters={'case':args.case,'output_dir':base.parent})
@@ -448,7 +496,7 @@ def annotate(args):
             build_base_annotations(base_parse_args(list(map(str,['--case',args.case,'--raw-frame-manifest',manifest,
                 '--output-dir',base.parent,'--depth-npz',bound,'--calibration-contract',camera,
                 '--hawor-npz',hawor,'--object-plan',plan_path,'--sam2-output-root',sam2]))))
-            bridge=base.parent/'v19_mano_bridge_from_hawor_world.npz'
+            bridge=base.parent/('mano_bridge_wilor_world.npz' if hand_backend=='wilor_only' else 'v19_mano_bridge_from_hawor_world.npz')
             record('base',[(base,'base_observations'),(bridge,'mano_bridge')])
             return bridge
         bridge = _stage_base
@@ -676,7 +724,7 @@ def annotate(args):
             'raw_frames':(manifest,'raw_frame_manifest'),
             'camera_calibration':(camera,'camera_calibration'),
             'conditioned_depth':(bound,'conditioned_camera_z_depth'),
-            'hawor_world':(hawor,'raw_hawor_world_mano'),
+            'hawor_world':(hawor,'raw_hawor_world_mano' if hand_backend=='hawor' else 'raw_wilor_independent_world_mano'),
             'mano_bridge':(bridge,'raw_mano_bridge'),
             'object_plan':(plan_path,'object_plan'),
             'candidate_identity':(detector/object_id/'candidate_identity.json','object_candidate_identity'),
@@ -693,6 +741,9 @@ def annotate(args):
             'interaction_judgments':(judgments,'contact_visibility_occlusion_evidence'),
             'interaction_factors':(factor_path,'qualified_contact_visibility_factors'),
         }
+        if independent_camera is not None:
+            artifacts['independent_camera']=(independent_camera,'independent_droid_unidepth_camera')
+            artifacts['independent_mano_contract']=(hawor.parent/'mano_contract.json','independent_wilor_mano_contract')
         if visual_report_path is not None:
             visual_report=load(visual_report_path)
             artifacts.update({

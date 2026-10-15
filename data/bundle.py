@@ -418,6 +418,16 @@ def _camera_mano_contract(frame: Mapping[str, Any], side: str, intrinsics: np.nd
     alignment = metric.get("camera_contract_alignment") if isinstance(metric.get("camera_contract_alignment"), Mapping) else {}
     if not alignment:
         return (not required, "missing_camera_mano_contract")
+    if alignment.get('backend') == 'wilor':
+        from utils.hand_contract import independent_alignment_valid
+        try:
+            independent_alignment_valid(alignment, intrinsics)
+        except (ValueError, OSError, KeyError) as exc:
+            return (False, 'independent_wilor_contract_invalid:' + str(exc))
+        source = np.asarray(metric.get('current_v18_camera_intrinsics_fx_fy_cx_cy', []), float)
+        if source.shape != (4,) or not np.allclose(source, intrinsics, atol=.01, rtol=0):
+            return (False, 'annotation_mano_intrinsics_differ_from_camera')
+        return (True, 'validated_independent_wilor_camera_mano_contract')
     if alignment.get("active_contract_reinference_required") is not False:
         return (False, "camera_mano_reinference_required")
     if alignment.get("source_hawor_state_intrinsics_match_active_contract") is not True:
