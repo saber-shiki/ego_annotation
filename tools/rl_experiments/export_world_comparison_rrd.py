@@ -61,8 +61,8 @@ def load_candidates(run: Path):
 
 
 def validate_archives(archives):
-    if len(archives) != 3:
-        raise ValueError("comparison needs exactly zero, best trained and last")
+    if len(archives) not in (2, 3):
+        raise ValueError("comparison needs two direct candidates or three policy candidates")
     zero = archives[0]
     ids, times = zero["frame_idx"], zero["time_s"]
     n = len(ids)
@@ -140,12 +140,14 @@ def export_rrd(items, archives, output: Path, *, collision_reports=None):
         "timeline": {"sequence": "frame", "duration": "time_s", "frames": len(archives[0]["frame_idx"]),
                      "fps": fps, "first_frame": int(archives[0]["frame_idx"][0]),
                      "last_frame": int(archives[0]["frame_idx"][-1])},
-        "initial_eye": eye, "view_layout": "Zero R6 / Best trained / Last; same initial camera and world gauge",
+        "initial_eye": eye, "view_layout": " / ".join(item['name'] for item in items) + "; same initial camera and world gauge",
         "candidates": items, "native_vertices": len(archives[0]["object_vertices_canonical"]),
         "native_triangles": len(archives[0]["object_faces"]), "decimation_applied": False,
         "physical_contact_authority": False, "signed_geometry_ready": False,
         "scope": "posthoc geometry-only interactive visualization, not a new prediction or improvement claim",
-        "collision_highlight": "red MANO vertices >0.1mm inside generated mesh plus actual crossing hand edges; hypothesis only" if collision_reports is not None else None,
+        "collision_highlight": ("red inside MANO vertices >0.01mm plus outlines of actually intersected hand triangles; generated hypothesis only"
+                                if collision_reports is not None and 'triangle_tolerance_m' in collision_reports[0]
+                                else "red MANO vertices >0.1mm inside generated mesh plus actual crossing hand edges; hypothesis only" if collision_reports is not None else None),
         "render_notes": "Actual mesh surfaces, not video billboards. Interactive Rerun lighting/perspective may differ from MP4. No coordinate re-alignment or per-candidate normalization.",
     }
     counts = {item["key"]: {"object": 0, "left": 0, "right": 0} for item in items}
@@ -153,9 +155,10 @@ def export_rrd(items, archives, output: Path, *, collision_reports=None):
         recording.log("/comparison/provenance", rr.TextDocument(json.dumps(receipt, indent=2)), static=True)
         for item in items:
             recording.log(f'/comparison/{item["key"]}/world', rr.ViewCoordinates.RDF, static=True)
+            objective_note = f'raw J={item["objective"]:.9f}' if item.get('objective') is not None else 'direct geometric solve / no PPO cost'
             recording.log(f'/comparison/{item["key"]}/notes', rr.TextDocument(
-                f'{item["name"]}; raw J={item["objective"]:.9f}. '
-                "Best trained is not necessarily better than zero. Full native object / metric MANO. No signed-contact claim."
+                f'{item["name"]}; {objective_note}. '
+                "A candidate is not necessarily better than zero. Full native object / metric MANO. No signed-contact claim."
             ), static=True)
         for i, fid in enumerate(archives[0]["frame_idx"]):
             recording.set_time("frame", sequence=int(fid))
@@ -186,6 +189,11 @@ def export_rrd(items, archives, output: Path, *, collision_reports=None):
                             colors[stats.get("inside_vertex_ids", [])] = [245, 30, 60, 255]
                             appearance = {"vertex_colors": colors, "albedo_factor": [255, 255, 255, 255]}
                             edge_ids = np.asarray(stats.get("crossing_edge_vertex_ids", []), dtype=np.int64).reshape(-1, 2)
+                            face_ids = np.asarray(stats.get('intersected_hand_face_ids', []), dtype=np.int64)
+                            if len(face_ids):
+                                tri = faces[face_ids]
+                                outlines = np.concatenate((tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]))
+                                edge_ids = np.unique(np.sort(np.r_[edge_ids, outlines], axis=1), axis=0)
                             edge_path = root + "/collision/" + side
                             if len(edge_ids):
                                 recording.log(edge_path, rr.LineStrips3D(a[side + "_vertices_world"][i][edge_ids],

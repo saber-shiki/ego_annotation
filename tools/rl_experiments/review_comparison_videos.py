@@ -20,7 +20,7 @@ def inspect(run,out):
         if len(frames)!=150:raise RuntimeError('missing comparison frames')
         short='overlay' if name.endswith('overlay') else 'world'
         for start in (0,50,100):
-            tiles=[cv2.resize(x,(384,round(x.shape[0]*.5)),interpolation=cv2.INTER_AREA) for x in frames[start:start+50]]
+            tiles=[cv2.resize(x,(384,round(x.shape[0]*384/x.shape[1])),interpolation=cv2.INTER_AREA) for x in frames[start:start+50]]
             rows=[np.concatenate(tiles[j:j+5],axis=1) for j in range(0,50,5)]
             cv2.imwrite(str(out/f'{short}_{start:03d}_{start+49:03d}.jpg'),np.concatenate(rows,axis=0))
         for i in (0,30,60,90,120,143,148,149):cv2.imwrite(str(out/f'{short}_{i:03d}.jpg'),frames[i])

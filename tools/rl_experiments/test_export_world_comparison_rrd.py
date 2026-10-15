@@ -73,6 +73,18 @@ class WorldComparisonRrdTest(unittest.TestCase):
             self.assertIn('red MANO vertices', receipt['collision_highlight'])
             self.assertTrue(verify_roundtrip(output, items, archives)['all_mesh_vertices_and_triangle_indices_equal'])
 
+    def test_two_direct_candidates_without_fake_objective_and_triangle_outlines(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);items,archives=fixture(root);items=items[:2];archives=archives[:2]
+            for item in items:item['objective']=None
+            reports=[{'triangle_tolerance_m':1e-8,'frames':[{'frame_idx':int(fid),'hands':{
+                side:{'inside_vertex_ids':[],'intersected_hand_face_ids':[0]} for side in ('left','right')}} for fid in a['frame_idx']]} for a in archives]
+            output=root/'direct.rrd';receipt=export_rrd(items,archives,output,collision_reports=reports)
+            self.assertIn('intersected hand triangles',receipt['collision_highlight'])
+            check=verify_roundtrip(output,items,archives)
+            self.assertEqual(len(check['mesh_frame_counts']),6)
+            self.assertTrue(check['all_mesh_vertices_and_triangle_indices_equal'])
+
     def test_reject_changed_timeline_geometry_or_visibility(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); _, archives = fixture(root)

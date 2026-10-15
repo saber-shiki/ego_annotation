@@ -214,7 +214,8 @@ def render_comparison(output,zero,best,last,bundle,*,panel_labels=None):
     from preprocessing.geometry import TriangleMesh,camera_pose,resized_intrinsics
     from preprocessing.render import paint,look_at
     archives=[]
-    for path in (Path(zero['npz']),export_npz(best),export_npz(last)):
+    paths = [Path(zero['npz']), export_npz(best)] + ([export_npz(last)] if last is not None else [])
+    for path in paths:
         with np.load(path,allow_pickle=False) as z:archives.append(dict(z))
     source=bundle.source;annotations=json.loads(source.source_path('annotations').read_text())['frames']
     appearance=json.loads(source.source_path('appearance_masks').read_text());images={r['frame_idx']:r for r in appearance['frames']}
@@ -226,7 +227,8 @@ def render_comparison(output,zero,best,last,bundle,*,panel_labels=None):
     view=look_at(center+C0[:3,:3]@np.array([radius*.7,-radius*.25,-radius*2.5]),center,C0[:3,:3]@np.array([0.,-1.,0.]))
     kv=np.array([width*1.05,width*1.05,(width-1)/2,(width-1)/2]);out=output/'renders';out.mkdir()
     processes=[]
-    for name,size in [('zero_best_last_overlay.mp4',(3*width,wh[1]+40)),('zero_best_last_world.mp4',(3*width,width+40))]:
+    columns = len(archives)
+    for name,size in [('zero_best_last_overlay.mp4',(columns*width,wh[1]+40)),('zero_best_last_world.mp4',(columns*width,width+40))]:
         processes.append(subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','error','-n','-f','rawvideo','-pix_fmt','bgr24','-s',f'{size[0]}x{size[1]}','-r',str(fps),'-i','-','-an','-c:v','libx264','-threads','1','-preset','fast','-crf','20','-pix_fmt','yuv420p',str(out/name)],stdin=subprocess.PIPE))
     scores=[[] for _ in archives];sheets=[]
     try:
@@ -249,7 +251,8 @@ def render_comparison(output,zero,best,last,bundle,*,panel_labels=None):
                     _,hz,_=hs.raster(k,C[:3,:3].T,-C[:3,:3].T@C[:3,3],wh);paint(im,depth,hz,col,.45)
                     _,hz,_=hs.raster(kv,view[:3,:3].T,-view[:3,:3].T@view[:3,3],(width,width));paint(world,wd,hz,col,.95)
                 cv2.drawContours(im,cv2.findContours(mask.astype('uint8'),cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0],-1,(0,220,0),1)
-                header=np.zeros((40,width,3),np.uint8);label=(panel_labels or ('zero R6',f'best trained {best["steps"]}',f'last {last["steps"]}'))[j]
+                labels = panel_labels or (('zero R6', 'direct candidate') if last is None else ('zero R6',f'best trained {best["steps"]}',f'last {last["steps"]}'))
+                header=np.zeros((40,width,3),np.uint8);label=labels[j]
                 cv2.putText(header,f'f{int(fid)} {label}',(5,16),cv2.FONT_HERSHEY_SIMPLEX,.4,(255,255,255),1)
                 cv2.putText(header,'full mesh/MANO; no signed claim',(5,33),cv2.FONT_HERSHEY_SIMPLEX,.32,(220,220,220),1)
                 panels.append(np.vstack((header,im)));world_panels.append(np.vstack((header,world)))
