@@ -78,6 +78,18 @@ def contour_factors(mesh,world_R,world_t,inputs,hand_depth,indices=None,max_poin
     return concatenate(rows,'visible_contour'),stats
 
 
+def mask_alignment(mesh,world_R,world_t,inputs,hand_depth,i):
+    """Full-raster evidence used only by the opt-in mask experiment/evaluator."""
+    from preprocessing.mask_contract import FixedMaskDomain
+    return FixedMaskDomain.from_inputs(inputs,hand_depth,i).render_score(mesh,world_R,world_t,inputs,i)
+
+
+def mask_nonregression(before,after,tolerance=.015):
+    """Experimental fixed-reference comparison; caller must retain the reference."""
+    from preprocessing.mask_contract import nonregression
+    return nonregression(before,after,tolerance=tolerance)
+
+
 def depth_factors(mesh,R,t,inputs,max_points=20):
     frames=[];points=[];depths=[]
     for i,cloud in enumerate(inputs.clouds):
