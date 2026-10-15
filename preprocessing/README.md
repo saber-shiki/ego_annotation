@@ -1,5 +1,13 @@
 # Monocular derived coarse scenes
 
+## Opt-in ordered repair study
+
+The experimental shared-shape / relative-depth / full-MANO repair branch is
+separate from the default producer and frozen R6. See the
+[branch guide](../docs/SHAPE_DEPTH_HAND_REPAIR_BRANCH_GUIDE.md) for stage commands,
+provisioned input requirements, known residual errors and original-host analysis
+dependencies. It is not an RL promotion or a contact/metric-accuracy certificate.
+
 This is a separate preprocessing consumer of frozen **v2 monocular-RGB observations**. It does not run observation models, use CAD/GT/additional cameras, change source MANO, load a policy, or bypass the old training guards.
 
 ## Fixed-depth surface alignment profile

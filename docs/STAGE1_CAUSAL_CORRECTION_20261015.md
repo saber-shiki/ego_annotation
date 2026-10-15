@@ -1,0 +1,8 @@
+
+## Stage1 r1 observation and causal correction (2026-10-15)
+
+Initial actual complete render/evaluation: transverse deformation occurred, but the source raw-mask visible IoU fell .8662->.8576; one shared principal length shrank while the fixed raw depth residual improved5.68->4.31mm. Independent post-freeze size/surface checks exposed that this was not an overall repair. Do not promote r1; retain its artifacts.
+
+Concrete mechanism defect: per-outer least-squares steps were accepted solely on frozen nearest contour/surface correspondences; no fresh full-silhouette check after those associations changed. Normal registration + a three-axis affine permits a shape/pose/depth compromise which may lower the local residual while worsening actual RGB evidence. Source object-view normals were also read but not directly compared to actual native face normals.
+
+Intervention r2: add per-visible-surface normal agreement (actual hit normals transformed by positive shared deformation), a soft shared log-volume/source-shape prior (not a target dimension), and backtracking on independently refreshed, fixed-domain full silhouette + raw source-ray surface evidence. Normal/shape costs remain source-only. Every trial checks the same source mask/depth population and stores actual merit. Do not clamp one special dimension or write independently known dimensions into the model. If the new solution barely changes, that means source constraints cannot currently identify the change; retain uncertainty and expose the weak coupling rather than claiming success. Any reference geometry remains outside the producer.
